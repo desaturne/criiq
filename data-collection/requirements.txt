@@ -1,0 +1,21 @@
+# Criiq data-collection dependencies (Python 3.11+)
+
+# --- pipeline (data collection) ---
+requests>=2.31
+pandas>=2.0
+pyarrow>=14
+rapidfuzz>=3.0
+feedparser>=6.0
+beautifulsoup4>=4.12
+
+# --- notebook / analysis (criiq_overview.ipynb) ---
+matplotlib>=3.7
+jupyter>=1.0
+ipykernel>=6.0
+nbformat>=5.9
+nbconvert>=7.0
+
+# --- tests ---
+pytest>=7.0
+
+# stdlib used: sqlite3, zipfile, csv, uuid, argparse, logging, json, datetime
