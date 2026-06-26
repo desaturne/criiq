@@ -1,0 +1,287 @@
+from __future__ import annotations
+
+import argparse
+import json
+
+from . import advanced, career, download_cricsheet, download_register, identity, impact
+from . import ingest, matchups, opponents, phases, player_card, refresh, registry
+from . import rss_monitor, scrape_cricinfo, sheet, styles, venue_stats
+from .db import connect, get_meta, init_schema, table_count
+from .h2h import batter_vs_bowler, names_for_player
+from .logging_utils import get_logger
+
+log = get_logger("cli")
+
+
+def _pp(obj) -> None:
+    print(json.dumps(obj, indent=2, default=str))
+
+
+def _find_player(conn, name: str):
+    rows = conn.execute(
+        "SELECT player_id, canonical_name, cricsheet_identifier FROM players "
+        "WHERE canonical_name LIKE ? OR unique_name LIKE ? LIMIT 10",
+        (f"%{name}%", f"%{name}%")).fetchall()
+    return [dict(r) for r in rows]
+
+
+def cmd_init(args):
+    conn = connect(); init_schema(conn); conn.close()
+    print("schema initialised")
+
+
+def cmd_download(args):
+    conn = connect(); init_schema(conn)
+    _pp({"register": download_register.download_register(conn),
+         "cricsheet": download_cricsheet.download_all(conn, force=args.force)})
+    conn.close()
+
+
+def cmd_ingest(args):
+    conn = connect(); init_schema(conn)
+    _pp(ingest.ingest_all(conn)); conn.close()
+
+
+def cmd_identity(args):
+    conn = connect(); init_schema(conn)
+    _pp(identity.run(conn)); conn.close()
+
+
+def cmd_registry(args):
+    conn = connect(); init_schema(conn)
+    _pp(registry.build_registry(conn)); conn.close()
+
+
+def cmd_cards(args):
+    conn = connect(); init_schema(conn)
+    _pp(player_card.build_cards(conn)); conn.close()
+
+
+def cmd_enrich(args):
+    conn = connect(); init_schema(conn)
+    _pp(scrape_cricinfo.enrich_players(conn, limit=args.limit, refetch=args.refetch))
+    conn.close()
+
+
+def cmd_rss(args):
+    conn = connect(); init_schema(conn)
+    _pp(rss_monitor.scan_feeds(conn)); conn.close()
+
+
+def cmd_alerts(args):
+    conn = connect(); init_schema(conn)
+    if args.confirm:
+        ok = rss_monitor.set_alert_status(conn, args.confirm, "CONFIRMED")
+        print("confirmed" if ok else "not found")
+    elif args.dismiss:
+        ok = rss_monitor.set_alert_status(conn, args.dismiss, "DISMISSED")
+        print("dismissed" if ok else "not found")
+    else:
+        _pp(rss_monitor.list_alerts(conn))
+    conn.close()
+
+
+def cmd_career(args):
+    conn = connect(); init_schema(conn)
+    _pp(career.build_career(conn)); conn.close()
+
+
+def cmd_advanced(args):
+    conn = connect(); init_schema(conn)
+    _pp(advanced.build_advanced(conn)); conn.close()
+
+
+def cmd_opponents(args):
+    conn = connect(); init_schema(conn)
+    _pp(opponents.build_vs_opponent(conn)); conn.close()
+
+
+def cmd_impact(args):
+    conn = connect(); init_schema(conn)
+    _pp(impact.build_impact(conn)); conn.close()
+
+
+def cmd_venues(args):
+    conn = connect(); init_schema(conn)
+    _pp(venue_stats.build_venue_stats(conn)); conn.close()
+
+
+def cmd_matchups(args):
+    conn = connect(); init_schema(conn)
+    _pp(matchups.build_matchups(conn)); conn.close()
+
+
+def cmd_phases(args):
+    conn = connect(); init_schema(conn)
+    _pp(phases.build_phases(conn)); conn.close()
+
+
+def cmd_sheet(args):
+    conn = connect(); init_schema(conn)
+    row = sheet.find_player(conn, args.name)
+    if not row:
+        print(f"no player matching '{args.name}'"); conn.close(); return
+    _pp(sheet.get_sheet(conn, row["player_id"], args.format,
+                        top_opponents=args.opponents))
+    conn.close()
+
+
+def cmd_styles(args):
+    conn = connect(); init_schema(conn)
+    if args.scaffold:
+        path = styles.scaffold_csv(conn, only_missing=not args.all)
+        print(f"template written: {path}")
+    elif args.seed:
+        _pp(styles.seed_from_wikidata(conn, limit=args.limit))
+    elif args.load:
+        _pp(styles.load_manual_csv(conn))
+    else:
+        _pp(styles.coverage(conn))
+    conn.close()
+
+
+def cmd_profile(args):
+    conn = connect(); init_schema(conn)
+    matches = _find_player(conn, args.name)
+    if not matches:
+        print(f"no player matching '{args.name}'"); conn.close(); return
+    if len(matches) > 1 and not args.first:
+        print("multiple matches — narrow the name or pass --first:")
+        _pp(matches); conn.close(); return
+    prof = advanced.get_advanced(conn, matches[0]["player_id"], args.format)
+    _pp(prof or {"error": "no advanced profile for that player/format",
+                 "player": matches[0]})
+    conn.close()
+
+
+def cmd_refresh(args):
+    _pp(refresh.run(force_download=args.force, enrich=args.enrich,
+                    scan_rss=not args.no_rss, seed_styles=args.seed_styles))
+
+
+def cmd_status(args):
+    conn = connect(); init_schema(conn)
+    out = {t: table_count(conn, t) for t in
+           ["matches", "deliveries", "players", "player_registry",
+            "player_career", "player_cards", "player_advanced",
+            "player_vs_opponent", "player_impact", "player_by_venue",
+            "dismissal_matchup", "player_phase", "retirement_alerts"]}
+    out["styles_coverage"] = styles.coverage(conn)
+    out["players_with_cricinfo"] = conn.execute(
+        "SELECT COUNT(*) n FROM players WHERE key_cricinfo IS NOT NULL "
+        "AND key_cricinfo != ''").fetchone()["n"]
+    out["players_need_review"] = conn.execute(
+        "SELECT COUNT(*) n FROM players WHERE needs_review=1").fetchone()["n"]
+    out["freshness"] = refresh.freshness(conn)
+    out["last_refresh"] = get_meta(conn, "last_successful_refresh")
+    _pp(out); conn.close()
+
+
+def cmd_card(args):
+    conn = connect(); init_schema(conn)
+    matches = _find_player(conn, args.name)
+    if not matches:
+        print(f"no player matching '{args.name}'"); conn.close(); return
+    if len(matches) > 1 and not args.first:
+        print("multiple matches — narrow the name or pass --first:")
+        _pp(matches); conn.close(); return
+    pid = matches[0]["player_id"]
+    card = player_card.get_card(conn, pid, args.format)
+    _pp(card or {"error": "no card for that player/format",
+                 "player": matches[0]})
+    conn.close()
+
+
+def cmd_h2h(args):
+    conn = connect(); init_schema(conn)
+    bat = _find_player(conn, args.batter)
+    bowl = _find_player(conn, args.bowler)
+    if not bat or not bowl:
+        print("player not found"); conn.close(); return
+    bat_names = names_for_player(conn, bat[0]["player_id"])
+    bowl_names = names_for_player(conn, bowl[0]["player_id"])
+    _pp({"batter": bat[0]["canonical_name"], "bowler": bowl[0]["canonical_name"],
+         "format": args.format,
+         "h2h": batter_vs_bowler(conn, args.format, bat_names, bowl_names)})
+    conn.close()
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="criiq-data", description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    sub.add_parser("init").set_defaults(func=cmd_init)
+
+    d = sub.add_parser("download"); d.add_argument("--force", action="store_true")
+    d.set_defaults(func=cmd_download)
+
+    sub.add_parser("ingest").set_defaults(func=cmd_ingest)
+    sub.add_parser("identity").set_defaults(func=cmd_identity)
+    sub.add_parser("registry").set_defaults(func=cmd_registry)
+    sub.add_parser("cards").set_defaults(func=cmd_cards)
+
+    e = sub.add_parser("enrich")
+    e.add_argument("--limit", type=int, default=None)
+    e.add_argument("--refetch", action="store_true")
+    e.set_defaults(func=cmd_enrich)
+
+    sub.add_parser("rss").set_defaults(func=cmd_rss)
+
+    a = sub.add_parser("alerts")
+    a.add_argument("--confirm", type=int); a.add_argument("--dismiss", type=int)
+    a.set_defaults(func=cmd_alerts)
+
+    sub.add_parser("career").set_defaults(func=cmd_career)
+    sub.add_parser("advanced").set_defaults(func=cmd_advanced)
+    sub.add_parser("opponents").set_defaults(func=cmd_opponents)
+    sub.add_parser("impact").set_defaults(func=cmd_impact)
+    sub.add_parser("venues").set_defaults(func=cmd_venues)
+    sub.add_parser("matchups").set_defaults(func=cmd_matchups)
+    sub.add_parser("phases").set_defaults(func=cmd_phases)
+
+    sh = sub.add_parser("sheet", help="curated individual performance sheet")
+    sh.add_argument("--name", required=True); sh.add_argument("--format", default="T20")
+    sh.add_argument("--opponents", type=int, default=8)
+    sh.set_defaults(func=cmd_sheet)
+
+    s = sub.add_parser("styles")
+    s.add_argument("--scaffold", action="store_true", help="write template CSV to fill")
+    s.add_argument("--all", action="store_true", help="scaffold includes already-filled rows")
+    s.add_argument("--seed", action="store_true", help="seed role/nationality from Wikidata")
+    s.add_argument("--load", action="store_true", help="merge data/styles/player_styles.csv")
+    s.add_argument("--limit", type=int, default=None)
+    s.set_defaults(func=cmd_styles)
+
+    pr = sub.add_parser("profile")
+    pr.add_argument("--name", required=True); pr.add_argument("--format", default="T20")
+    pr.add_argument("--first", action="store_true"); pr.set_defaults(func=cmd_profile)
+
+    r = sub.add_parser("refresh")
+    r.add_argument("--force", action="store_true", help="force re-download")
+    r.add_argument("--enrich", action="store_true", help="best-effort cricinfo enrichment")
+    r.add_argument("--seed-styles", action="store_true", help="seed styles from Wikidata")
+    r.add_argument("--no-rss", action="store_true")
+    r.set_defaults(func=cmd_refresh)
+
+    sub.add_parser("status").set_defaults(func=cmd_status)
+
+    c = sub.add_parser("card")
+    c.add_argument("--name", required=True); c.add_argument("--format", default="T20")
+    c.add_argument("--first", action="store_true")
+    c.set_defaults(func=cmd_card)
+
+    h = sub.add_parser("h2h")
+    h.add_argument("--batter", required=True); h.add_argument("--bowler", required=True)
+    h.add_argument("--format", default="T20"); h.set_defaults(func=cmd_h2h)
+
+    return p
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()
