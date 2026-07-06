@@ -78,7 +78,8 @@ def _ident_to_player(conn) -> dict[str, dict]:
 
 def _registry_status(conn, fmt: str) -> dict[str, dict]:
     rows = conn.execute(
-        "SELECT player_id, retirement_status, recall_flag, age_advisory, "
+        "SELECT player_id, retirement_status, retired_formats, retirement_date, "
+        "recall_flag, age_advisory, career_phase, icc_rank, icc_rating, "
         "last_appearance_date, days_since_last_appearance "
         "FROM player_registry WHERE format=?", (fmt,)).fetchall()
     return {r["player_id"]: dict(r) for r in rows}
@@ -192,8 +193,13 @@ def build_cards_for_format(conn, fmt: str) -> int:
             "impact": impact_block,
             "status": {
                 "retirement_status": st.get("retirement_status", "UNKNOWN"),
+                "retired_formats": st.get("retired_formats"),
+                "retirement_date": st.get("retirement_date"),
                 "recall_flag": bool(st.get("recall_flag", 0)),
                 "age_advisory": bool(st.get("age_advisory", 0)),
+                "career_phase": st.get("career_phase"),
+                "icc_rank": st.get("icc_rank"),
+                "icc_rating": st.get("icc_rating"),
                 "last_appearance_date": st.get("last_appearance_date"),
                 "days_since_last_appearance": st.get("days_since_last_appearance"),
             },

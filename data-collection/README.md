@@ -13,7 +13,8 @@ A single SQLite database (`data/criiq.db`) containing:
 | `matches` / `deliveries` | every international T20I match and ball |
 | `people` | Cricsheet register incl. **`key_cricinfo`** (the match key) |
 | `players` | canonical players (stable `player_id`, joined to ESPNcricinfo id) |
-| `player_registry` | Player Status Registry per player/format (eligibility gate) |
+| `player_registry` | eligibility per player/format: retirement/activity status, recall flag, age advisory, career phase, ICC rank |
+| `icc_rankings` | ICC player rank + rating per format/discipline (loaded from a CSV) |
 | `player_career` | full career batting (avg/SR/HS/50s/100s) **and** bowling (overs/wickets/economy/avg/SR/best) per player/format |
 | `player_cards` | dashboard-ready cards: career totals, latest score, form/RFI, team impact, H2H |
 | `player_advanced` | derived strengths: phase splits, control/aggression, archetype, bowling usage, vs-pace/spin, vs-LHB/RHB |
@@ -22,6 +23,9 @@ A single SQLite database (`data/criiq.db`) containing:
 | `player_phase` | phase split (PP/middle/death) batting+bowling with **rank within own team** |
 | `player_by_venue` | batting+bowling performance **at each ground** |
 | `dismissal_matchup` | batter-vs-bowler dismissals — **bogey bowler** (overall + per opponent) and favourite victims |
+| `match_features` | **win/loss prediction** training table: leakage-safe pre-match form, H2H, toss + label |
+| `player_match_impact` | per-player per-match contribution + result label |
+| `ball_state` (parquet, `data/features/`) | per-ball in-game state + outcome label for **live win-probability** models |
 | `player_styles` | bowling style / batting hand / role + provenance |
 | `retirement_alerts` | RSS retirement alerts (PENDING until human-confirmed) |
 | `venues` | venue alias normalisation |
@@ -66,6 +70,8 @@ python -m criiq_data.cli career                 # career batting + bowling total
 python -m criiq_data.cli advanced               # derived strengths/style profiles
 python -m criiq_data.cli rss                    # scan retirement feeds
 python -m criiq_data.cli alerts [--confirm N | --dismiss N]
+python -m criiq_data.cli rankings --scaffold    # write ICC rankings CSV template
+python -m criiq_data.cli rankings               # load data/rankings/icc_rankings.csv
 
 # Player styles (for pace/spin & LHB/RHB splits)
 python -m criiq_data.cli styles --seed          # seed role/nationality from Wikidata
@@ -79,6 +85,7 @@ python -m criiq_data.cli impact                 # match-impact & importance
 python -m criiq_data.cli phases                 # phase splits + intra-team rank
 python -m criiq_data.cli venues                 # per-ground performance
 python -m criiq_data.cli matchups               # batter-vs-bowler dismissals (bogey bowler)
+python -m criiq_data.cli ml                      # win/loss + ball-state + per-match impact (model-ready)
 python -m criiq_data.cli sheet --name "A Gardner" --format T20   # full performance sheet
 
 # Inspect
@@ -141,7 +148,26 @@ The phase/control/aggression metrics above are the genuine, defensible
 equivalents derived from ball-by-ball. If a board supplies a proprietary feed,
 it can be wired into a dedicated table without touching the derived profile.
 
-### Player styles workflow (for the vs-pace/spin & LHB/RHB splits)
+### Retirement, age & ICC rank
+
+The registry no longer marks everyone `UNKNOWN`. Status is inferred from activity:
+
+- **ACTIVE** — present in an ICC ranking, or appeared within ~18 months
+- **INACTIVE** — no appearance for 3+ years (likely retired/dropped)
+- **UNKNOWN** — in between, no positive signal
+
+Age advisory and career phase are role-specific (fast bowler threshold 38, others
+40; phase bands per role). Age comes from the Wikidata DOB seed (partial coverage),
+so phase/advisory populate only where DOB is known.
+
+**ICC rank** is a strong active signal (retired players drop off ICC lists). Live
+ICC rankings load from a tenant-authenticated feed that isn't openly accessible, so
+rank is a **pluggable CSV**: `rankings --scaffold` writes `data/rankings/icc_rankings.csv`
+(columns: format, gender, discipline, rank, rating, player_name, key_cricinfo); fill
+it (ICC lists are only the top ~100 per category) and `rankings` loads it. Ranked
+players are then marked ACTIVE and carry their rank/rating.
+
+## Player styles workflow (for the vs-pace/spin & LHB/RHB splits)
 
 Bowling style and batting hand are **not** in Cricsheet, and ESPNcricinfo blocks
 scraping. Wikidata (via the ESPNcricinfo-id property) supplies **nationality**

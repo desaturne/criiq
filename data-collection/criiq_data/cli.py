@@ -4,8 +4,9 @@ import argparse
 import json
 
 from . import advanced, career, download_cricsheet, download_register, identity, impact
-from . import ingest, matchups, opponents, phases, player_card, refresh, registry
-from . import rss_monitor, scrape_cricinfo, sheet, styles, venue_stats
+from . import ingest, matchups, ml_features, opponents, overrides, phases, player_card
+from . import rankings, refresh, registry, rss_monitor, scrape_cricinfo, sheet, styles
+from . import venue_stats
 from .db import connect, get_meta, init_schema, table_count
 from .h2h import batter_vs_bowler, names_for_player
 from .logging_utils import get_logger
@@ -116,6 +117,29 @@ def cmd_phases(args):
     _pp(phases.build_phases(conn)); conn.close()
 
 
+def cmd_ml(args):
+    conn = connect(); init_schema(conn)
+    _pp(ml_features.build_all(conn)); conn.close()
+
+
+def cmd_rankings(args):
+    conn = connect(); init_schema(conn)
+    if args.scaffold:
+        print("template written:", rankings.scaffold_csv())
+    else:
+        _pp(rankings.load_csv(conn))
+    conn.close()
+
+
+def cmd_status_override(args):
+    conn = connect(); init_schema(conn)
+    if args.scaffold:
+        print("template written:", overrides.scaffold_csv())
+    else:
+        _pp(overrides.load_csv(conn))
+    conn.close()
+
+
 def cmd_sheet(args):
     conn = connect(); init_schema(conn)
     row = sheet.find_player(conn, args.name)
@@ -165,7 +189,12 @@ def cmd_status(args):
            ["matches", "deliveries", "players", "player_registry",
             "player_career", "player_cards", "player_advanced",
             "player_vs_opponent", "player_impact", "player_by_venue",
-            "dismissal_matchup", "player_phase", "retirement_alerts"]}
+            "dismissal_matchup", "player_phase", "match_features",
+            "player_match_impact", "icc_rankings", "retirement_alerts"]}
+    out["retirement_status_breakdown"] = {r["retirement_status"]: r["n"] for r in conn.execute(
+        "SELECT retirement_status, COUNT(*) n FROM player_registry GROUP BY retirement_status")}
+    out["age_advisory_flagged"] = conn.execute(
+        "SELECT COUNT(*) n FROM player_registry WHERE age_advisory=1").fetchone()["n"]
     out["styles_coverage"] = styles.coverage(conn)
     out["players_with_cricinfo"] = conn.execute(
         "SELECT COUNT(*) n FROM players WHERE key_cricinfo IS NOT NULL "
@@ -239,6 +268,15 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("venues").set_defaults(func=cmd_venues)
     sub.add_parser("matchups").set_defaults(func=cmd_matchups)
     sub.add_parser("phases").set_defaults(func=cmd_phases)
+    sub.add_parser("ml").set_defaults(func=cmd_ml)
+
+    rk = sub.add_parser("rankings")
+    rk.add_argument("--scaffold", action="store_true", help="write data/rankings/icc_rankings.csv template")
+    rk.set_defaults(func=cmd_rankings)
+
+    so = sub.add_parser("status-override")
+    so.add_argument("--scaffold", action="store_true", help="write data/overrides/player_status.csv template")
+    so.set_defaults(func=cmd_status_override)
 
     sh = sub.add_parser("sheet", help="curated individual performance sheet")
     sh.add_argument("--name", required=True); sh.add_argument("--format", default="T20")

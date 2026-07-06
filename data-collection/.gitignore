@@ -6,6 +6,8 @@ data/interim/
 data/quarantine/
 data/styles/
 data/features/
+data/rankings/
+data/overrides/
 data/*.db
 data/*.db-journal
 data/*.db-wal

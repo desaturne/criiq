@@ -3,8 +3,8 @@ from __future__ import annotations
 import datetime as dt
 
 from . import advanced, career, download_cricsheet, download_register, identity, impact
-from . import ingest, matchups, opponents, phases, player_card, registry, rss_monitor
-from . import scrape_cricinfo, styles, venue_stats
+from . import ingest, matchups, ml_features, opponents, overrides, phases, player_card
+from . import rankings, registry, rss_monitor, scrape_cricinfo, styles, venue_stats
 from .config import SETTINGS
 from .db import connect, get_meta, init_schema, set_meta, table_count
 from .logging_utils import get_logger
@@ -56,6 +56,8 @@ def run(*, force_download: bool = False, enrich: bool = False,
             summary["rss"] = {"error": str(exc)}
 
     log.info("== 8/9 registry + career + player cards ==")
+    summary["icc_rankings"] = rankings.load_csv(conn)
+    summary["status_overrides"] = overrides.load_csv(conn)
     summary["registry"] = registry.build_registry(conn)
     summary["career"] = career.build_career(conn)
     summary["cards"] = player_card.build_cards(conn)
@@ -69,6 +71,9 @@ def run(*, force_download: bool = False, enrich: bool = False,
     summary["venue"] = venue_stats.build_venue_stats(conn)
     summary["matchups"] = matchups.build_matchups(conn)
     summary["phases"] = phases.build_phases(conn)
+
+    log.info("== ML feature/label datasets (win-loss, ball-state, per-match impact) ==")
+    summary["ml_features"] = ml_features.build_all(conn)
 
     set_meta(conn, "last_successful_refresh", dt.datetime.now().isoformat(timespec="seconds"))
     conn.commit()
@@ -86,6 +91,8 @@ def run(*, force_download: bool = False, enrich: bool = False,
         "venue_rows": table_count(conn, "player_by_venue"),
         "matchup_rows": table_count(conn, "dismissal_matchup"),
         "phase_rows": table_count(conn, "player_phase"),
+        "match_features": table_count(conn, "match_features"),
+        "player_match_impact": table_count(conn, "player_match_impact"),
     }
     summary["elapsed_s"] = round((dt.datetime.now() - started).total_seconds(), 1)
     conn.close()

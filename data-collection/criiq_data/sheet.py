@@ -32,6 +32,16 @@ def _summary(card, career, imp, vs_opp, best_phase, bogey) -> list[str]:
                         f"age {idn.get('age')}" if idn.get("age") else None] if b]
     if bits:
         out.append(" | ".join(str(b) for b in bits))
+    st = card.get("status") if card else None
+    if st:
+        sbits = [f"Status: {st.get('retirement_status', 'UNKNOWN')}"]
+        if st.get("retirement_date"):
+            sbits.append(f"since {st['retirement_date']}")
+        if st.get("icc_rank"):
+            sbits.append(f"ICC rank #{st['icc_rank']}")
+        if st.get("career_phase"):
+            sbits.append(st["career_phase"])
+        out.append(" | ".join(sbits))
     if imp:
         out.append(f"Importance {imp['importance_score']}/100 - "
                    f"wins {imp['win_pct']}% of matches featured, {imp['player_of_match']} PotM")

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from criiq_data import (career, identity, impact, matchups, opponents, phases,
-                        player_card, registry, venue_stats)
+from criiq_data import (career, identity, impact, matchups, ml_features, opponents,
+                        phases, player_card, rankings, registry, venue_stats)
 from criiq_data.db import connect, init_schema
 from criiq_data.h2h import batter_vs_bowler, names_for_player
 from criiq_data.ingest import _parse_info, _shape_deliveries
@@ -115,7 +115,7 @@ def test_registry_conservative_and_recency(conn):
     registry.build_registry_for_format(conn, "T20")
     aa = conn.execute("SELECT * FROM player_registry WHERE player_id=?",
                       (identity.player_id_for("id_bat"),)).fetchone()
-    assert aa["retirement_status"] == "UNKNOWN"
+    assert aa["retirement_status"] == "ACTIVE"
     assert aa["last_appearance_date"] == "2025-06-01"
     assert aa["recall_flag"] == 0
 
@@ -198,6 +198,83 @@ def test_phase_intra_team_rank(conn):
     assert rows
     pp = [r for r in rows if r["phase"] == "powerplay"]
     assert pp and pp[0]["bat_runs"] == 20
+
+
+def test_match_features_winloss(conn):
+    ml_features.build_match_features_for_format(conn, "T20")
+    m2 = conn.execute("SELECT * FROM match_features WHERE match_id='M2'").fetchone()
+    assert m2["label_team1_won"] == 1            # Team A won M2
+    assert m2["team1_form_winpct"] == 1.0        # Team A won the prior match M1
+    assert m2["team1_avg_score"] == 7.0          # Team A scored 7 in M1
+
+
+def test_player_match_impact(conn):
+    ml_features.build_player_match_impact_for_format(conn, "T20")
+    row = conn.execute("SELECT * FROM player_match_impact WHERE player_id=? AND match_id='M2'",
+                       (identity.player_id_for("id_bat"),)).fetchone()
+    assert row["runs"] == 13 and row["won"] == 1
+    assert row["bat_contribution_pct"] == 100.0  # AA scored all of Team A's runs
+
+
+def test_ball_state(conn, tmp_path, monkeypatch):
+    monkeypatch.setattr(ml_features, "FEATURES_DIR", tmp_path)
+    n = ml_features.build_ball_state_for_format(conn, "T20")
+    assert n == 10                               # 6 balls in M1 + 4 in M2
+    df = pd.read_parquet(tmp_path / "ball_state_T20.parquet")
+    assert "label_batting_team_won" in df.columns
+    assert int(df["score"].max()) == 13
+    assert int(df["label_batting_team_won"].max()) == 1
+
+
+def test_status_and_age_helpers():
+    from criiq_data.registry import _status, _career_phase, _age_advisory, _category
+    assert _status(True, 9999) == "ACTIVE"
+    assert _status(False, 100) == "ACTIVE"
+    assert _status(False, 2000) == "INACTIVE"
+    assert _status(False, 800) == "UNKNOWN"
+    assert _career_phase(40, "batter") == "DECLINING"
+    assert _career_phase(28, "batter") == "PEAK"
+    assert _career_phase(20, "pace") == "EMERGING"
+    assert _age_advisory(39, "pace") == 1
+    assert _age_advisory(39, "batter") == 0
+    assert _category("Bowler", "Right-arm fast") == "pace"
+    assert _category("Wicketkeeper batter", None) == "keeper"
+
+
+def test_registry_flags(conn):
+    conn.execute("UPDATE players SET date_of_birth='1985-06-01' WHERE cricsheet_identifier='id_bat'")
+    conn.commit()
+    registry.build_registry_for_format(conn, "T20")
+    aa = conn.execute("SELECT * FROM player_registry WHERE player_id=?",
+                      (identity.player_id_for("id_bat"),)).fetchone()
+    assert aa["retirement_status"] == "ACTIVE"     # last appearance is recent
+    assert aa["age_advisory"] == 1                  # age 40 batter (>= 40)
+    assert aa["career_phase"] == "DECLINING"
+
+
+def test_rankings_load_marks_active(conn, tmp_path):
+    p = tmp_path / "r.csv"
+    p.write_text("format,gender,discipline,rank,rating,player_name,key_cricinfo\n"
+                 "T20,female,batting,1,800,AA Batter,111\n", encoding="utf-8")
+    res = rankings.load_csv(conn, p)
+    assert res["loaded"] == 1
+    pid = identity.player_id_for("id_bat")
+    assert rankings.current_rank(conn, pid, "T20")["rank"] == 1
+    assert pid in rankings.ranked_ids(conn, "T20")
+
+
+def test_status_override(conn, tmp_path):
+    from criiq_data import overrides
+    p = tmp_path / "ov.csv"
+    p.write_text("player_name,key_cricinfo,format,retirement_status,retirement_date,note\n"
+                 "AA Batter,111,T20,RETIRED_FORMAT,2025-01-01,test\n", encoding="utf-8")
+    overrides.load_csv(conn, p)
+    registry.build_registry_for_format(conn, "T20")
+    aa = conn.execute("SELECT * FROM player_registry WHERE player_id=?",
+                      (identity.player_id_for("id_bat"),)).fetchone()
+    assert aa["retirement_status"] == "RETIRED_FORMAT"   # override beats inference
+    assert aa["retired_formats"] == "T20"
+    assert aa["retirement_date"] == "2025-01-01"
 
 
 def test_card_age_from_dob(conn):

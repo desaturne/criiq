@@ -326,7 +326,89 @@ CREATE TABLE IF NOT EXISTS discrepancies (
     cricinfo_value  TEXT,
     detected_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS match_features (
+    match_id              TEXT PRIMARY KEY,
+    format                TEXT,
+    gender                TEXT,
+    date                  TEXT,
+    venue_id              TEXT,
+    team1                 TEXT,
+    team2                 TEXT,
+    toss_winner           TEXT,
+    toss_decision         TEXT,
+    bat_first_team        TEXT,
+    toss_winner_is_team1  INTEGER,
+    team1_bat_first       INTEGER,
+    form_matches          INTEGER,
+    team1_form_winpct     REAL,
+    team2_form_winpct     REAL,
+    team1_avg_score       REAL,
+    team2_avg_score       REAL,
+    team1_avg_conceded    REAL,
+    team2_avg_conceded    REAL,
+    h2h_team1_winpct      REAL,
+    winpct_diff           REAL,
+    avg_score_diff        REAL,
+    label_team1_won       INTEGER,
+    result_type           TEXT,
+    updated_at            TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_mf_fmt ON match_features(format, gender, date);
+
+CREATE TABLE IF NOT EXISTS player_match_impact (
+    player_id            TEXT NOT NULL,
+    match_id             TEXT NOT NULL,
+    format               TEXT,
+    date                 TEXT,
+    team                 TEXT,
+    opponent             TEXT,
+    won                  INTEGER,
+    runs                 INTEGER,
+    balls_faced          INTEGER,
+    bat_strike_rate      REAL,
+    bat_contribution_pct REAL,
+    wickets              INTEGER,
+    balls_bowled         INTEGER,
+    runs_conceded        INTEGER,
+    economy              REAL,
+    bowl_contribution_pct REAL,
+    impact_rating        REAL,
+    updated_at           TEXT,
+    PRIMARY KEY (player_id, match_id)
+);
+CREATE INDEX IF NOT EXISTS idx_pmi_player ON player_match_impact(player_id, format);
+CREATE INDEX IF NOT EXISTS idx_pmi_match ON player_match_impact(match_id);
+
+CREATE TABLE IF NOT EXISTS icc_rankings (
+    player_id   TEXT NOT NULL,
+    format      TEXT NOT NULL,
+    discipline  TEXT NOT NULL,
+    gender      TEXT,
+    rank        INTEGER,
+    rating      INTEGER,
+    player_name TEXT,
+    updated_at  TEXT,
+    PRIMARY KEY (player_id, format, discipline)
+);
+CREATE INDEX IF NOT EXISTS idx_icc_fmt ON icc_rankings(format, discipline, rank);
+
+CREATE TABLE IF NOT EXISTS status_overrides (
+    player_id         TEXT NOT NULL,
+    format            TEXT NOT NULL,
+    retirement_status TEXT,
+    retirement_date   TEXT,
+    note              TEXT,
+    source            TEXT,
+    updated_at        TEXT,
+    PRIMARY KEY (player_id, format)
+);
 """
+
+_MIGRATIONS = [
+    "ALTER TABLE player_registry ADD COLUMN icc_rank INTEGER",
+    "ALTER TABLE player_registry ADD COLUMN icc_rating INTEGER",
+]
 
 
 def connect(db_path: Path | str | None = None) -> sqlite3.Connection:
@@ -339,6 +421,11 @@ def connect(db_path: Path | str | None = None) -> sqlite3.Connection:
 
 def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    for stmt in _MIGRATIONS:
+        try:
+            conn.execute(stmt)
+        except sqlite3.OperationalError:
+            pass
     conn.commit()
 
 

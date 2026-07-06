@@ -16,10 +16,15 @@ QUARANTINE_DIR = DATA_DIR / "quarantine"
 FEATURES_DIR = DATA_DIR / "features"
 STYLES_DIR = DATA_DIR / "styles"
 MANUAL_STYLES_CSV = STYLES_DIR / "player_styles.csv"
+RANKINGS_DIR = DATA_DIR / "rankings"
+ICC_RANKINGS_CSV = RANKINGS_DIR / "icc_rankings.csv"
+OVERRIDES_DIR = DATA_DIR / "overrides"
+PLAYER_STATUS_CSV = OVERRIDES_DIR / "player_status.csv"
 DB_PATH = Path(os.environ.get("CRIIQ_DB", DATA_DIR / "criiq.db"))
 
 ALL_DIRS = [DATA_DIR, RAW_DIR, REGISTER_DIR, CACHE_DIR, INTERIM_DIR,
-            QUARANTINE_DIR, FEATURES_DIR, STYLES_DIR, CACHE_DIR / "cricinfo"]
+            QUARANTINE_DIR, FEATURES_DIR, STYLES_DIR, RANKINGS_DIR, OVERRIDES_DIR,
+            CACHE_DIR / "cricinfo"]
 
 WIKIDATA_SPARQL = "https://query.wikidata.org/sparql"
 
@@ -82,6 +87,10 @@ class Settings:
     fuzzy_threshold: int = 88
 
     recall_flag_days: int = 180
+    active_window_days: int = 540
+    inactive_window_days: int = 1095
+    age_advisory_pace: int = 38
+    age_advisory_default: int = 40
     registry_refresh_days: int = 7
     staleness_warn_days: int = 14
 
