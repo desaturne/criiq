@@ -82,7 +82,8 @@ def _registry_status(conn, fmt: str) -> dict[str, dict]:
         "SELECT player_id, retirement_status, retired_formats, retirement_date, "
         "recall_flag, age_advisory, career_phase, icc_rank, icc_rating, "
         "activity_signal, status_reason, icc_discipline, "
-        "last_appearance_date, days_since_last_appearance "
+        "last_appearance_date, days_since_last_appearance, "
+        "selection_rate, window_player_matches, window_team_matches "
         "FROM player_registry WHERE format=?", (fmt,)).fetchall()
     return {r["player_id"]: dict(r) for r in rows}
 
@@ -209,6 +210,9 @@ def build_cards_for_format(conn, fmt: str) -> int:
                 "icc_discipline": st.get("icc_discipline"),
                 "last_appearance_date": st.get("last_appearance_date"),
                 "days_since_last_appearance": st.get("days_since_last_appearance"),
+                "selection_rate": st.get("selection_rate"),
+                "window_player_matches": st.get("window_player_matches"),
+                "window_team_matches": st.get("window_team_matches"),
             },
             "icc_ranking": {
                 "ranked": bool(ranking_rows),

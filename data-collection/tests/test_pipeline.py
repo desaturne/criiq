@@ -125,6 +125,39 @@ def test_registry_conservative_and_recency(conn):
     assert dd["recall_flag"] == 1
 
 
+def test_registry_flags_inconsistent_selection(tmp_path):
+    # Team A plays 10 matches in one recent season. A regular is picked for all
+    # of them (ACTIVE); an in-and-out player is picked for only 2 (INCONSISTENT).
+    c = connect(tmp_path / "sel.db")
+    init_schema(c)
+    _add_player_meta(c, "Reg Regular", "id_reg", "901")
+    _add_player_meta(c, "Ino Inout", "id_ino", "902")
+    for i in range(10):
+        mid = f"S{i}"
+        date = f"2025-{(i // 4) + 1:02d}-{(i % 4) * 7 + 1:02d}"
+        _add_match(c, mid, date, "Team A", "Team B", "Team A")
+        _add_match_player(c, mid, "Team A", "Reg Regular")
+        if i < 2:                      # Ino appears in only 2 of the 10 matches
+            _add_match_player(c, mid, "Team A", "Ino Inout")
+    c.commit()
+    identity.resolve_players(c)
+
+    registry.build_registry_for_format(c, "T20")
+    reg = c.execute("SELECT * FROM player_registry WHERE player_id=?",
+                    (identity.player_id_for("id_reg"),)).fetchone()
+    assert reg["retirement_status"] == "ACTIVE"
+    assert reg["activity_signal"] == "regular_selection"
+    assert reg["selection_rate"] == 1.0
+    assert reg["window_team_matches"] == 10
+
+    ino = c.execute("SELECT * FROM player_registry WHERE player_id=?",
+                    (identity.player_id_for("id_ino"),)).fetchone()
+    assert ino["retirement_status"] == "INCONSISTENT"
+    assert ino["activity_signal"] == "in_and_out"
+    assert ino["selection_rate"] == 0.2
+    c.close()
+
+
 def test_player_card_contents(conn):
     registry.build_registry_for_format(conn, "T20")
     player_card.build_cards_for_format(conn, "T20")
@@ -239,6 +272,33 @@ def test_status_and_age_helpers():
     assert _age_advisory(39, "batter") == 0
     assert _category("Bowler", "Right-arm fast") == "pace"
     assert _category("Wicketkeeper batter", None) == "keeper"
+
+
+def test_classify_selection_consistency():
+    from criiq_data.registry import _classify
+    # a current ICC ranking always confirms ACTIVE, whatever the selection rate
+    assert _classify(True, 100, 0.1) == ("ACTIVE", "icc_ranked",
+                                         "present in current ICC rankings")
+    # recent + regularly picked -> ACTIVE
+    assert _classify(False, 100, 0.9)[0] == "ACTIVE"
+    assert _classify(False, 100, 0.9)[1] == "regular_selection"
+    # recent but rarely picked -> INCONSISTENT (in-and-out)
+    status, signal, reason = _classify(False, 100, 0.2)
+    assert status == "INCONSISTENT"
+    assert signal == "in_and_out"
+    assert "20%" in reason
+    # exactly at the regular threshold counts as ACTIVE; just below is INCONSISTENT
+    from criiq_data.config import SETTINGS
+    thr = SETTINGS.regular_selection_rate
+    assert _classify(False, 100, thr)[0] == "ACTIVE"
+    assert _classify(False, 100, round(thr - 0.05, 3))[0] == "INCONSISTENT"
+    # recent but sample too small to judge consistency -> stays ACTIVE
+    assert _classify(False, 100, None) == ("ACTIVE", "recent_appearance",
+                                           "appeared inside active window")
+    # long absence -> INACTIVE regardless of a stale selection rate
+    assert _classify(False, 2000, 0.9)[0] == "INACTIVE"
+    # aging gap, no ranking -> UNKNOWN
+    assert _classify(False, 800, None)[0] == "UNKNOWN"
 
 
 def test_registry_flags(conn):

@@ -13,7 +13,7 @@ A single SQLite database (`data/criiq.db`) containing:
 | `matches` / `deliveries` | every international T20I match and ball |
 | `people` | Cricsheet register incl. **`key_cricinfo`** (the match key) |
 | `players` | canonical players (stable `player_id`, joined to ESPNcricinfo id) |
-| `player_registry` | eligibility per player/format: retirement/activity status, recall flag, age advisory, career phase, ICC rank |
+| `player_registry` | eligibility per player/format: activity status (ACTIVE/INCONSISTENT/INACTIVE/UNKNOWN/RETIRED), selection rate, recall flag, age advisory, career phase, ICC rank |
 | `icc_rankings` | ICC player rank + rating per format/discipline, with source URL/path, rank date, and extraction timestamp |
 | `player_career` | full career batting (avg/SR/HS/50s/100s) **and** bowling (overs/wickets/economy/avg/SR/best) per player/format |
 | `player_cards` | dashboard-ready cards: career totals, latest score, form/RFI, team impact, H2H |
@@ -151,23 +151,44 @@ it can be wired into a dedicated table without touching the derived profile.
 
 ### Retirement, age & ICC rank
 
-The registry no longer marks everyone `UNKNOWN`. Status is inferred from activity:
+The registry no longer marks everyone `UNKNOWN`. Status is inferred from the
+**complete** cricsheet appearance history — recency **and** how regularly the
+player was selected — with the ICC ranking as a confirming bonus:
 
-- **ACTIVE** — present in an ICC ranking, or appeared within ~18 months
-- **INACTIVE** — no appearance for 3+ years (likely retired/dropped)
-- **UNKNOWN** — in between, no positive signal
+- **ACTIVE** — present in an ICC (top-10) ranking; or appeared recently *and* was
+  picked for at least `regular_selection_rate` (default 35%) of their team's
+  matches since they came into the side; or appeared recently for a team with too
+  small a sample to judge consistency.
+- **INCONSISTENT** — appeared recently but was an in-and-out selection (picked for
+  fewer than the regular threshold of their team's matches since first appearing
+  in the window). This is the new bucket for rotation/fringe players, distinct
+  from both regulars and the retired/dropped.
+- **INACTIVE** — no appearance for 3+ years (likely retired/dropped).
+- **UNKNOWN** — an aging gap (outside the active window but not yet stale) with no
+  positive signal.
+
+Recency is measured relative to the **most recent match in the data** (`as_of`),
+not wall-clock time, so re-running the same snapshot is reproducible and players
+in the latest fixtures never drift into "stale". The registry stores
+`selection_rate`, `window_player_matches` and `window_team_matches` so each
+status is explainable; `status_reason` spells it out in words. Windows and
+thresholds live in `Settings` (`selection_window_days`, `min_window_team_matches`,
+`regular_selection_rate`).
 
 Age advisory and career phase are role-specific (fast bowler threshold 38, others
 40; phase bands per role). Age comes from the Wikidata DOB seed (partial coverage),
 so phase/advisory populate only where DOB is known.
 
-**ICC rank** is a strong active signal (retired players drop off ICC lists). The
-rankings importer uses ICC's public Sportz Interactive ranking endpoint only when a
-public client id is configured with `CRIIQ_ICC_RANKINGS_CLIENT_ID`; it sends the
-project user agent, requests JSON directly, and refuses to guess credentials or bypass
-access controls. Successful fetches are persisted to `data/rankings/icc_rankings.csv`.
-If no client id is configured, rank remains a **pluggable CSV**: `rankings --scaffold`
-writes the template (columns: format, gender, discipline, rank, rating, player_name,
+**ICC rank** confirms the elite few but is *not* the primary signal: ICC publishes
+only the **top 10** per discipline (Wikipedia carries the same top 10, and the full
+list sits behind ICC's credentialed Sportz Interactive widget), so the appearance
+history above does the heavy lifting for everyone below the top 10. The rankings
+importer uses ICC's public Sportz Interactive endpoint only when a public client id
+is configured with `CRIIQ_ICC_RANKINGS_CLIENT_ID`; it sends the project user agent,
+requests JSON directly, and refuses to guess credentials or bypass access controls.
+Successful fetches are persisted to `data/rankings/icc_rankings.csv`. If no client id
+is configured, rank remains a **pluggable CSV**: `rankings --scaffold` writes the
+template (columns: format, gender, discipline, rank, rating, player_name,
 key_cricinfo); fill it and `rankings` loads it. Ranked players are then marked
 ACTIVE and carry their rank/rating.
 

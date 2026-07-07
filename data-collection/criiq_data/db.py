@@ -127,6 +127,9 @@ CREATE TABLE IF NOT EXISTS player_registry (
     activity_signal           TEXT,
     status_reason             TEXT,
     icc_discipline            TEXT,
+    selection_rate            REAL,
+    window_player_matches     INTEGER,
+    window_team_matches       INTEGER,
     registry_last_updated     TEXT,
     PRIMARY KEY (player_id, format)
 );
@@ -419,6 +422,9 @@ _MIGRATIONS = [
     "ALTER TABLE player_registry ADD COLUMN activity_signal TEXT",
     "ALTER TABLE player_registry ADD COLUMN status_reason TEXT",
     "ALTER TABLE player_registry ADD COLUMN icc_discipline TEXT",
+    "ALTER TABLE player_registry ADD COLUMN selection_rate REAL",
+    "ALTER TABLE player_registry ADD COLUMN window_player_matches INTEGER",
+    "ALTER TABLE player_registry ADD COLUMN window_team_matches INTEGER",
     "ALTER TABLE icc_rankings ADD COLUMN matched INTEGER DEFAULT 1",
     "ALTER TABLE icc_rankings ADD COLUMN source TEXT",
     "ALTER TABLE icc_rankings ADD COLUMN source_url TEXT",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import bisect
 import datetime as dt
 
 import pandas as pd
@@ -56,24 +57,33 @@ def _age_advisory(age, cat) -> int:
     return 1 if age >= thr else 0
 
 
-def _status(is_ranked, days_since) -> str:
-    if is_ranked:
-        return "ACTIVE"
-    if days_since <= SETTINGS.active_window_days:
-        return "ACTIVE"
-    if days_since > SETTINGS.inactive_window_days:
-        return "INACTIVE"
-    return "UNKNOWN"
+def _classify(is_ranked: bool, days_since: int,
+              selection_rate: float | None) -> tuple[str, str, str]:
+    """Classify a player's activity status from appearance signals.
 
-
-def _status_details(is_ranked: bool, days_since: int) -> tuple[str, str, str]:
+    Precedence: a current ICC (top-10) ranking confirms ACTIVE; a long absence
+    marks INACTIVE (likely retired/out). For players who *did* appear recently,
+    the selection rate (share of their team's matches they were picked for over
+    the recent window) separates regularly-selected ACTIVE players from in-and-out
+    INCONSISTENT ones. selection_rate is None when the team's sample is too small
+    to judge, in which case a recent appearance alone keeps the player ACTIVE.
+    """
     if is_ranked:
         return "ACTIVE", "icc_ranked", "present in current ICC rankings"
-    if days_since <= SETTINGS.active_window_days:
-        return "ACTIVE", "recent_appearance", "appeared inside active window"
     if days_since > SETTINGS.inactive_window_days:
         return "INACTIVE", "stale_no_rank", "no recent appearance and absent from ICC rankings"
+    if days_since <= SETTINGS.active_window_days:
+        if selection_rate is not None:
+            pct = round(100 * selection_rate)
+            if selection_rate >= SETTINGS.regular_selection_rate:
+                return "ACTIVE", "regular_selection", f"recent and regularly selected ({pct}% of team matches)"
+            return "INCONSISTENT", "in_and_out", f"recent but selected in only {pct}% of team matches"
+        return "ACTIVE", "recent_appearance", "appeared inside active window"
     return "UNKNOWN", "aging_no_rank", "outside active window but not stale enough for inactive"
+
+
+def _status(is_ranked, days_since) -> str:
+    return _classify(is_ranked, days_since, None)[0]
 
 
 def _players_meta(conn) -> dict[str, dict]:
@@ -107,20 +117,52 @@ def build_registry_for_format(conn, fmt: str) -> int:
     ranked = ranked_ids(conn, fmt)
     overrides = overrides_map(conn, fmt)
     as_of = apps["date"].max()
-    today = dt.date.today()
+    # Recency is measured relative to the most recent match in the data, not
+    # wall-clock time, so re-running the same snapshot is reproducible and a
+    # player who featured in the latest fixtures is never drifted into "stale".
+    as_of_date = as_of.date()
     now = dt.datetime.now().isoformat(timespec="seconds")
+
+    # Selection-consistency window. For each player we compare how many matches
+    # they were picked for against how many their team played *since the player's
+    # first appearance in the window* — so a mid-window debutant who then played
+    # every game reads as a regular, not as in-and-out. Only appearances within
+    # selection_window_days before as_of are considered.
+    window_start = as_of - pd.Timedelta(days=SETTINGS.selection_window_days)
+    win = apps[apps["date"] >= window_start]
+    grp = win.groupby("identifier")
+    player_win = grp["match_id"].nunique().to_dict()
+    first_win = grp["date"].min().to_dict()
+    recent_team = (grp["team"].agg(lambda s: s.value_counts().idxmax()).to_dict()
+                   if not win.empty else {})
+    match_meta = apps.drop_duplicates("match_id")
+    match_meta = match_meta[match_meta["date"] >= window_start]
+    _td = pd.concat([
+        match_meta[["team1", "date"]].rename(columns={"team1": "team"}),
+        match_meta[["team2", "date"]].rename(columns={"team2": "team"}),
+    ])
+    team_dates = {t: sorted(g["date"].tolist()) for t, g in _td.groupby("team")}
 
     last_idx = apps.sort_values("date").groupby("identifier").tail(1).set_index("identifier")
 
     rows = []
-    active = inactive = retired = advisories = 0
+    active = inactive = inconsistent = retired = advisories = 0
     for ident, last in last_idx.iterrows():
         pm = meta.get(ident)
         if not pm:
             continue
         pid = pm["player_id"]
         last_date = last["date"].date()
-        days_since = max(0, (today - last_date).days)
+        days_since = max(0, (as_of_date - last_date).days)
+
+        team = recent_team.get(ident) or last["team"]
+        window_player_matches = int(player_win.get(ident, 0))
+        fw = first_win.get(ident)
+        dates = team_dates.get(team, [])
+        window_team_matches = (len(dates) - bisect.bisect_left(dates, fw)) if (fw is not None and dates) else 0
+        selection_rate = None
+        if window_team_matches >= SETTINGS.min_window_team_matches:
+            selection_rate = round(min(window_player_matches / window_team_matches, 1.0), 3)
 
         dob = pm.get("date_of_birth")
         age = None
@@ -134,7 +176,7 @@ def build_registry_for_format(conn, fmt: str) -> int:
         phase = _career_phase(age, cat)
         advisory = _age_advisory(age, cat)
         is_ranked = pid in ranked
-        status, activity_signal, status_reason = _status_details(is_ranked, days_since)
+        status, activity_signal, status_reason = _classify(is_ranked, days_since, selection_rate)
         recall = 0 if is_ranked else (1 if days_since > SETTINGS.recall_flag_days else 0)
         rk = current_rank(conn, pid, fmt) if is_ranked else None
         discipline = rk["discipline"] if rk else None
@@ -152,6 +194,7 @@ def build_registry_for_format(conn, fmt: str) -> int:
 
         active += status == "ACTIVE"
         inactive += status == "INACTIVE"
+        inconsistent += status == "INCONSISTENT"
         retired += status in ("RETIRED_ALL", "RETIRED_FORMAT")
         advisories += advisory
 
@@ -162,7 +205,8 @@ def build_registry_for_format(conn, fmt: str) -> int:
             pm.get("role") or pm.get("derived_role"),
             pm.get("bowling_style"), pm.get("batting_hand"), pm.get("nationality"),
             recall, advisory, rk["rank"] if rk else None, rk["rating"] if rk else None,
-            activity_signal, status_reason, discipline, now,
+            activity_signal, status_reason, discipline,
+            selection_rate, window_player_matches, window_team_matches, now,
         ))
 
     conn.executemany(
@@ -171,8 +215,10 @@ def build_registry_for_format(conn, fmt: str) -> int:
         "last_appearance_opponent, days_since_last_appearance, date_of_birth, "
         "age_at_last_match, career_phase, role, bowling_style, batting_hand, "
         "nationality, recall_flag, age_advisory, icc_rank, icc_rating, "
-        "activity_signal, status_reason, icc_discipline, registry_last_updated) "
-        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+        "activity_signal, status_reason, icc_discipline, "
+        "selection_rate, window_player_matches, window_team_matches, "
+        "registry_last_updated) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
         "ON CONFLICT(player_id, format) DO UPDATE SET "
         "retirement_status=excluded.retirement_status, "
         "retired_formats=excluded.retired_formats, "
@@ -185,13 +231,17 @@ def build_registry_for_format(conn, fmt: str) -> int:
         "age_advisory=excluded.age_advisory, icc_rank=excluded.icc_rank, "
         "icc_rating=excluded.icc_rating, activity_signal=excluded.activity_signal, "
         "status_reason=excluded.status_reason, icc_discipline=excluded.icc_discipline, "
+        "selection_rate=excluded.selection_rate, "
+        "window_player_matches=excluded.window_player_matches, "
+        "window_team_matches=excluded.window_team_matches, "
         "registry_last_updated=excluded.registry_last_updated",
         rows,
     )
     conn.commit()
     ranked_count = sum(1 for r in rows if r[19] == "icc_ranked")
-    log.info("registry %s: %d players (as-of %s) | active=%d inactive=%d retired=%d recall=%d age-advisory=%d ranked=%d",
-             fmt, len(rows), as_of.date(), active, inactive, retired,
+    log.info("registry %s: %d players (as-of %s) | active=%d inconsistent=%d inactive=%d "
+             "retired=%d recall=%d age-advisory=%d ranked=%d",
+             fmt, len(rows), as_of.date(), active, inconsistent, inactive, retired,
              sum(r[15] for r in rows), advisories, ranked_count)
     return len(rows)
 

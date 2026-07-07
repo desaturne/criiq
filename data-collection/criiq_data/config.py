@@ -94,6 +94,18 @@ class Settings:
     recall_flag_days: int = 180
     active_window_days: int = 540
     inactive_window_days: int = 1095
+    # Selection-consistency window: how often was the player picked, relative to
+    # the matches their team actually played, over a rolling recent window. Used
+    # to separate regularly-selected ACTIVE players from in-and-out (INCONSISTENT)
+    # ones. selection_rate is only trusted once the team has played at least
+    # min_window_team_matches in the window; below that the sample is too small.
+    selection_window_days: int = 730
+    min_window_team_matches: int = 8
+    # Share of their team's matches (since first appearing in the window) a player
+    # must feature in to count as a regular ACTIVE selection rather than in-and-out
+    # INCONSISTENT. Kept modest because packed international calendars rotate even
+    # frontline players heavily; tune per competition if needed.
+    regular_selection_rate: float = 0.35
     age_advisory_pace: int = 38
     age_advisory_default: int = 40
     registry_refresh_days: int = 7
