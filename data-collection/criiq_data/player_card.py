@@ -10,6 +10,7 @@ from .config import SETTINGS, enabled_sources
 from .db import set_meta
 from .h2h import player_vs_team
 from .logging_utils import get_logger
+from .rankings import player_rankings
 from .stats import build_innings
 
 log = get_logger("player_card")
@@ -80,6 +81,7 @@ def _registry_status(conn, fmt: str) -> dict[str, dict]:
     rows = conn.execute(
         "SELECT player_id, retirement_status, retired_formats, retirement_date, "
         "recall_flag, age_advisory, career_phase, icc_rank, icc_rating, "
+        "activity_signal, status_reason, icc_discipline, "
         "last_appearance_date, days_since_last_appearance "
         "FROM player_registry WHERE format=?", (fmt,)).fetchall()
     return {r["player_id"]: dict(r) for r in rows}
@@ -170,6 +172,8 @@ def build_cards_for_format(conn, fmt: str) -> int:
         }
 
         st = status.get(pm["player_id"], {})
+        ranking_rows = player_rankings(conn, pm["player_id"], fmt)
+        best_ranking = ranking_rows[0] if ranking_rows else None
         age = None
         dob = pm.get("date_of_birth")
         if dob and pd.notna(latest["date"]):
@@ -198,10 +202,22 @@ def build_cards_for_format(conn, fmt: str) -> int:
                 "recall_flag": bool(st.get("recall_flag", 0)),
                 "age_advisory": bool(st.get("age_advisory", 0)),
                 "career_phase": st.get("career_phase"),
+                "activity_signal": st.get("activity_signal"),
+                "status_reason": st.get("status_reason"),
                 "icc_rank": st.get("icc_rank"),
                 "icc_rating": st.get("icc_rating"),
+                "icc_discipline": st.get("icc_discipline"),
                 "last_appearance_date": st.get("last_appearance_date"),
                 "days_since_last_appearance": st.get("days_since_last_appearance"),
+            },
+            "icc_ranking": {
+                "ranked": bool(ranking_rows),
+                "best": best_ranking,
+                "all": ranking_rows,
+                "source": best_ranking.get("source") if best_ranking else None,
+                "source_url": best_ranking.get("source_url") if best_ranking else None,
+                "rank_date": best_ranking.get("rank_date") if best_ranking else None,
+                "extracted_at": best_ranking.get("extracted_at") if best_ranking else None,
             },
             "h2h_vs_latest_opponent": h2h,
             "matches_played": int(g["match_id"].nunique()),

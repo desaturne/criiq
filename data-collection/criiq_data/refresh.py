@@ -56,7 +56,7 @@ def run(*, force_download: bool = False, enrich: bool = False,
             summary["rss"] = {"error": str(exc)}
 
     log.info("== 8/9 registry + career + player cards ==")
-    summary["icc_rankings"] = rankings.load_csv(conn)
+    summary["icc_rankings"] = rankings.load(conn)
     summary["status_overrides"] = overrides.load_csv(conn)
     summary["registry"] = registry.build_registry(conn)
     summary["career"] = career.build_career(conn)

@@ -127,7 +127,12 @@ def cmd_rankings(args):
     if args.scaffold:
         print("template written:", rankings.scaffold_csv())
     else:
-        _pp(rankings.load_csv(conn))
+        loaded = rankings.load_live(conn) if args.fetch else rankings.load(conn)
+        rebuilt = {
+            "registry": registry.build_registry(conn),
+            "cards": player_card.build_cards(conn),
+        }
+        _pp({"rankings": loaded, "rebuilt": rebuilt})
     conn.close()
 
 
@@ -272,6 +277,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     rk = sub.add_parser("rankings")
     rk.add_argument("--scaffold", action="store_true", help="write data/rankings/icc_rankings.csv template")
+    rk.add_argument("--fetch", action="store_true", help="pull public ICC rankings into data/rankings/icc_rankings.csv")
     rk.set_defaults(func=cmd_rankings)
 
     so = sub.add_parser("status-override")

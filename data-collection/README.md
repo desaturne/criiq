@@ -14,7 +14,7 @@ A single SQLite database (`data/criiq.db`) containing:
 | `people` | Cricsheet register incl. **`key_cricinfo`** (the match key) |
 | `players` | canonical players (stable `player_id`, joined to ESPNcricinfo id) |
 | `player_registry` | eligibility per player/format: retirement/activity status, recall flag, age advisory, career phase, ICC rank |
-| `icc_rankings` | ICC player rank + rating per format/discipline (loaded from a CSV) |
+| `icc_rankings` | ICC player rank + rating per format/discipline, with source URL/path, rank date, and extraction timestamp |
 | `player_career` | full career batting (avg/SR/HS/50s/100s) **and** bowling (overs/wickets/economy/avg/SR/best) per player/format |
 | `player_cards` | dashboard-ready cards: career totals, latest score, form/RFI, team impact, H2H |
 | `player_advanced` | derived strengths: phase splits, control/aggression, archetype, bowling usage, vs-pace/spin, vs-LHB/RHB |
@@ -70,8 +70,9 @@ python -m criiq_data.cli career                 # career batting + bowling total
 python -m criiq_data.cli advanced               # derived strengths/style profiles
 python -m criiq_data.cli rss                    # scan retirement feeds
 python -m criiq_data.cli alerts [--confirm N | --dismiss N]
-python -m criiq_data.cli rankings --scaffold    # write ICC rankings CSV template
-python -m criiq_data.cli rankings               # load data/rankings/icc_rankings.csv
+python -m criiq_data.cli rankings --fetch      # pull public ICC rankings when CRIIQ_ICC_RANKINGS_CLIENT_ID is set
+python -m criiq_data.cli rankings --scaffold   # write ICC rankings CSV template
+python -m criiq_data.cli rankings              # fetch if configured, otherwise load data/rankings/icc_rankings.csv
 
 # Player styles (for pace/spin & LHB/RHB splits)
 python -m criiq_data.cli styles --seed          # seed role/nationality from Wikidata
@@ -160,12 +161,15 @@ Age advisory and career phase are role-specific (fast bowler threshold 38, other
 40; phase bands per role). Age comes from the Wikidata DOB seed (partial coverage),
 so phase/advisory populate only where DOB is known.
 
-**ICC rank** is a strong active signal (retired players drop off ICC lists). Live
-ICC rankings load from a tenant-authenticated feed that isn't openly accessible, so
-rank is a **pluggable CSV**: `rankings --scaffold` writes `data/rankings/icc_rankings.csv`
-(columns: format, gender, discipline, rank, rating, player_name, key_cricinfo); fill
-it (ICC lists are only the top ~100 per category) and `rankings` loads it. Ranked
-players are then marked ACTIVE and carry their rank/rating.
+**ICC rank** is a strong active signal (retired players drop off ICC lists). The
+rankings importer uses ICC's public Sportz Interactive ranking endpoint only when a
+public client id is configured with `CRIIQ_ICC_RANKINGS_CLIENT_ID`; it sends the
+project user agent, requests JSON directly, and refuses to guess credentials or bypass
+access controls. Successful fetches are persisted to `data/rankings/icc_rankings.csv`.
+If no client id is configured, rank remains a **pluggable CSV**: `rankings --scaffold`
+writes the template (columns: format, gender, discipline, rank, rating, player_name,
+key_cricinfo); fill it and `rankings` loads it. Ranked players are then marked
+ACTIVE and carry their rank/rating.
 
 ## Player styles workflow (for the vs-pace/spin & LHB/RHB splits)
 

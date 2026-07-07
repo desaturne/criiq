@@ -18,6 +18,11 @@ STYLES_DIR = DATA_DIR / "styles"
 MANUAL_STYLES_CSV = STYLES_DIR / "player_styles.csv"
 RANKINGS_DIR = DATA_DIR / "rankings"
 ICC_RANKINGS_CSV = RANKINGS_DIR / "icc_rankings.csv"
+ICC_RANKINGS_SOURCE_URL = os.environ.get(
+    "CRIIQ_ICC_RANKINGS_SOURCE_URL",
+    "https://assets-icc.sportz.io/cricket/v1/ranking",
+)
+ICC_RANKINGS_CLIENT_ID = os.environ.get("CRIIQ_ICC_RANKINGS_CLIENT_ID")
 OVERRIDES_DIR = DATA_DIR / "overrides"
 PLAYER_STATUS_CSV = OVERRIDES_DIR / "player_status.csv"
 DB_PATH = Path(os.environ.get("CRIIQ_DB", DATA_DIR / "criiq.db"))

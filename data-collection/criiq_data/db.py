@@ -124,6 +124,9 @@ CREATE TABLE IF NOT EXISTS player_registry (
     nationality               TEXT,
     recall_flag               INTEGER DEFAULT 0,
     age_advisory              INTEGER DEFAULT 0,
+    activity_signal           TEXT,
+    status_reason             TEXT,
+    icc_discipline            TEXT,
     registry_last_updated     TEXT,
     PRIMARY KEY (player_id, format)
 );
@@ -388,6 +391,11 @@ CREATE TABLE IF NOT EXISTS icc_rankings (
     rank        INTEGER,
     rating      INTEGER,
     player_name TEXT,
+    matched     INTEGER DEFAULT 1,
+    source      TEXT,
+    source_url  TEXT,
+    rank_date   TEXT,
+    extracted_at TEXT,
     updated_at  TEXT,
     PRIMARY KEY (player_id, format, discipline)
 );
@@ -408,6 +416,14 @@ CREATE TABLE IF NOT EXISTS status_overrides (
 _MIGRATIONS = [
     "ALTER TABLE player_registry ADD COLUMN icc_rank INTEGER",
     "ALTER TABLE player_registry ADD COLUMN icc_rating INTEGER",
+    "ALTER TABLE player_registry ADD COLUMN activity_signal TEXT",
+    "ALTER TABLE player_registry ADD COLUMN status_reason TEXT",
+    "ALTER TABLE player_registry ADD COLUMN icc_discipline TEXT",
+    "ALTER TABLE icc_rankings ADD COLUMN matched INTEGER DEFAULT 1",
+    "ALTER TABLE icc_rankings ADD COLUMN source TEXT",
+    "ALTER TABLE icc_rankings ADD COLUMN source_url TEXT",
+    "ALTER TABLE icc_rankings ADD COLUMN rank_date TEXT",
+    "ALTER TABLE icc_rankings ADD COLUMN extracted_at TEXT",
 ]
 
 

@@ -259,9 +259,84 @@ def test_rankings_load_marks_active(conn, tmp_path):
     res = rankings.load_csv(conn, p)
     assert res["loaded"] == 1
     pid = identity.player_id_for("id_bat")
-    assert rankings.current_rank(conn, pid, "T20")["rank"] == 1
+    rank = rankings.current_rank(conn, pid, "T20")
+    assert rank["rank"] == 1
+    assert rank["source"] == "manual_csv"
+    assert rank["source_url"] == str(p)
     assert pid in rankings.ranked_ids(conn, "T20")
 
+    registry.build_registry_for_format(conn, "T20")
+    aa = conn.execute("SELECT * FROM player_registry WHERE player_id=?", (pid,)).fetchone()
+    assert aa["retirement_status"] == "ACTIVE"
+    assert aa["activity_signal"] == "icc_ranked"
+    assert aa["status_reason"] == "present in current ICC rankings"
+    assert aa["recall_flag"] == 0
+    assert aa["icc_discipline"] == "batting"
+
+    player_card.build_cards_for_format(conn, "T20")
+    card = player_card.get_card(conn, pid, "T20")
+    assert card["icc_ranking"]["ranked"] is True
+    assert card["icc_ranking"]["best"]["discipline"] == "batting"
+    assert card["status"]["activity_signal"] == "icc_ranked"
+
+
+
+def test_rankings_parse_public_payload():
+    payload = {"data": {"bat-rank": {"rank": [
+        {"no": "1", "Player-name": "AA Batter", "Points": "800"},
+        {"no": "2", "Player-name": "Someone Else", "Rating": "750"},
+    ], "rank_date": "01 July 2026"}}}
+    rows = rankings._response_rows(payload, fmt="T20", gender="female", discipline="batting")
+    assert rows[0] == {
+        "format": "T20",
+        "gender": "female",
+        "discipline": "batting",
+        "rank": "1",
+        "rating": "800",
+        "player_name": "AA Batter",
+        "key_cricinfo": "",
+        "source": "icc_public_endpoint",
+        "source_url": "",
+        "rank_date": "01 July 2026",
+        "extracted_at": "",
+    }
+    assert rows[1]["rating"] == "750"
+
+
+def test_rankings_live_fetch_loads_mocked_public_feed(conn, tmp_path, monkeypatch):
+    class FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"data": {"bat-rank": {"rank": [
+                {"no": "1", "Player-name": "AA Batter", "Points": "800"},
+            ]}}}
+
+    class FakeSession:
+        def __init__(self):
+            self.calls = []
+
+        def get(self, url, params=None, headers=None, timeout=None):
+            self.calls.append((url, params, headers, timeout))
+            return FakeResponse()
+
+    monkeypatch.setattr(rankings, "write_csv", lambda rows, path=None: str(tmp_path / "ignored.csv"))
+    session = FakeSession()
+    res = rankings.load_live(
+        conn,
+        client_id="public-test-client",
+        source_url="https://example.test/cricket/v1/ranking",
+        session=session,
+    )
+    assert res["fetched"] == 15
+    assert res["loaded"] == 15
+    assert res["source"] == "https://example.test/cricket/v1/ranking"
+    assert session.calls[0][1]["client_id"] == "public-test-client"
+    pid = identity.player_id_for("id_bat")
+    assert rankings.current_rank(conn, pid, "T20")["rank"] == 1
 
 def test_status_override(conn, tmp_path):
     from criiq_data import overrides

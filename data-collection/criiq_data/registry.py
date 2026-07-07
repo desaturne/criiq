@@ -66,6 +66,16 @@ def _status(is_ranked, days_since) -> str:
     return "UNKNOWN"
 
 
+def _status_details(is_ranked: bool, days_since: int) -> tuple[str, str, str]:
+    if is_ranked:
+        return "ACTIVE", "icc_ranked", "present in current ICC rankings"
+    if days_since <= SETTINGS.active_window_days:
+        return "ACTIVE", "recent_appearance", "appeared inside active window"
+    if days_since > SETTINGS.inactive_window_days:
+        return "INACTIVE", "stale_no_rank", "no recent appearance and absent from ICC rankings"
+    return "UNKNOWN", "aging_no_rank", "outside active window but not stale enough for inactive"
+
+
 def _players_meta(conn) -> dict[str, dict]:
     rows = conn.execute(
         "SELECT player_id, cricsheet_identifier, canonical_name, key_cricinfo, "
@@ -78,7 +88,8 @@ def build_registry_for_format(conn, fmt: str) -> int:
     apps = pd.read_sql_query(
         "SELECT mp.match_id, mp.player_name, mp.team, m.date, m.team1, m.team2 "
         "FROM match_players mp JOIN matches m ON mp.match_id = m.match_id "
-        "WHERE m.format = ?", conn, params=(fmt,))
+        "WHERE m.format = ?", conn, params=(fmt,)
+    )
     if apps.empty:
         log.info("registry %s: no appearances", fmt)
         return 0
@@ -96,6 +107,7 @@ def build_registry_for_format(conn, fmt: str) -> int:
     ranked = ranked_ids(conn, fmt)
     overrides = overrides_map(conn, fmt)
     as_of = apps["date"].max()
+    today = dt.date.today()
     now = dt.datetime.now().isoformat(timespec="seconds")
 
     last_idx = apps.sort_values("date").groupby("identifier").tail(1).set_index("identifier")
@@ -108,8 +120,7 @@ def build_registry_for_format(conn, fmt: str) -> int:
             continue
         pid = pm["player_id"]
         last_date = last["date"].date()
-        days_since = (as_of.date() - last_date).days
-        recall = 1 if days_since > SETTINGS.recall_flag_days else 0
+        days_since = max(0, (today - last_date).days)
 
         dob = pm.get("date_of_birth")
         age = None
@@ -123,8 +134,10 @@ def build_registry_for_format(conn, fmt: str) -> int:
         phase = _career_phase(age, cat)
         advisory = _age_advisory(age, cat)
         is_ranked = pid in ranked
-        status = _status(is_ranked, days_since)
+        status, activity_signal, status_reason = _status_details(is_ranked, days_since)
+        recall = 0 if is_ranked else (1 if days_since > SETTINGS.recall_flag_days else 0)
         rk = current_rank(conn, pid, fmt) if is_ranked else None
+        discipline = rk["discipline"] if rk else None
 
         retired_formats = None
         retirement_date = None
@@ -132,6 +145,8 @@ def build_registry_for_format(conn, fmt: str) -> int:
         if ov:
             status = ov["status"]
             retirement_date = ov["date"]
+            activity_signal = "manual_override"
+            status_reason = "manual retirement/status override"
             if status == "RETIRED_FORMAT":
                 retired_formats = fmt
 
@@ -146,7 +161,8 @@ def build_registry_for_format(conn, fmt: str) -> int:
             dob, age, phase,
             pm.get("role") or pm.get("derived_role"),
             pm.get("bowling_style"), pm.get("batting_hand"), pm.get("nationality"),
-            recall, advisory, rk["rank"] if rk else None, rk["rating"] if rk else None, now,
+            recall, advisory, rk["rank"] if rk else None, rk["rating"] if rk else None,
+            activity_signal, status_reason, discipline, now,
         ))
 
     conn.executemany(
@@ -155,7 +171,8 @@ def build_registry_for_format(conn, fmt: str) -> int:
         "last_appearance_opponent, days_since_last_appearance, date_of_birth, "
         "age_at_last_match, career_phase, role, bowling_style, batting_hand, "
         "nationality, recall_flag, age_advisory, icc_rank, icc_rating, "
-        "registry_last_updated) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+        "activity_signal, status_reason, icc_discipline, registry_last_updated) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
         "ON CONFLICT(player_id, format) DO UPDATE SET "
         "retirement_status=excluded.retirement_status, "
         "retired_formats=excluded.retired_formats, "
@@ -166,13 +183,16 @@ def build_registry_for_format(conn, fmt: str) -> int:
         "age_at_last_match=excluded.age_at_last_match, career_phase=excluded.career_phase, "
         "role=excluded.role, recall_flag=excluded.recall_flag, "
         "age_advisory=excluded.age_advisory, icc_rank=excluded.icc_rank, "
-        "icc_rating=excluded.icc_rating, registry_last_updated=excluded.registry_last_updated",
+        "icc_rating=excluded.icc_rating, activity_signal=excluded.activity_signal, "
+        "status_reason=excluded.status_reason, icc_discipline=excluded.icc_discipline, "
+        "registry_last_updated=excluded.registry_last_updated",
         rows,
     )
     conn.commit()
+    ranked_count = sum(1 for r in rows if r[19] == "icc_ranked")
     log.info("registry %s: %d players (as-of %s) | active=%d inactive=%d retired=%d recall=%d age-advisory=%d ranked=%d",
              fmt, len(rows), as_of.date(), active, inactive, retired,
-             sum(r[15] for r in rows), advisories, len(ranked))
+             sum(r[15] for r in rows), advisories, ranked_count)
     return len(rows)
 
 
