@@ -12,6 +12,7 @@ from .h2h import player_vs_team
 from .logging_utils import get_logger
 from .rankings import player_rankings
 from .stats import build_innings
+from .styles import classify_bowling_detail, classify_hand
 
 log = get_logger("player_card")
 
@@ -73,7 +74,7 @@ def _support_tables(conn, fmt: str):
 def _ident_to_player(conn) -> dict[str, dict]:
     rows = conn.execute(
         "SELECT player_id, cricsheet_identifier, canonical_name, nationality, "
-        "role, derived_role, date_of_birth FROM players").fetchall()
+        "role, derived_role, date_of_birth, batting_hand, bowling_style FROM players").fetchall()
     return {r["cricsheet_identifier"]: dict(r) for r in rows if r["cricsheet_identifier"]}
 
 
@@ -191,6 +192,9 @@ def build_cards_for_format(conn, fmt: str) -> int:
                 "player_id": pm["player_id"], "name": pm["canonical_name"],
                 "role": pm.get("role") or pm.get("derived_role"),
                 "nationality": pm.get("nationality") or team, "age": age,
+                "batting_hand": classify_hand(pm.get("batting_hand")),
+                "bowling_style": pm.get("bowling_style"),
+                "bowling_type": classify_bowling_detail(pm.get("bowling_style")),
             },
             "career": career_from_group(g),
             "latest_match": latest_block,

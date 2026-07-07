@@ -148,6 +148,13 @@ deliberately excluded rather than fabricated:
 - **Shot-control %** — a proprietary CricViz metric from manual ball-coding.
 - **Preferred shots / wagon wheels** — needs shot-coded logs; ESPNcricinfo
   **blocks scraping (verified HTTP 403)** and coverage is absent for this scope.
+- **Length/line (e.g. "4–6 m"), foot movement ("forward ball %", front/back
+  foot), sweep/shot detection** — all require ball-tracking pitch maps or manual
+  shot-coding. Cricsheet's per-ball rows have **no** length, line, foot or shot
+  columns, so these can't be derived. The genuine, defensible substitutes we *do*
+  ship are the **vs pace / spin / off-spin / leg-spin / slow-left-arm** and
+  **vs RHB/LHB** splits above (who a batter/bowler is effective against), just not
+  *where on the pitch* or *off which foot*.
 
 The phase/control/aggression metrics above are the genuine, defensible
 equivalents derived from ball-by-ball. If a board supplies a proprietary feed,
@@ -231,11 +238,23 @@ scraping. Wikidata (via the ESPNcricinfo-id property) supplies **nationality**
 and **partial role** but not style/hand. So:
 
 1. `styles --seed` — pulls role/nationality from Wikidata (free, legal, partial).
-2. `styles --scaffold` — writes `data/styles/player_styles.csv` pre-filled with
-   `key_cricinfo` + name for every player; fill `bowling_style`, `batting_hand`,
-   `playing_role` (the active pool is a few hundred rows).
-3. `styles --load` (also run automatically by `refresh`) — merges the CSV; then
+2. `styles --wiki` — **auto-fills batting hand + bowling style from Wikipedia
+   cricketer infoboxes**, reached via Wikidata sitelinks (cricinfo id → article).
+   Free and legal; strong coverage for internationals, partial for associates /
+   domestic (players without an English Wikipedia article are simply skipped).
+   Existing values are never overwritten, so the manual CSV acts as an override.
+3. `styles --scaffold` — writes `data/styles/player_styles.csv` pre-filled with
+   `key_cricinfo` + name; fill/override `bowling_style`, `batting_hand`,
+   `playing_role` by hand for anything Wikipedia missed or got wrong.
+4. `styles --load` (also run automatically by `refresh`) — merges the CSV; then
    `advanced` recomputes and the vs-pace/spin + vs-RHB/LHB splits populate.
+
+Once hand/style are filled, `player_advanced` and the player card carry:
+**batting hand (RHB/LHB)** and **bowling type**; the batter's record **vs pace /
+vs spin** *and* a finer **vs off-spin / leg-spin / slow-left-arm** split (runs,
+SR, boundary%, dismissals, average); and the bowler's economy / strike-rate /
+average **vs RHB and vs LHB**. The strengths summary turns these into coach-facing
+matchup notes ("least effective vs leg-spin — a matchup to exploit").
 
 ## Scope & config
 

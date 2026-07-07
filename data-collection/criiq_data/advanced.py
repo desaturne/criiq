@@ -44,9 +44,13 @@ def build_for_format(conn, fmt: str) -> int:
 
     n2i = _name_to_id(conn)
     bowl_bucket = styles.bowler_buckets(conn)
+    bowl_bucket_detail = styles.bowler_buckets(conn, detail=True)
     bat_hand = styles.batter_hands(conn)
     players = {r["cricsheet_identifier"]: r["player_id"]
                for r in conn.execute("SELECT cricsheet_identifier, player_id FROM players")}
+    style_meta = {r["cricsheet_identifier"]: (r["batting_hand"], r["bowling_style"])
+                  for r in conn.execute(
+                      "SELECT cricsheet_identifier, batting_hand, bowling_style FROM players")}
 
     deliv["striker_id"] = deliv["striker"].map(n2i)
     deliv["bowler_id"] = deliv["bowler"].map(n2i)
@@ -87,12 +91,18 @@ def build_for_format(conn, fmt: str) -> int:
         return out
     bat_phase = _nest_phase(bat, "striker_id")
 
-    bat["bowl_bucket"] = bat["bowler"].map(bowl_bucket)
-    vt = bat.dropna(subset=["bowl_bucket"]).groupby(["striker_id", "bowl_bucket"]).agg(
-        runs=("rob", "sum"), balls=("lb", "sum"), outs=("out_self", "sum"))
-    bat_vs_type: dict = {}
-    for (pid, bk), row in vt.iterrows():
-        bat_vs_type.setdefault(pid, {})[bk] = row.to_dict()
+    def _vs_type(col_map, colname):
+        bat[colname] = bat["bowler"].map(col_map)
+        v = bat.dropna(subset=[colname]).groupby(["striker_id", colname]).agg(
+            runs=("rob", "sum"), balls=("lb", "sum"), bdry=("bdry", "sum"),
+            dots=("dot", "sum"), outs=("out_self", "sum"))
+        nested: dict = {}
+        for (pid, bk), row in v.iterrows():
+            nested.setdefault(pid, {})[bk] = row.to_dict()
+        return nested
+
+    bat_vs_type = _vs_type(bowl_bucket, "bowl_bucket")                 # coarse pace/spin
+    bat_vs_type_detail = _vs_type(bowl_bucket_detail, "bowl_bucket_detail")  # off-spin/leg-spin/...
 
     legal = bat[bat["legal"]].sort_values(["match_id", "innings", "over", "ball_in_over"])
     legal["ball_no"] = legal.groupby(["match_id", "innings", "striker_id"]).cumcount() + 1
@@ -133,12 +143,21 @@ def build_for_format(conn, fmt: str) -> int:
         profile = {"format": fmt}
         archetype = None
 
+        hand_raw, bstyle = style_meta.get(ident, (None, None))
+        profile["style"] = {
+            "batting_hand": styles.classify_hand(hand_raw),
+            "batting_hand_raw": hand_raw,
+            "bowling_style": bstyle,
+            "bowling_type": styles.classify_bowling_detail(bstyle),
+        }
+
         bo = bat_overall.get(ident)
         if bo and bo["balls"] > 0:
             profile["batting"] = _batting_block(bo, bat_innings.get(ident, 0),
                                                 bat_phase.get(ident, {}),
                                                 bat_vs_type.get(ident, {}),
-                                                accel.get(ident, {}))
+                                                accel.get(ident, {}),
+                                                bat_vs_type_detail.get(ident, {}))
             archetype = profile["batting"]["archetype"]
 
         bwo = bowl_overall.get(ident)
@@ -171,7 +190,18 @@ def _phase_block(d: dict) -> dict:
     }
 
 
-def _batting_block(bo, innings, phase, vs_type, accel) -> dict:
+def _vs_type_block(vs: dict) -> dict:
+    return {
+        t: {"balls": int(v["balls"]), "runs": int(v["runs"]),
+            "strike_rate": _bat_rate(v["runs"], v["balls"]),
+            "boundary_pct": round(100 * v["bdry"] / v["balls"], 1) if v["balls"] else None,
+            "dot_pct": round(100 * v["dots"] / v["balls"], 1) if v["balls"] else None,
+            "dismissals": int(v["outs"]),
+            "average": round(v["runs"] / v["outs"], 1) if v["outs"] else None}
+        for t, v in vs.items()}
+
+
+def _batting_block(bo, innings, phase, vs_type, accel, vs_type_detail=None) -> dict:
     balls = bo["balls"]
     block = {
         "innings": int(innings), "runs": int(bo["runs"]), "balls": int(balls),
@@ -185,11 +215,9 @@ def _batting_block(bo, innings, phase, vs_type, accel) -> dict:
         "by_phase": {ph: _phase_block(phase[ph]) for ph in phase},
     }
     if vs_type:
-        block["vs_bowling_type"] = {
-            t: {"balls": int(v["balls"]), "runs": int(v["runs"]),
-                "strike_rate": _bat_rate(v["runs"], v["balls"]),
-                "dismissals": int(v["outs"])}
-            for t, v in vs_type.items()}
+        block["vs_bowling_type"] = _vs_type_block(vs_type)
+    if vs_type_detail:
+        block["vs_bowling_type_detail"] = _vs_type_block(vs_type_detail)
     if accel:
         block["acceleration"] = {
             k: {"balls": v["balls"], "strike_rate": _bat_rate(v["runs"], v["balls"])}
@@ -235,16 +263,22 @@ def _bowling_block(bo, phase, vs_hand) -> dict:
     block["usage_share"] = {ph: round(phase[ph]["balls"] / tot, 2) for ph in phase}
     if vs_hand:
         block["vs_batting_hand"] = {
-            h: {"balls": int(v["balls"]), "economy": round(6 * v["runs"] / v["balls"], 2) if v["balls"] else None,
-                "wickets": int(v["wkts"])}
+            h: {"balls": int(v["balls"]),
+                "economy": round(6 * v["runs"] / v["balls"], 2) if v["balls"] else None,
+                "wickets": int(v["wkts"]),
+                "strike_rate": round(v["balls"] / v["wkts"], 1) if v["wkts"] else None,
+                "average": round(v["runs"] / v["wkts"], 1) if v["wkts"] else None}
             for h, v in vs_hand.items()}
     return block
 
 
 def _strengths_summary(profile: dict) -> list[str]:
     out: list[str] = []
+    st = profile.get("style", {})
     b = profile.get("batting")
     if b:
+        if st.get("batting_hand"):
+            out.append(f"{st['batting_hand']} batter")
         out.append(f"Batting archetype: {b['archetype']}")
         phases = {ph: v for ph, v in b.get("by_phase", {}).items()
                   if v["balls"] >= MIN_PHASE_BALLS and v["strike_rate"]}
@@ -262,8 +296,23 @@ def _strengths_summary(profile: dict) -> list[str]:
             elif vt["spin"]["strike_rate"] > vt["pace"]["strike_rate"] * 1.15:
                 out.append(f"Stronger vs spin (SR {vt['spin']['strike_rate']} vs "
                            f"{vt['pace']['strike_rate']} vs pace) — attack with pace")
+        # weakest specific bowling type (enough sample), for targeted matchups
+        vtd = {t: v for t, v in b.get("vs_bowling_type_detail", {}).items()
+               if v["balls"] >= MIN_PHASE_BALLS and v["strike_rate"] is not None}
+        if len(vtd) >= 2:
+            weakest = min(vtd, key=lambda t: vtd[t]["strike_rate"])
+            out.append(f"Least effective vs {weakest} (SR {vtd[weakest]['strike_rate']}, "
+                       f"{vtd[weakest]['dismissals']} dismissals) — a matchup to exploit")
     bw = profile.get("bowling")
     if bw:
+        if st.get("bowling_type"):
+            out.append(f"Bowling type: {st['bowling_type']}")
+        vh = bw.get("vs_batting_hand", {})
+        if "RHB" in vh and "LHB" in vh and vh["RHB"]["economy"] and vh["LHB"]["economy"]:
+            if vh["RHB"]["economy"] < vh["LHB"]["economy"] * 0.9:
+                out.append(f"Tighter to RHB ({vh['RHB']['economy']} vs {vh['LHB']['economy']} RPO to LHB)")
+            elif vh["LHB"]["economy"] < vh["RHB"]["economy"] * 0.9:
+                out.append(f"Tighter to LHB ({vh['LHB']['economy']} vs {vh['RHB']['economy']} RPO to RHB)")
         phases = {ph: v for ph, v in bw.get("by_phase", {}).items()
                   if v["economy"] is not None}
         if phases:

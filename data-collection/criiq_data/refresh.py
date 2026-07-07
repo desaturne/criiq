@@ -45,6 +45,11 @@ def run(*, force_download: bool = False, enrich: bool = False,
         except Exception as exc:
             log.warning("wikidata seed failed: %s", exc)
             summary["styles_wikidata"] = {"error": str(exc)}
+        try:
+            summary["styles_wikipedia"] = styles.enrich_from_wikipedia(conn)
+        except Exception as exc:
+            log.warning("wikipedia styles enrich failed: %s", exc)
+            summary["styles_wikipedia"] = {"error": str(exc)}
     summary["styles_coverage"] = styles.coverage(conn)
 
     if scan_rss:

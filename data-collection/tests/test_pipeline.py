@@ -521,6 +521,31 @@ def test_styles_classifiers():
     assert classify_hand("Left-hand bat") == "LHB"
 
 
+def test_styles_bowling_detail():
+    from criiq_data.styles import classify_bowling_detail as cbd
+    assert cbd("Right-arm fast-medium") == "pace"
+    assert cbd("Right-arm offbreak") == "off-spin"
+    assert cbd("Legbreak googly") == "leg-spin"
+    assert cbd("Slow left-arm orthodox") == "slow-left-arm"
+    assert cbd("Left-arm wrist spin") == "leg-spin"      # chinaman-style -> wrist bucket
+    assert cbd(None) is None
+
+
+def test_wikipedia_infobox_parse():
+    from criiq_data.styles import _infobox_field, classify_hand, classify_bowling_detail
+    wikitext = (
+        "{{Infobox cricketer\n"
+        "| name = Some Player\n"
+        "| batting = [[Right-handed batsman|Right-handed]]\n"
+        "| bowling = Right-arm [[off break|offbreak]]<ref name=x/>\n"
+        "| role = [[All-rounder]]\n"
+        "}}\n")
+    assert _infobox_field(wikitext, "batting") == "Right-handed"
+    assert _infobox_field(wikitext, "bowling") == "Right-arm offbreak"
+    assert classify_hand(_infobox_field(wikitext, "batting")) == "RHB"
+    assert classify_bowling_detail(_infobox_field(wikitext, "bowling")) == "off-spin"
+
+
 def test_advanced_profile_and_style_splits(conn):
     from criiq_data import advanced
     conn.execute("UPDATE players SET bowling_style='Right-arm fast' "
@@ -536,11 +561,16 @@ def test_advanced_profile_and_style_splits(conn):
     assert pa["batting"]["sixes"] == 2
     assert "pace" in pa["batting"]["vs_bowling_type"]
     assert pa["batting"]["vs_bowling_type"]["pace"]["runs"] == 20
+    # finer bowling-type split + surfaced batting hand
+    assert pa["batting"]["vs_bowling_type_detail"]["pace"]["runs"] == 20
+    assert pa["style"]["batting_hand"] == "RHB"
     assert isinstance(pa["strengths"], list) and pa["strengths"]
 
     pb = advanced.get_advanced(conn, identity.player_id_for("id_bowl"), "T20")
     assert "RHB" in pb["bowling"]["vs_batting_hand"]
     assert pb["bowling"]["wickets"] == 1
+    assert pb["bowling"]["vs_batting_hand"]["RHB"]["strike_rate"] == 10.0
+    assert pb["style"]["bowling_type"] == "pace"
 
 
 def test_validate_deliveries_rejects_bad_rows():

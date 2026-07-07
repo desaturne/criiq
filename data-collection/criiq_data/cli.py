@@ -192,6 +192,8 @@ def cmd_styles(args):
         print(f"template written: {path}")
     elif args.seed:
         _pp(styles.seed_from_wikidata(conn, limit=args.limit))
+    elif args.wiki:
+        _pp(styles.enrich_from_wikipedia(conn, limit=args.limit))
     elif args.load:
         _pp(styles.load_manual_csv(conn))
     else:
@@ -329,6 +331,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--scaffold", action="store_true", help="write template CSV to fill")
     s.add_argument("--all", action="store_true", help="scaffold includes already-filled rows")
     s.add_argument("--seed", action="store_true", help="seed role/nationality from Wikidata")
+    s.add_argument("--wiki", action="store_true", help="fill batting hand + bowling style from Wikipedia infoboxes")
     s.add_argument("--load", action="store_true", help="merge data/styles/player_styles.csv")
     s.add_argument("--limit", type=int, default=None)
     s.set_defaults(func=cmd_styles)
