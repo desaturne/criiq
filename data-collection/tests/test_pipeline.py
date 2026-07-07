@@ -125,6 +125,54 @@ def test_registry_conservative_and_recency(conn):
     assert dd["recall_flag"] == 1
 
 
+def test_winprob_empirical_learns_and_calibrates():
+    from criiq_data.winprob import EmpiricalWinProb
+    # Synthetic chase: the batting team wins iff the ask is gettable
+    # (runs_required <= balls_remaining), plus a losing set of hopeless states.
+    rows = []
+    for rem in range(6, 120, 6):
+        for wk in range(0, 8):
+            rows += [{"innings": 2, "balls_remaining": rem, "wickets": wk,
+                      "runs_required": rem // 2, "balls_bowled": 120 - rem,
+                      "score": 0, "label_batting_team_won": 1}] * 5
+            rows += [{"innings": 2, "balls_remaining": rem, "wickets": wk,
+                      "runs_required": rem * 2, "balls_bowled": 120 - rem,
+                      "score": 0, "label_batting_team_won": 0}] * 5
+    balls = pd.DataFrame(rows)
+    model = EmpiricalWinProb(alpha=1.0).fit(balls)
+
+    # query the buckets the training actually covered: gettable ask (rem//2) wins,
+    # a doubled ask (rem*2) is hopeless
+    easy = pd.DataFrame([{"innings": 2, "balls_remaining": 60, "wickets": 2,
+                          "runs_required": 30, "balls_bowled": 60, "score": 0}])
+    hard = pd.DataFrame([{"innings": 2, "balls_remaining": 12, "wickets": 6,
+                          "runs_required": 24, "balls_bowled": 108, "score": 0}])
+    p_easy = model.predict(easy)[0]
+    p_hard = model.predict(hard)[0]
+    assert 0.0 <= p_hard < 0.5 < p_easy <= 1.0     # gettable > hopeless
+    # predict preserves row order / length for a batch
+    batch = pd.concat([easy, hard], ignore_index=True)
+    both = model.predict(batch)
+    assert len(both) == 2 and both[0] == pytest.approx(p_easy) and both[1] == pytest.approx(p_hard)
+
+
+def test_winprob_save_load_roundtrip(tmp_path, monkeypatch):
+    from criiq_data import winprob
+    monkeypatch.setattr(winprob, "MODELS_DIR", tmp_path)
+    balls = pd.DataFrame([
+        {"innings": 2, "balls_remaining": 30, "wickets": 3, "runs_required": 20,
+         "balls_bowled": 90, "score": 0, "label_batting_team_won": 1},
+        {"innings": 1, "balls_remaining": 90, "wickets": 1, "runs_required": None,
+         "balls_bowled": 30, "score": 45, "label_batting_team_won": 0},
+    ] * 20)
+    m = winprob.EmpiricalWinProb().fit(balls)
+    m.save("T20")
+    loaded = winprob.EmpiricalWinProb.load("T20")
+    q = pd.DataFrame([{"innings": 2, "balls_remaining": 30, "wickets": 3,
+                       "runs_required": 20, "balls_bowled": 90, "score": 0}])
+    assert loaded.predict(q)[0] == pytest.approx(m.predict(q)[0])
+
+
 def test_registry_flags_inconsistent_selection(tmp_path):
     # Team A plays 10 matches in one recent season. A regular is picked for all
     # of them (ACTIVE); an in-and-out player is picked for only 2 (INCONSISTENT).

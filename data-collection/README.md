@@ -26,6 +26,7 @@ A single SQLite database (`data/criiq.db`) containing:
 | `match_features` | **win/loss prediction** training table: leakage-safe pre-match form, H2H, toss + label |
 | `player_match_impact` | per-player per-match contribution + result label |
 | `ball_state` (parquet, `data/features/`) | per-ball in-game state + outcome label for **live win-probability** models |
+| `win_prob` (parquet, `data/features/`) | per-ball **win probability** (batting & bowling team) across all phases, from the empirical model in `data/models/` |
 | `player_styles` | bowling style / batting hand / role + provenance |
 | `retirement_alerts` | RSS retirement alerts (PENDING until human-confirmed) |
 | `venues` | venue alias normalisation |
@@ -87,6 +88,9 @@ python -m criiq_data.cli phases                 # phase splits + intra-team rank
 python -m criiq_data.cli venues                 # per-ground performance
 python -m criiq_data.cli matchups               # batter-vs-bowler dismissals (bogey bowler)
 python -m criiq_data.cli ml                      # win/loss + ball-state + per-match impact (model-ready)
+python -m criiq_data.cli winprob                 # build ball-by-ball win-probability model (all phases)
+python -m criiq_data.cli winprob --match 1429395 # per-over WP timeline for a match (powerplay->death)
+python -m criiq_data.cli winprob --state "innings=2,balls_remaining=30,wickets=4,runs_required=40"
 python -m criiq_data.cli sheet --name "A Gardner" --format T20   # full performance sheet
 
 # Inspect
@@ -191,6 +195,34 @@ is configured, rank remains a **pluggable CSV**: `rankings --scaffold` writes th
 template (columns: format, gender, discipline, rank, rating, player_name,
 key_cricinfo); fill it and `rankings` loads it. Ranked players are then marked
 ACTIVE and carry their rank/rating.
+
+## Win probability (all phases of a game)
+
+Win probability is **P(the batting team wins | the game state at this ball)**,
+scored at every legal ball — so the curve spans powerplay -> middle -> death for
+both innings. The training data is the `ball_state` parquet (state + eventual
+outcome); `winprob` fits the model, writes a per-ball `win_prob` parquet, and
+persists the fitted model under `data/models/`.
+
+The shipped estimator is **empirical** (no extra dependencies): it bins historical
+ball-states and takes the actual win frequency, shrunk toward the innings prior so
+sparse buckets stay stable. Setting (innings 1) and chasing (innings 2) are scored
+by **separate grids** because the target is known only in the chase. Calibration is
+reported honestly on a **hold-out split by match, never by ball** (balls from one
+game are correlated; a ball-level split would leak). On the live data it beats the
+constant-prior baseline comfortably (Brier ~0.17 vs ~0.25, log-loss ~0.51 vs ~0.69).
+
+`EmpiricalWinProb` exposes a small `fit` / `predict` interface, so a calibrated
+scikit-learn model (`HistGradientBoosting`/logistic, extensible with team-strength
+priors from `match_features`) can be dropped in behind the same surface later
+without touching the build or CLI. Two known v1 limitations: the curve is
+step-shaped (coarse bins), and it is conditions-agnostic (no team-strength prior).
+
+```bash
+python -m criiq_data.cli winprob                  # build model + print calibration
+python -m criiq_data.cli winprob --match <id>     # per-over WP timeline (all phases)
+python -m criiq_data.cli winprob --state "innings=2,balls_remaining=30,wickets=4,runs_required=40"
+```
 
 ## Player styles workflow (for the vs-pace/spin & LHB/RHB splits)
 

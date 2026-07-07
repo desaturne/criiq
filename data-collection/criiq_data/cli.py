@@ -6,7 +6,7 @@ import json
 from . import advanced, career, download_cricsheet, download_register, identity, impact
 from . import ingest, matchups, ml_features, opponents, overrides, phases, player_card
 from . import rankings, refresh, registry, rss_monitor, scrape_cricinfo, sheet, styles
-from . import venue_stats
+from . import venue_stats, winprob
 from .db import connect, get_meta, init_schema, table_count
 from .h2h import batter_vs_bowler, names_for_player
 from .logging_utils import get_logger
@@ -120,6 +120,36 @@ def cmd_phases(args):
 def cmd_ml(args):
     conn = connect(); init_schema(conn)
     _pp(ml_features.build_all(conn)); conn.close()
+
+
+def cmd_winprob(args):
+    conn = connect(); init_schema(conn)
+    if args.state:
+        # e.g. --state "innings=2,balls_remaining=30,wickets=4,runs_required=40"
+        kv = {}
+        for part in args.state.split(","):
+            k, _, v = part.partition("=")
+            kv[k.strip()] = int(v.strip())
+        wp = winprob.probability_for_state(args.format, **kv)
+        _pp({"format": args.format, "state": kv,
+             "win_prob_batting": wp, "win_prob_bowling": round(1 - wp, 4)})
+    elif args.match:
+        tl = winprob.match_timeline(args.format, args.match)
+        if tl.empty:
+            print(f"no win-probability rows for match {args.match} "
+                  f"(run `winprob` to build the model first)")
+        else:
+            print(f"win probability timeline - match {args.match} ({args.format})")
+            print(f"{'inn':>3} {'ov':>3} {'phase':<10} {'bat team':<18} "
+                  f"{'score':>7} {'wk':>2} {'need':>5} {'WP%':>5}")
+            for r in tl.itertuples(index=False):
+                need = "" if r.runs_required is None or r.runs_required != r.runs_required else int(r.runs_required)
+                print(f"{r.innings:>3} {r.over + 1:>3} {r.phase:<10} {str(r.batting_team)[:18]:<18} "
+                      f"{int(r.score):>7} {int(r.wickets):>2} {str(need):>5} "
+                      f"{round(100 * r.win_prob_batting):>5}")
+    else:
+        _pp(winprob.build_winprob(conn))
+    conn.close()
 
 
 def cmd_rankings(args):
@@ -274,6 +304,12 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("matchups").set_defaults(func=cmd_matchups)
     sub.add_parser("phases").set_defaults(func=cmd_phases)
     sub.add_parser("ml").set_defaults(func=cmd_ml)
+
+    wp = sub.add_parser("winprob", help="build/query ball-by-ball win probability")
+    wp.add_argument("--format", default="T20")
+    wp.add_argument("--match", help="print the per-over WP timeline for a match id")
+    wp.add_argument("--state", help='ad-hoc WP, e.g. "innings=2,balls_remaining=30,wickets=4,runs_required=40"')
+    wp.set_defaults(func=cmd_winprob)
 
     rk = sub.add_parser("rankings")
     rk.add_argument("--scaffold", action="store_true", help="write data/rankings/icc_rankings.csv template")

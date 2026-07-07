@@ -4,7 +4,7 @@ import datetime as dt
 
 from . import advanced, career, download_cricsheet, download_register, identity, impact
 from . import ingest, matchups, ml_features, opponents, overrides, phases, player_card
-from . import rankings, registry, rss_monitor, scrape_cricinfo, styles, venue_stats
+from . import rankings, registry, rss_monitor, scrape_cricinfo, styles, venue_stats, winprob
 from .config import SETTINGS
 from .db import connect, get_meta, init_schema, set_meta, table_count
 from .logging_utils import get_logger
@@ -74,6 +74,9 @@ def run(*, force_download: bool = False, enrich: bool = False,
 
     log.info("== ML feature/label datasets (win-loss, ball-state, per-match impact) ==")
     summary["ml_features"] = ml_features.build_all(conn)
+
+    log.info("== win probability (empirical, all phases) ==")
+    summary["winprob"] = winprob.build_winprob(conn)
 
     set_meta(conn, "last_successful_refresh", dt.datetime.now().isoformat(timespec="seconds"))
     conn.commit()

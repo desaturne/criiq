@@ -16,6 +16,7 @@ QUARANTINE_DIR = DATA_DIR / "quarantine"
 FEATURES_DIR = DATA_DIR / "features"
 STYLES_DIR = DATA_DIR / "styles"
 MANUAL_STYLES_CSV = STYLES_DIR / "player_styles.csv"
+MODELS_DIR = DATA_DIR / "models"
 RANKINGS_DIR = DATA_DIR / "rankings"
 ICC_RANKINGS_CSV = RANKINGS_DIR / "icc_rankings.csv"
 ICC_RANKINGS_SOURCE_URL = os.environ.get(
@@ -29,7 +30,7 @@ DB_PATH = Path(os.environ.get("CRIIQ_DB", DATA_DIR / "criiq.db"))
 
 ALL_DIRS = [DATA_DIR, RAW_DIR, REGISTER_DIR, CACHE_DIR, INTERIM_DIR,
             QUARANTINE_DIR, FEATURES_DIR, STYLES_DIR, RANKINGS_DIR, OVERRIDES_DIR,
-            CACHE_DIR / "cricinfo"]
+            MODELS_DIR, CACHE_DIR / "cricinfo"]
 
 WIKIDATA_SPARQL = "https://query.wikidata.org/sparql"
 
@@ -117,6 +118,12 @@ class Settings:
     impact_recent_matches: int = 10
 
     min_innings_bayesian: int = 20
+
+    # Win-probability (empirical model): additive shrinkage toward the innings
+    # prior for sparse state buckets, and the fraction of matches held out
+    # (by match, never by ball) to report honest calibration.
+    winprob_shrinkage: float = 12.0
+    winprob_test_fraction: float = 0.2
 
 
 SETTINGS = Settings()

@@ -6,6 +6,7 @@ data/interim/
 data/quarantine/
 data/styles/
 data/features/
+data/models/
 data/rankings/
 data/overrides/
 data/*.db
