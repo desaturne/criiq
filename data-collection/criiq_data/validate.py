@@ -32,7 +32,7 @@ def validate_deliveries(df: pd.DataFrame, match_id: str) -> tuple[pd.DataFrame, 
         reasons[bad & (reasons == "")] = f"non-numeric {col}"
         df[col] = coerced
 
-    for col in ("striker", "bowler", "batting_team", "bowling_team"):
+    for col in ("striker", "non_striker", "bowler", "batting_team", "bowling_team"):
         bad = df[col].isna() | (df[col].astype(str).str.strip() == "")
         reasons[bad & (reasons == "")] = f"null {col}"
 

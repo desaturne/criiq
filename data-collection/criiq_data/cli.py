@@ -126,10 +126,22 @@ def cmd_winprob(args):
     conn = connect(); init_schema(conn)
     if args.state:
         # e.g. --state "innings=2,balls_remaining=30,wickets=4,runs_required=40"
+        allowed = {"innings", "wickets", "balls_remaining", "runs_required",
+                   "balls_bowled", "score"}
+        required = {"innings", "wickets"}
         kv = {}
         for part in args.state.split(","):
             k, _, v = part.partition("=")
-            kv[k.strip()] = int(v.strip())
+            k, v = k.strip(), v.strip()
+            if k not in allowed:
+                raise SystemExit(f"--state: unknown key '{k}' (allowed: {sorted(allowed)})")
+            try:
+                kv[k] = int(v)
+            except ValueError:
+                raise SystemExit(f"--state: '{k}' must be an integer, got '{v}'")
+        missing = required - kv.keys()
+        if missing:
+            raise SystemExit(f"--state: missing required key(s): {sorted(missing)}")
         wp = winprob.probability_for_state(args.format, **kv)
         _pp({"format": args.format, "state": kv,
              "win_prob_batting": wp, "win_prob_bowling": round(1 - wp, 4)})

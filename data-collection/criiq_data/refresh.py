@@ -19,25 +19,25 @@ def run(*, force_download: bool = False, enrich: bool = False,
     init_schema(conn)
     summary: dict = {"started_at": started.isoformat(timespec="seconds")}
 
-    log.info("== 1/8 register ==")
+    log.info("== 1/12 register ==")
     summary["register"] = download_register.download_register(conn)
 
-    log.info("== 2/8 download cricsheet ==")
+    log.info("== 2/12 download cricsheet ==")
     summary["download"] = download_cricsheet.download_all(conn, force=force_download)
 
-    log.info("== 3/8 ingest ==")
+    log.info("== 3/12 ingest ==")
     summary["ingest"] = ingest.ingest_all(conn)
 
-    log.info("== 4/8 identity ==")
+    log.info("== 4/12 identity ==")
     summary["identity"] = identity.run(conn)
 
     if enrich:
-        log.info("== 5/9 cricinfo enrichment (best-effort) ==")
+        log.info("== 5/12 cricinfo enrichment (best-effort) ==")
         summary["enrich"] = scrape_cricinfo.enrich_players(conn)
     else:
-        log.info("== 5/9 cricinfo enrichment skipped (use --enrich) ==")
+        log.info("== 5/12 cricinfo enrichment skipped (use --enrich) ==")
 
-    log.info("== 6/9 styles (manual csv always; wikidata seed if requested) ==")
+    log.info("== 6/12 styles (manual csv always; wikidata seed if requested) ==")
     summary["styles_csv"] = styles.load_manual_csv(conn)
     if seed_styles:
         try:
@@ -53,34 +53,34 @@ def run(*, force_download: bool = False, enrich: bool = False,
     summary["styles_coverage"] = styles.coverage(conn)
 
     if scan_rss:
-        log.info("== 7/9 rss retirement scan ==")
+        log.info("== 7/12 rss retirement scan ==")
         try:
             summary["rss"] = rss_monitor.scan_feeds(conn)
         except Exception as exc:
             log.warning("rss scan failed: %s", exc)
             summary["rss"] = {"error": str(exc)}
 
-    log.info("== 8/9 registry + career + player cards ==")
+    log.info("== 8/12 registry + career + player cards ==")
     summary["icc_rankings"] = rankings.load(conn)
     summary["status_overrides"] = overrides.load_csv(conn)
     summary["registry"] = registry.build_registry(conn)
     summary["career"] = career.build_career(conn)
     summary["cards"] = player_card.build_cards(conn)
 
-    log.info("== 9/10 advanced profiles ==")
+    log.info("== 9/12 advanced profiles ==")
     summary["advanced"] = advanced.build_advanced(conn)
 
-    log.info("== 10/10 per-opponent, impact, venue, matchups, phases ==")
+    log.info("== 10/12 per-opponent, impact, venue, matchups, phases ==")
     summary["vs_opponent"] = opponents.build_vs_opponent(conn)
     summary["impact"] = impact.build_impact(conn)
     summary["venue"] = venue_stats.build_venue_stats(conn)
     summary["matchups"] = matchups.build_matchups(conn)
     summary["phases"] = phases.build_phases(conn)
 
-    log.info("== ML feature/label datasets (win-loss, ball-state, per-match impact) ==")
+    log.info("== 11/12 ML feature/label datasets (win-loss, ball-state, per-match impact) ==")
     summary["ml_features"] = ml_features.build_all(conn)
 
-    log.info("== win probability (empirical, all phases) ==")
+    log.info("== 12/12 win probability (empirical, all phases) ==")
     summary["winprob"] = winprob.build_winprob(conn)
 
     set_meta(conn, "last_successful_refresh", dt.datetime.now().isoformat(timespec="seconds"))
