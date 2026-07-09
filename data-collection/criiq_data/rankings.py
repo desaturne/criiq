@@ -34,7 +34,7 @@ class RankingsFetchError(RuntimeError):
 
 def _unmatched_id(fmt: str, discipline: str, gender: str | None, rank: int | None, name: str) -> str:
     key = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "unknown"
-    return f"UNMATCHED::{fmt}::{discipline}::{gender or "unknown"}::{rank or "na"}::{key}"
+    return f"UNMATCHED::{fmt}::{discipline}::{gender or 'unknown'}::{rank or 'na'}::{key}"
 
 
 def normalise_format(value: str | None) -> str | None:
