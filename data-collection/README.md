@@ -24,10 +24,11 @@ A single SQLite database (`data/criiq.db`) containing:
 | `player_by_venue` | batting+bowling performance **at each ground** |
 | `dismissal_matchup` | batter-vs-bowler dismissals — **bogey bowler** (overall + per opponent) and favourite victims |
 | `match_features` | **win/loss prediction** training table: leakage-safe pre-match form, H2H, toss + label |
-| `player_match_impact` | per-player per-match contribution + result label |
+| `player_match_impact` | per-player per-match contribution + result label, incl. bowling containment quality (`bowl_dot_pct`, `bowl_boundary_pct`, `bowl_strike_rate`) |
 | `ball_state` (parquet, `data/features/`) | per-ball in-game state + outcome label for **live win-probability** models |
 | `win_prob` (parquet, `data/features/`) | per-ball **win probability** (batting & bowling team) across all phases, from the empirical model in `data/models/` |
 | `player_styles` | bowling style / batting hand / role + provenance |
+| `player_role_final` | finalized batter/bowler/all-rounder role (batting-position-refined, not just ball-count) + **wicket-keeper flag** for major nations' current squads, sourced from Wikipedia and merged strictly by `key_cricinfo` |
 | `retirement_alerts` | RSS retirement alerts (PENDING until human-confirmed) |
 | `venues` | venue alias normalisation |
 
@@ -46,6 +47,59 @@ delivery name --[match info registry]--> cricsheet identifier
 Authority: **Cricsheet wins on events** (balls, lineups, results, last-appearance);
 **ESPNcricinfo wins on metadata** (DOB, role, retirement). H2H is **computed from
 Cricsheet** and cross-checked against Cricinfo.
+
+## Gender-scoped player identity (men's + women's T20I, safely)
+
+The database already ingests **both** men's and women's T20I (3,393 male
+matches alongside 2,035 female, at time of writing) — "men's in scope" above
+isn't aspirational, the raw data is already there. That surfaced a real
+correctness problem: Cricsheet's own per-match player registry (parsed
+verbatim in `ingest.py`'s `registry,people,<name>,<identifier>` rows — this
+is their data, not a matching bug in this codebase) confirmedly **reuses the
+same identifier across two genuinely different real people of different
+genders** in 32 cases (e.g. "K Joshi" resolves to both a Nepal women's player
+active as of June 2026 and an unrelated men's player) — every derived table
+built by `format` alone, not `gender`, would otherwise silently blend two
+different people's stats into one corrupted profile.
+
+`identity.py`'s `player_id_for(identifier, gender=None)` and
+`resolve_players()` fix this at the root: the ~99.5% of identifiers that only
+ever appear under one gender keep the exact same id they've always had (zero
+churn); the ~32 confirmed-colliding identifiers each mint two distinct,
+stable ids (one per gender, `players.gender` set — the schema's old
+`cricsheet_identifier UNIQUE` constraint was relaxed to
+`UNIQUE(cricsheet_identifier, gender)` for this). Every derived-table builder
+that resolves identifiers to player_ids (`career.py`, `impact.py`,
+`phases.py`, `matchups.py`, `advanced.py`, `opponents.py`, `venue_stats.py`,
+`registry.py`, `role_finalize.py`, `wpa.py`, `ml_features.py`) now groups by
+`(identifier, gender)`, not identifier alone, and resolves through
+`identity.player_id_map`/`resolve_player_ids` — real corruption this
+uncovered on rebuild: **2,842 orphaned rows** (the old blended records) were
+found and removed across every derived table when this was rolled out on the
+live DB.
+
+**Why this specifically unblocks men's data being *used*, not just present**:
+model-training's whole pipeline already reads this DB scoped by
+`gender=SETTINGS.gender` (a settings value, not hardcoded) — extending
+recommendations to men's T20I later is a one-line config change *precisely
+because* player identity is now safe to share across both genders in the
+same tables. Before this fix, doing that would have meant every one of the
+32 collision cases actively corrupting both a men's and a women's player's
+career stats, phase splits, WPA, and matchup history simultaneously —
+correctness debt that would only have gotten worse (more players, more
+short-name collisions) the more men's data got used, not less.
+
+**Known residual gap**: `h2h.py`'s `names_for_player` (used by
+`batter_vs_bowler`/`player_vs_team`, and transitively by `sheet`/`profile`'s
+drill-down views) still resolves by raw display name without a gender
+filter, so a specific head-to-head lookup involving one of the 32 split
+identifiers can still pull deliveries from both real people. This doesn't
+affect anything the recommendation engine actually reads (`player_career`,
+`player_impact`, `player_phase`, `dismissal_matchup`, `player_advanced`,
+`player_match_impact`, `player_match_wpa` are all fixed) — it's scoped to
+data-collection's own standalone reporting commands for those specific 32
+identifiers. `player_card.py` has the same residual gap for the same reason
+(a display/dashboard table, not read by model-training).
 
 ## Setup
 
@@ -190,6 +244,27 @@ Age advisory and career phase are role-specific (fast bowler threshold 38, other
 40; phase bands per role). Age comes from the Wikidata DOB seed (partial coverage),
 so phase/advisory populate only where DOB is known.
 
+**A real, serious bug found and fixed via a live demo check**: `recall_flag`
+is meant to flag a borderline-stale player worth a selector's second look —
+it is *not* supposed to override a genuinely `INACTIVE` (3+ years absent)
+player back into eligibility. Its old formula (`1 if days_since >
+recall_flag_days (180) else 0`) never checked that, and since
+`recall_flag_days` (180) is far smaller than `inactive_window_days` (1095),
+**every unranked `INACTIVE` player automatically got `recall_flag=1`** —
+model-training's `roster.team_pool` treats `INACTIVE & recall_flag==0` as
+excluded, so this silently defeated that exclusion for anyone not
+ICC-ranked. Caught concretely: "RK Parwin", last appearance for India in
+**2012**, was still surfacing in 2026 team recommendations. Fixed by adding
+the missing guard (`recall_flag` can no longer be 1 once a player is already
+past `inactive_window_days`); rebuilding the real registry dropped the count
+of players wrongly holding `recall_flag=1` from 5,134 to 2,815. Verified
+against the *entire* live database: **zero** players with a last real
+appearance before 2023 remain in any of the 90 known teams' current pools
+after the fix. A genuine recall-from-retirement (a real selector decision,
+not a date arithmetic guess) still has a path — `overrides.py`'s manual
+status override — this just stops the automatic heuristic from fabricating
+one.
+
 **ICC rank** confirms the elite few but is *not* the primary signal: ICC publishes
 only the **top 10** per discipline (Wikipedia carries the same top 10, and the full
 list sits behind ICC's credentialed Sportz Interactive widget), so the appearance
@@ -243,6 +318,11 @@ and **partial role** but not style/hand. So:
    Free and legal; strong coverage for internationals, partial for associates /
    domestic (players without an English Wikipedia article are simply skipped).
    Existing values are never overwritten, so the manual CSV acts as an override.
+   Real yield from running it unrestricted (no `--limit`) against the live DB:
+   7,218 candidates processed, 2,269 new bowling styles + 2,582 new batting
+   hands filled in under 2 minutes — bowling-style coverage among real female
+   T20 bowlers alone went from 127/1,739 (7.3%) to 568/1,739 (32.7%). Re-run
+   after any large data refresh brings in new players.
 3. `styles --scaffold` — writes `data/styles/player_styles.csv` pre-filled with
    `key_cricinfo` + name; fill/override `bowling_style`, `batting_hand`,
    `playing_role` by hand for anything Wikipedia missed or got wrong.
@@ -255,6 +335,41 @@ vs spin** *and* a finer **vs off-spin / leg-spin / slow-left-arm** split (runs,
 SR, boundary%, dismissals, average); and the bowler's economy / strike-rate /
 average **vs RHB and vs LHB**. The strengths summary turns these into coach-facing
 matchup notes ("least effective vs leg-spin — a matchup to exploit").
+
+## Finalized role & wicket-keeper flag (`player_role_final`)
+
+`derived_role` (in `players`) classifies purely from ball counts (>=60 balls
+faced/bowled = all-rounder), which conflates a genuine batting all-rounder
+with a specialist bowler who's simply faced enough tail-end balls over a long
+career. Wicket-keeper status has **no signal at all** in the ball-by-ball
+data (Cricsheet's CSV export carries no fielder-of-dismissal), so it can only
+come from an external source.
+
+```bash
+python -m criiq_data.cli role-finalize                              # local pass: batting-position-refined role
+python -m criiq_data.cli role-finalize --load-external CSV           # merge externally-researched roles/keeper flags
+```
+
+- **Local pass** (`role_finalize.compute_batting_positions` +
+  `finalize_local_roles`): derives each player's median batting position from
+  the same ball-by-ball data, and reclassifies a ball-count "all-rounder"
+  whose median position is deep in the order (>=8) as a bowler instead —
+  genuinely new, offline, no external dependency.
+- **External merge** (`merge_external_roles`): squad-page role/keeper data
+  (currently covers 18 women's T20I nations' current squads, sourced
+  from Wikipedia — the original 13 major nations plus UAE, Namibia, Nepal,
+  Netherlands, and Hong Kong, added by real match-volume ranking among
+  previously-uncovered teams) matched to existing `players` rows and merged **strictly by
+  `key_cricinfo`** — never by raw name — so it can never create a duplicate
+  identity for a player already resolved (e.g. "Smriti Mandhana" merging
+  into the same record as cricsheet's "S Mandhana", not a new one). Squad-page
+  names ("First Last") are matched to cricsheet's "XY Surname" convention by
+  surname + leading initial (see `role_finalize.match_full_name_to_cricsheet`)
+  — plain string-similarity scoring rates these two formats as different
+  enough to fall below the project's usual fuzzy_threshold (88), so a
+  domain-specific heuristic is used instead. Unmatched names (uncapped
+  players not yet in cricsheet's history, or genuine ambiguity) are reported,
+  never guessed.
 
 ## Scope & config
 

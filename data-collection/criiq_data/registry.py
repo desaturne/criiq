@@ -86,17 +86,22 @@ def _status(is_ranked, days_since) -> str:
     return _classify(is_ranked, days_since, None)[0]
 
 
-def _players_meta(conn) -> dict[str, dict]:
+def _players_meta(conn) -> dict[tuple[str, str | None], dict]:
+    """(cricsheet_identifier, gender) -> player row. Gender-scoped because a
+    handful of Cricsheet registry identifiers are reused across two
+    genuinely different people of different genders (see identity.py) --
+    a plain identifier-keyed dict would silently keep only one of them.
+    """
     rows = conn.execute(
-        "SELECT player_id, cricsheet_identifier, canonical_name, key_cricinfo, "
+        "SELECT player_id, cricsheet_identifier, gender, canonical_name, key_cricinfo, "
         "nationality, role, derived_role, date_of_birth, bowling_style, batting_hand "
         "FROM players").fetchall()
-    return {r["cricsheet_identifier"]: dict(r) for r in rows if r["cricsheet_identifier"]}
+    return {(r["cricsheet_identifier"], r["gender"]): dict(r) for r in rows if r["cricsheet_identifier"]}
 
 
 def build_registry_for_format(conn, fmt: str) -> int:
     apps = pd.read_sql_query(
-        "SELECT mp.match_id, mp.player_name, mp.team, m.date, m.team1, m.team2 "
+        "SELECT mp.match_id, mp.player_name, mp.team, m.date, m.team1, m.team2, m.gender "
         "FROM match_players mp JOIN matches m ON mp.match_id = m.match_id "
         "WHERE m.format = ?", conn, params=(fmt,)
     )
@@ -130,7 +135,10 @@ def build_registry_for_format(conn, fmt: str) -> int:
     # selection_window_days before as_of are considered.
     window_start = as_of - pd.Timedelta(days=SETTINGS.selection_window_days)
     win = apps[apps["date"] >= window_start]
-    grp = win.groupby("identifier")
+    # gender kept alongside identifier in every group key below -- see
+    # _players_meta's docstring on why a plain identifier isn't always
+    # enough to identify one real person.
+    grp = win.groupby(["identifier", "gender"])
     player_win = grp["match_id"].nunique().to_dict()
     first_win = grp["date"].min().to_dict()
     recent_team = (grp["team"].agg(lambda s: s.value_counts().idxmax()).to_dict()
@@ -143,21 +151,26 @@ def build_registry_for_format(conn, fmt: str) -> int:
     ])
     team_dates = {t: sorted(g["date"].tolist()) for t, g in _td.groupby("team")}
 
-    last_idx = apps.sort_values("date").groupby("identifier").tail(1).set_index("identifier")
+    last_idx = apps.sort_values("date").groupby(["identifier", "gender"]).tail(1).set_index(
+        ["identifier", "gender"])
 
     rows = []
     active = inactive = inconsistent = retired = advisories = 0
-    for ident, last in last_idx.iterrows():
-        pm = meta.get(ident)
+    for (ident, gender), last in last_idx.iterrows():
+        # unsplit (non-colliding) players are stored with gender=NULL --
+        # `gender` here is the real value from actual match data, so try the
+        # split-specific key first, then fall back to the unsplit one.
+        pm = meta.get((ident, gender)) or meta.get((ident, None))
         if not pm:
             continue
         pid = pm["player_id"]
         last_date = last["date"].date()
         days_since = max(0, (as_of_date - last_date).days)
 
-        team = recent_team.get(ident) or last["team"]
-        window_player_matches = int(player_win.get(ident, 0))
-        fw = first_win.get(ident)
+        key = (ident, gender)
+        team = recent_team.get(key) or last["team"]
+        window_player_matches = int(player_win.get(key, 0))
+        fw = first_win.get(key)
         dates = team_dates.get(team, [])
         window_team_matches = (len(dates) - bisect.bisect_left(dates, fw)) if (fw is not None and dates) else 0
         selection_rate = None
@@ -177,7 +190,21 @@ def build_registry_for_format(conn, fmt: str) -> int:
         advisory = _age_advisory(age, cat)
         is_ranked = pid in ranked
         status, activity_signal, status_reason = _classify(is_ranked, days_since, selection_rate)
-        recall = 0 if is_ranked else (1 if days_since > SETTINGS.recall_flag_days else 0)
+        # `recall_flag` is meant to flag a borderline-stale player worth a
+        # selector's second look, NOT to override a genuinely long-absent
+        # (INACTIVE, >inactive_window_days) player back into eligibility --
+        # `recall_flag_days` (180) is far smaller than `inactive_window_days`
+        # (1095), so without this guard *every* unranked INACTIVE player
+        # automatically got recall_flag=1, silently defeating
+        # `roster.team_pool`'s INACTIVE exclusion for anyone not ICC-ranked
+        # (a real bug found this way: "RK Parwin", last appearance 2012, was
+        # still surfacing in India's current squad recommendations in 2026).
+        # A genuine recall-from-retirement needs a real signal this
+        # single-most-recent-appearance loop can't see (a fresh appearance
+        # after a long-past gap) -- that belongs in `overrides.py`'s manual
+        # status override, not an automatic days-since-last-appearance guess.
+        recall = 0 if is_ranked or days_since > SETTINGS.inactive_window_days else (
+            1 if days_since > SETTINGS.recall_flag_days else 0)
         rk = current_rank(conn, pid, fmt) if is_ranked else None
         discipline = rk["discipline"] if rk else None
 

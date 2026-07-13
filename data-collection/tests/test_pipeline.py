@@ -125,6 +125,33 @@ def test_registry_conservative_and_recency(conn):
     assert dd["recall_flag"] == 1
 
 
+def test_recall_flag_never_overrides_a_genuinely_inactive_player(tmp_path):
+    # Real bug found via a live-DB demo check: "RK Parwin" last appeared for
+    # India in 2012 (>13 years before the most recent match in the data) yet
+    # kept surfacing in 2026 team recommendations. Root cause: recall_flag's
+    # old formula (`days_since > recall_flag_days`, 180) fires for *every*
+    # unranked INACTIVE player, since inactive_window_days (1095) is larger
+    # than recall_flag_days -- roster.py's INACTIVE exclusion checks
+    # `recall_flag==0`, so it was silently defeated for anyone unranked.
+    c = connect(tmp_path / "recall.db")
+    init_schema(c)
+    _add_player_meta(c, "Old Timer", "id_stale", "801")
+    _add_player_meta(c, "Current Star", "id_current", "802")
+    _add_match(c, "R1", "2012-10-03", "Team A", "Team B", "Team A")
+    _add_match_player(c, "R1", "Team A", "Old Timer")
+    _add_match(c, "R2", "2026-06-10", "Team A", "Team B", "Team A")
+    _add_match_player(c, "R2", "Team A", "Current Star")
+    c.commit()
+    identity.resolve_players(c)
+
+    registry.build_registry_for_format(c, "T20")
+    old = c.execute("SELECT * FROM player_registry WHERE player_id=?",
+                    (identity.player_id_for("id_stale"),)).fetchone()
+    assert old["retirement_status"] == "INACTIVE"
+    assert old["recall_flag"] == 0   # must not silently re-enable eligibility
+    c.close()
+
+
 def test_winprob_empirical_learns_and_calibrates():
     from criiq_data.winprob import EmpiricalWinProb
     # Synthetic chase: the batting team wins iff the ask is gettable
@@ -171,6 +198,51 @@ def test_winprob_save_load_roundtrip(tmp_path, monkeypatch):
     q = pd.DataFrame([{"innings": 2, "balls_remaining": 30, "wickets": 3,
                        "runs_required": 20, "balls_bowled": 90, "score": 0}])
     assert loaded.predict(q)[0] == pytest.approx(m.predict(q)[0])
+
+
+def test_wpa_credits_striker_and_debits_bowler(conn, tmp_path, monkeypatch):
+    from criiq_data import wpa, winprob
+
+    monkeypatch.setattr(winprob, "MODELS_DIR", tmp_path)
+    model = winprob.EmpiricalWinProb()
+    model.grids = {
+        # M1 (innings 1), bin widths BALLS_BIN=6/SCORE_BIN=10: balls 1-5 (score
+        # 1..7, balls_bowled 1..5) all land on (k_bowled=0, k_wk=0, k_score=0).
+        # Ball 6 is both the over's 6th ball *and* the wicket ball, so it moves
+        # to (k_bowled=1, k_wk=1, k_score=0) -- a clean, hand-verifiable single
+        # win-probability swing to test attribution on.
+        "set_full": pd.DataFrame([
+            {"k_bowled": 0, "k_wk": 0, "k_score": 0, "wp": 0.55},
+            {"k_bowled": 1, "k_wk": 1, "k_score": 0, "wp": 0.45},
+        ]),
+        "set_coarse": pd.DataFrame(columns=["k_bowled", "k_wk", "wp"]),
+        "chase_full": pd.DataFrame(columns=["k_rem", "k_wk", "k_rr", "wp"]),
+        "chase_coarse": pd.DataFrame(columns=["k_rem", "k_wk", "wp"]),
+    }
+    model.save("T20")
+
+    wpa.build_wpa_for_format(conn, "T20")
+
+    bat_id = identity.player_id_for("id_bat")
+    bowl_id = identity.player_id_for("id_bowl")
+
+    m1_bat = conn.execute(
+        "SELECT batting_wpa FROM player_match_wpa WHERE player_id=? AND match_id='M1'",
+        (bat_id,)).fetchone()
+    m1_bowl = conn.execute(
+        "SELECT bowling_wpa FROM player_match_wpa WHERE player_id=? AND match_id='M1'",
+        (bowl_id,)).fetchone()
+
+    # only the wicket ball moves the bucket (0.55 -> 0.45): every prior ball
+    # in the over lands on the same bucket, so their deltas are exactly zero.
+    assert m1_bat["batting_wpa"] == pytest.approx(-0.10)
+    # the bowling team's probability moved the opposite way, by construction.
+    assert m1_bowl["bowling_wpa"] == pytest.approx(0.10)
+
+    phase_row = conn.execute(
+        "SELECT matches, batting_wpa_per_match FROM player_phase_wpa "
+        "WHERE player_id=? AND format='T20' AND phase='powerplay'", (bat_id,)).fetchone()
+    assert phase_row is not None and phase_row["matches"] >= 1
 
 
 def test_registry_flags_inconsistent_selection(tmp_path):
@@ -295,6 +367,19 @@ def test_player_match_impact(conn):
                        (identity.player_id_for("id_bat"),)).fetchone()
     assert row["runs"] == 13 and row["won"] == 1
     assert row["bat_contribution_pct"] == 100.0  # AA scored all of Team A's runs
+
+    # BB Bowler M1: 6 balls [1,0,4,2,0,0(wkt)] -- 3 dots, 1 boundary, 1 wicket.
+    m1 = conn.execute("SELECT * FROM player_match_impact WHERE player_id=? AND match_id='M1'",
+                       (identity.player_id_for("id_bowl"),)).fetchone()
+    assert m1["bowl_dot_pct"] == 50.0 and m1["bowl_boundary_pct"] == 16.7
+    assert m1["bowl_strike_rate"] == 6.0
+
+    # BB Bowler M2: 4 balls [6,6,0,1] -- 1 dot, 2 boundaries, 0 wickets ->
+    # strike rate is None (undefined), not a divide-by-zero 0.
+    m2 = conn.execute("SELECT * FROM player_match_impact WHERE player_id=? AND match_id='M2'",
+                       (identity.player_id_for("id_bowl"),)).fetchone()
+    assert m2["bowl_dot_pct"] == 25.0 and m2["bowl_boundary_pct"] == 50.0
+    assert m2["bowl_strike_rate"] is None
 
 
 def test_ball_state(conn, tmp_path, monkeypatch):
@@ -571,6 +656,97 @@ def test_advanced_profile_and_style_splits(conn):
     assert pb["bowling"]["wickets"] == 1
     assert pb["bowling"]["vs_batting_hand"]["RHB"]["strike_rate"] == 10.0
     assert pb["style"]["bowling_type"] == "pace"
+
+
+def test_map_bowling_style_from_squad_page_role_text():
+    from criiq_data.role_finalize import _map_bowling_style
+    assert _map_bowling_style("Spin Bowler") == "spin"
+    assert _map_bowling_style("Pace Bowler") == "pace"
+    assert _map_bowling_style("Seam Bowler") == "pace"
+    assert _map_bowling_style("Batter") is None
+    assert _map_bowling_style("All-rounder") is None
+
+
+def test_merge_external_roles_backfills_bowling_style_without_overwriting(conn):
+    from criiq_data import role_finalize as rf
+
+    pid = identity.player_id_for("id_bowl")
+    key_cricinfo = "222"
+
+    records = [{"key_cricinfo": key_cricinfo, "name": "BB Bowler", "is_keeper": False,
+                "primary_role_override": "bowler", "bowling_style": "spin",
+                "confidence": 95.0, "source_url": "https://en.wikipedia.org/wiki/Test"}]
+    result = rf.merge_external_roles(conn, records, "T20")
+    assert result["bowling_styles"] == 1
+
+    row = conn.execute("SELECT bowling_style FROM player_styles WHERE player_id=?", (pid,)).fetchone()
+    assert row["bowling_style"] == "spin"
+
+    # a second merge with a *different* style must not clobber the existing value
+    rf.merge_external_roles(conn, [{**records[0], "bowling_style": "pace"}], "T20")
+    row = conn.execute("SELECT bowling_style FROM player_styles WHERE player_id=?", (pid,)).fetchone()
+    assert row["bowling_style"] == "spin"
+
+
+def test_colliding_identifier_splits_by_gender():
+    """A single Cricsheet registry identifier reused across two genuinely
+    different real people (one male, one female match) -- a confirmed,
+    real quirk in this data, not a bug in this codebase's own matching (see
+    identity.py's docstrings) -- must resolve to two distinct, stable
+    player_ids, and their career stats must never blend.
+    """
+    c = connect(":memory:")
+    init_schema(c)
+
+    # Both "AS Female" and "AS Male" share the SAME underlying identifier
+    # ("shared_id"), exactly like the real confirmed cases.
+    c.execute("INSERT INTO identifier_map(player_name, identifier) VALUES(?,?)",
+              ("AS Female", "shared_id"))
+    c.execute("INSERT INTO identifier_map(player_name, identifier) VALUES(?,?)",
+              ("AS Male", "shared_id"))
+    c.execute("INSERT INTO people(identifier, name, unique_name, key_cricinfo) "
+              "VALUES(?,?,?,?)", ("shared_id", "AS Female", "AS Female", "999"))
+
+    c.execute(
+        "INSERT INTO matches(match_id, format, gender, date, team1, team2, winner) "
+        "VALUES('MF','T20','female','2024-01-01','Team A','Team B','Team A')")
+    c.execute("INSERT INTO match_players(match_id, team, player_name) VALUES('MF','Team A','AS Female')")
+    c.execute(
+        "INSERT INTO deliveries(match_id, innings, over, ball_in_over, batting_team, "
+        "bowling_team, striker, non_striker, bowler, runs_off_bat, extras, wides, "
+        "noballs, runs_total) VALUES('MF',1,0,1,'Team A','Team B','AS Female','X','Y',4,0,0,0,4)")
+
+    c.execute(
+        "INSERT INTO matches(match_id, format, gender, date, team1, team2, winner) "
+        "VALUES('MM','T20','male','2024-02-01','Team C','Team D','Team C')")
+    c.execute("INSERT INTO match_players(match_id, team, player_name) VALUES('MM','Team C','AS Male')")
+    c.execute(
+        "INSERT INTO deliveries(match_id, innings, over, ball_in_over, batting_team, "
+        "bowling_team, striker, non_striker, bowler, runs_off_bat, extras, wides, "
+        "noballs, runs_total) VALUES('MM',1,0,1,'Team C','Team D','AS Male','X','Y',0,0,0,0,0)")
+    c.commit()
+
+    result = identity.resolve_players(c)
+    assert result["split_identifiers"] == 1
+
+    rows = c.execute(
+        "SELECT player_id, gender, canonical_name FROM players WHERE cricsheet_identifier='shared_id'"
+    ).fetchall()
+    assert len(rows) == 2
+    genders = {r["gender"] for r in rows}
+    assert genders == {"female", "male"}
+    assert len({r["player_id"] for r in rows}) == 2  # distinct, stable ids
+
+    career.build_career_for_format(c, "T20")
+    female_pid = next(r["player_id"] for r in rows if r["gender"] == "female")
+    male_pid = next(r["player_id"] for r in rows if r["gender"] == "male")
+    female_career = c.execute(
+        "SELECT runs FROM player_career WHERE player_id=?", (female_pid,)).fetchone()
+    male_career = c.execute(
+        "SELECT runs FROM player_career WHERE player_id=?", (male_pid,)).fetchone()
+    assert female_career["runs"] == 4    # only her own boundary, not blended with his 0
+    assert male_career["runs"] == 0      # only his own dot ball, not blended with her 4
+    c.close()
 
 
 def test_validate_deliveries_rejects_bad_rows():
