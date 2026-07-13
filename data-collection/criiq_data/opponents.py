@@ -6,6 +6,7 @@ import pandas as pd
 
 from .config import enabled_sources
 from .db import set_meta
+from .identity import player_id_map
 from .logging_utils import get_logger
 from .stats import build_innings
 
@@ -34,10 +35,13 @@ def build_vs_opponent_for_format(conn, fmt: str) -> int:
     potm = potm_match_to_ident(conn, fmt)
     inn["potm"] = [potm.get(m) == i for m, i in zip(inn["match_id"], inn["identifier"])]
 
-    players = {r["cricsheet_identifier"]: dict(r) for r in conn.execute(
-        "SELECT cricsheet_identifier, player_id, canonical_name FROM players")}
+    unambiguous, split = player_id_map(conn)
 
-    keys = ["identifier", "opponent"]
+    # gender kept in every group key: the handful of Cricsheet registry
+    # identifiers reused across two genuinely different people of different
+    # genders (see identity.py) would otherwise have their vs-opponent
+    # records blended into one meaningless combined total.
+    keys = ["identifier", "gender", "opponent"]
     results = inn.groupby(keys).agg(
         matches=("match_id", "nunique"), won=("won", "sum"),
         potm=("potm", "sum")).reset_index()
@@ -67,8 +71,8 @@ def build_vs_opponent_for_format(conn, fmt: str) -> int:
     now = dt.datetime.now().isoformat(timespec="seconds")
     rows = []
     for r in df.itertuples(index=False):
-        pm = players.get(r.identifier)
-        if not pm:
+        pid = unambiguous.get(r.identifier) or split.get((r.identifier, r.gender))
+        if not pid:
             continue
         runs = int(r.runs) if pd.notna(r.runs) else 0
         balls = int(r.balls_faced) if pd.notna(r.balls_faced) else 0
@@ -79,7 +83,7 @@ def build_vs_opponent_for_format(conn, fmt: str) -> int:
         best_bowl = (f"{int(r.best_w)}/{int(r.best_r)}"
                      if pd.notna(getattr(r, "best_w", None)) else None)
         rows.append((
-            pm["player_id"], fmt, r.opponent,
+            pid, fmt, r.opponent,
             int(r.matches), int(r.won), round(100 * r.won / r.matches, 1) if r.matches else None,
             int(r.bat_innings) if pd.notna(r.bat_innings) else 0, runs, balls,
             round(runs / outs, 1) if outs else None,

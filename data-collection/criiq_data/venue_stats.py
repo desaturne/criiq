@@ -6,6 +6,7 @@ import pandas as pd
 
 from .config import enabled_sources
 from .db import set_meta
+from .identity import player_id_map
 from .logging_utils import get_logger
 from .stats import build_innings
 
@@ -19,10 +20,11 @@ def build_for_format(conn, fmt: str) -> int:
     inn = inn.dropna(subset=["venue_id"])
     venues = {r["venue_id"]: r["canonical_name"]
               for r in conn.execute("SELECT venue_id, canonical_name FROM venues")}
-    players = {r["cricsheet_identifier"]: dict(r) for r in conn.execute(
-        "SELECT cricsheet_identifier, player_id FROM players")}
+    unambiguous, split = player_id_map(conn)
 
-    keys = ["identifier", "venue_id"]
+    # gender kept in every group key: see identity.py on why a plain
+    # identifier isn't always enough to identify one real person.
+    keys = ["identifier", "gender", "venue_id"]
     res = inn.groupby(keys).agg(matches=("match_id", "nunique"), won=("won", "sum")).reset_index()
     batted = inn[inn["balls_faced"] > 0]
     bat = batted.groupby(keys).agg(
@@ -40,8 +42,8 @@ def build_for_format(conn, fmt: str) -> int:
     now = dt.datetime.now().isoformat(timespec="seconds")
     rows = []
     for r in df.itertuples(index=False):
-        pm = players.get(r.identifier)
-        if not pm:
+        pid = unambiguous.get(r.identifier) or split.get((r.identifier, r.gender))
+        if not pid:
             continue
         runs = int(r.runs) if pd.notna(r.runs) else 0
         balls = int(r.balls) if pd.notna(r.balls) else 0
@@ -51,7 +53,7 @@ def build_for_format(conn, fmt: str) -> int:
         wk = int(r.wkts) if pd.notna(r.wkts) else 0
         best_bowl = f"{int(r.best_w)}/{int(r.best_r)}" if pd.notna(getattr(r, "best_w", None)) else None
         rows.append((
-            pm["player_id"], fmt, r.venue_id, venues.get(r.venue_id, r.venue_id),
+            pid, fmt, r.venue_id, venues.get(r.venue_id, r.venue_id),
             int(r.matches), int(r.won),
             int(r.bat_innings) if pd.notna(r.bat_innings) else 0, runs, balls,
             round(runs / outs, 1) if outs else None,

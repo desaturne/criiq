@@ -8,6 +8,7 @@ import pandas as pd
 from .config import enabled_sources
 from .db import set_meta
 from .h2h import BOWLER_WICKETS
+from .identity import player_id_map
 from .logging_utils import get_logger
 from . import styles
 
@@ -35,7 +36,7 @@ def _bat_rate(runs, balls):
 def build_for_format(conn, fmt: str) -> int:
     deliv = pd.read_sql_query(
         "SELECT d.match_id, d.innings, d.over, d.ball_in_over, d.striker, d.bowler, "
-        "d.runs_off_bat, d.wides, d.noballs, d.wicket_type, d.player_dismissed "
+        "d.runs_off_bat, d.wides, d.noballs, d.wicket_type, d.player_dismissed, m.gender "
         "FROM deliveries d JOIN matches m ON d.match_id=m.match_id WHERE m.format=?",
         conn, params=(fmt,))
     if deliv.empty:
@@ -46,11 +47,19 @@ def build_for_format(conn, fmt: str) -> int:
     bowl_bucket = styles.bowler_buckets(conn)
     bowl_bucket_detail = styles.bowler_buckets(conn, detail=True)
     bat_hand = styles.batter_hands(conn)
-    players = {r["cricsheet_identifier"]: r["player_id"]
-               for r in conn.execute("SELECT cricsheet_identifier, player_id FROM players")}
-    style_meta = {r["cricsheet_identifier"]: (r["batting_hand"], r["bowling_style"])
-                  for r in conn.execute(
-                      "SELECT cricsheet_identifier, batting_hand, bowling_style FROM players")}
+    unambiguous, split = player_id_map(conn)
+    # (cricsheet_identifier, gender) -> (batting_hand, bowling_style); the
+    # handful of Cricsheet registry identifiers reused across two genuinely
+    # different people of different genders (see identity.py) can have
+    # different style metadata for each, so a plain identifier-keyed dict
+    # would silently keep only one of them.
+    style_meta = {}
+    for r in conn.execute(
+            "SELECT cricsheet_identifier, gender, batting_hand, bowling_style FROM players"):
+        style_meta[(r["cricsheet_identifier"], r["gender"])] = (r["batting_hand"], r["bowling_style"])
+
+    def _style_meta(ident, gender):
+        return style_meta.get((ident, None)) or style_meta.get((ident, gender)) or (None, None)
 
     deliv["striker_id"] = deliv["striker"].map(n2i)
     deliv["bowler_id"] = deliv["bowler"].map(n2i)
@@ -74,31 +83,35 @@ def build_for_format(conn, fmt: str) -> int:
     bat["rotate"] = (bat["legal"] & bat["rob"].isin([1, 2, 3])).astype(int)
     bat["lb"] = bat["legal"].astype(int)
 
-    bat_overall = bat.groupby("striker_id").agg(
+    # gender kept in every group key throughout this function: the handful
+    # of colliding identifiers would otherwise have two different people's
+    # deliveries blended into one meaningless combined "profile" -- see
+    # identity.py.
+    bat_overall = bat.groupby(["striker_id", "gender"]).agg(
         runs=("rob", "sum"), balls=("lb", "sum"), fours=("four", "sum"),
         sixes=("six", "sum"), bdry=("bdry", "sum"), dots=("dot", "sum"),
         rotate=("rotate", "sum"), outs=("out_self", "sum")).to_dict("index")
-    bat_innings = (bat.drop_duplicates(["striker_id", "match_id", "innings"])
-                   .groupby("striker_id").size().to_dict())
+    bat_innings = (bat.drop_duplicates(["striker_id", "gender", "match_id", "innings"])
+                   .groupby(["striker_id", "gender"]).size().to_dict())
 
     def _nest_phase(df, idcol):
-        d = df.groupby([idcol, "phase"]).agg(
+        d = df.groupby([idcol, "gender", "phase"]).agg(
             runs=("rob", "sum"), balls=("lb", "sum"), bdry=("bdry", "sum"),
             dots=("dot", "sum"), outs=("out_self", "sum"))
         out = {}
-        for (pid, ph), row in d.iterrows():
-            out.setdefault(pid, {})[ph] = row.to_dict()
+        for (pid, gender, ph), row in d.iterrows():
+            out.setdefault((pid, gender), {})[ph] = row.to_dict()
         return out
     bat_phase = _nest_phase(bat, "striker_id")
 
     def _vs_type(col_map, colname):
         bat[colname] = bat["bowler"].map(col_map)
-        v = bat.dropna(subset=[colname]).groupby(["striker_id", colname]).agg(
+        v = bat.dropna(subset=[colname]).groupby(["striker_id", "gender", colname]).agg(
             runs=("rob", "sum"), balls=("lb", "sum"), bdry=("bdry", "sum"),
             dots=("dot", "sum"), outs=("out_self", "sum"))
         nested: dict = {}
-        for (pid, bk), row in v.iterrows():
-            nested.setdefault(pid, {})[bk] = row.to_dict()
+        for (pid, gender, bk), row in v.iterrows():
+            nested.setdefault((pid, gender), {})[bk] = row.to_dict()
         return nested
 
     bat_vs_type = _vs_type(bowl_bucket, "bowl_bucket")                 # coarse pace/spin
@@ -107,43 +120,45 @@ def build_for_format(conn, fmt: str) -> int:
     legal = bat[bat["legal"]].sort_values(["match_id", "innings", "over", "ball_in_over"])
     legal["ball_no"] = legal.groupby(["match_id", "innings", "striker_id"]).cumcount() + 1
     legal["accel"] = (legal["ball_no"] > 10).map({False: "first10", True: "after10"})
-    ac = legal.groupby(["striker_id", "accel"]).agg(runs=("rob", "sum"), balls=("ball_no", "count"))
+    ac = legal.groupby(["striker_id", "gender", "accel"]).agg(
+        runs=("rob", "sum"), balls=("ball_no", "count"))
     accel: dict = {}
-    for (pid, a), row in ac.iterrows():
-        accel.setdefault(pid, {})[a] = {"runs": int(row["runs"]), "balls": int(row["balls"])}
+    for (pid, gender, a), row in ac.iterrows():
+        accel.setdefault((pid, gender), {})[a] = {"runs": int(row["runs"]), "balls": int(row["balls"])}
 
     bw = deliv.dropna(subset=["bowler_id"]).copy()
     bw["lbb"] = bw["legal_bowl"].astype(int)
     bw["dotb"] = (bw["legal_bowl"] & (bw["rc"] == 0)).astype(int)
     bw["wktb"] = bw["bwkt"].astype(int)
-    bowl_overall = bw.groupby("bowler_id").agg(
+    bowl_overall = bw.groupby(["bowler_id", "gender"]).agg(
         balls=("lbb", "sum"), runs=("rc", "sum"), wkts=("wktb", "sum"),
         dots=("dotb", "sum")).to_dict("index")
 
-    bp = bw.groupby(["bowler_id", "phase"]).agg(
+    bp = bw.groupby(["bowler_id", "gender", "phase"]).agg(
         balls=("lbb", "sum"), runs=("rc", "sum"), wkts=("wktb", "sum"), dots=("dotb", "sum"))
     bowl_phase: dict = {}
-    for (pid, ph), row in bp.iterrows():
-        bowl_phase.setdefault(pid, {})[ph] = row.to_dict()
+    for (pid, gender, ph), row in bp.iterrows():
+        bowl_phase.setdefault((pid, gender), {})[ph] = row.to_dict()
 
     bw["bat_hand"] = bw["striker"].map(bat_hand)
-    vh = bw.dropna(subset=["bat_hand"]).groupby(["bowler_id", "bat_hand"]).agg(
+    vh = bw.dropna(subset=["bat_hand"]).groupby(["bowler_id", "gender", "bat_hand"]).agg(
         balls=("lbb", "sum"), runs=("rc", "sum"), wkts=("wktb", "sum"))
     bowl_vs_hand: dict = {}
-    for (pid, h), row in vh.iterrows():
-        bowl_vs_hand.setdefault(pid, {})[h] = row.to_dict()
+    for (pid, gender, h), row in vh.iterrows():
+        bowl_vs_hand.setdefault((pid, gender), {})[h] = row.to_dict()
 
     now = dt.datetime.now().isoformat(timespec="seconds")
     rows = []
     all_ids = set(bat_overall) | set(bowl_overall)
-    for ident in all_ids:
-        pid = players.get(ident)
+    for (ident, gender) in all_ids:
+        pid = unambiguous.get(ident) or split.get((ident, gender))
         if not pid:
             continue
+        key = (ident, gender)
         profile = {"format": fmt}
         archetype = None
 
-        hand_raw, bstyle = style_meta.get(ident, (None, None))
+        hand_raw, bstyle = _style_meta(ident, gender)
         profile["style"] = {
             "batting_hand": styles.classify_hand(hand_raw),
             "batting_hand_raw": hand_raw,
@@ -151,19 +166,19 @@ def build_for_format(conn, fmt: str) -> int:
             "bowling_type": styles.classify_bowling_detail(bstyle),
         }
 
-        bo = bat_overall.get(ident)
+        bo = bat_overall.get(key)
         if bo and bo["balls"] > 0:
-            profile["batting"] = _batting_block(bo, bat_innings.get(ident, 0),
-                                                bat_phase.get(ident, {}),
-                                                bat_vs_type.get(ident, {}),
-                                                accel.get(ident, {}),
-                                                bat_vs_type_detail.get(ident, {}))
+            profile["batting"] = _batting_block(bo, bat_innings.get(key, 0),
+                                                bat_phase.get(key, {}),
+                                                bat_vs_type.get(key, {}),
+                                                accel.get(key, {}),
+                                                bat_vs_type_detail.get(key, {}))
             archetype = profile["batting"]["archetype"]
 
-        bwo = bowl_overall.get(ident)
+        bwo = bowl_overall.get(key)
         if bwo and bwo["balls"] > 0:
-            profile["bowling"] = _bowling_block(bwo, bowl_phase.get(ident, {}),
-                                                bowl_vs_hand.get(ident, {}))
+            profile["bowling"] = _bowling_block(bwo, bowl_phase.get(key, {}),
+                                                bowl_vs_hand.get(key, {}))
 
         profile["strengths"] = _strengths_summary(profile)
         profile["meta"] = {"updated_at": now}

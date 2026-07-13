@@ -7,6 +7,7 @@ import pandas as pd
 from .config import enabled_sources
 from .db import set_meta
 from .h2h import BOWLER_WICKETS
+from .identity import player_id_map
 from .logging_utils import get_logger
 from .stats import build_innings
 
@@ -29,22 +30,26 @@ def _team_map(conn, fmt: str) -> dict:
     inn = build_innings(conn, fmt)
     if inn.empty:
         return {}
-    return (inn.dropna(subset=["team"]).groupby("identifier")["team"]
+    return (inn.dropna(subset=["team"]).groupby(["identifier", "gender"])["team"]
             .agg(lambda s: s.mode().iloc[0] if not s.mode().empty else None).to_dict())
 
 
 def build_for_format(conn, fmt: str) -> int:
     d = pd.read_sql_query(
         "SELECT d.over, d.striker, d.bowler, d.runs_off_bat, d.wides, d.noballs, "
-        "d.wicket_type, d.player_dismissed "
+        "d.wicket_type, d.player_dismissed, m.gender "
         "FROM deliveries d JOIN matches m ON d.match_id=m.match_id WHERE m.format=?",
         conn, params=(fmt,))
     if d.empty:
         return 0
     n2i = {r["player_name"]: r["identifier"]
            for r in conn.execute("SELECT player_name, identifier FROM identifier_map")}
-    players = {r["cricsheet_identifier"]: r["player_id"]
-               for r in conn.execute("SELECT cricsheet_identifier, player_id FROM players")}
+    unambiguous, split = player_id_map(conn)
+    # (identifier, gender) -> team, not just identifier: the handful of
+    # Cricsheet registry identifiers reused across two genuinely different
+    # people of different genders (see identity.py) would otherwise get
+    # whichever one gender's team happens to win the mode() vote, silently
+    # ranking the OTHER person against the wrong team's peer group.
     teams = _team_map(conn, fmt)
 
     d["phase"] = d["over"].map(phase_of)
@@ -59,20 +64,20 @@ def build_for_format(conn, fmt: str) -> int:
     bat["bdry"] = bat["rob"].isin([4, 6]).astype(int) * bat["legal"]
     bat["dot"] = ((bat["legal"] == 1) & (bat["rob"] == 0)).astype(int)
     bat["out_self"] = ((bat["player_dismissed"] == bat["striker"])).astype(int)
-    bg = bat.groupby(["sid", "phase"]).agg(
+    bg = bat.groupby(["sid", "gender", "phase"]).agg(
         balls=("legal", "sum"), runs=("rob", "sum"), bdry=("bdry", "sum"),
         dots=("dot", "sum"), dis=("out_self", "sum")).reset_index()
     bg["sr"] = (100 * bg["runs"] / bg["balls"]).round(1)
-    bg["team"] = bg["sid"].map(teams)
+    bg["team"] = [teams.get((s, g)) for s, g in zip(bg["sid"], bg["gender"])]
 
     bw = d.dropna(subset=["bid"]).copy()
     bw["dotb"] = ((bw["legal_bowl"] == 1) & (bw["rc"] == 0)).astype(int)
     bw["wkt"] = (bw["wicket_type"].isin(BOWLER_WICKETS) & bw["player_dismissed"].notna()).astype(int)
-    wg = bw.groupby(["bid", "phase"]).agg(
+    wg = bw.groupby(["bid", "gender", "phase"]).agg(
         balls=("legal_bowl", "sum"), runs=("rc", "sum"), wkts=("wkt", "sum"),
         dots=("dotb", "sum")).reset_index()
     wg["econ"] = (6 * wg["runs"] / wg["balls"]).round(2)
-    wg["team"] = wg["bid"].map(teams)
+    wg["team"] = [teams.get((b, g)) for b, g in zip(wg["bid"], wg["gender"])]
 
     def _rank(df, value, ascending, min_balls):
         df = df.copy()
@@ -88,18 +93,18 @@ def build_for_format(conn, fmt: str) -> int:
     bg = _rank(bg, "sr", ascending=False, min_balls=MIN_BAT_BALLS)
     wg = _rank(wg, "econ", ascending=True, min_balls=MIN_BOWL_BALLS)
 
-    bat_idx = {(r.sid, r.phase): r for r in bg.itertuples(index=False)}
-    bowl_idx = {(r.bid, r.phase): r for r in wg.itertuples(index=False)}
+    bat_idx = {(r.sid, r.gender, r.phase): r for r in bg.itertuples(index=False)}
+    bowl_idx = {(r.bid, r.gender, r.phase): r for r in wg.itertuples(index=False)}
 
     now = dt.datetime.now().isoformat(timespec="seconds")
-    keys = {(s, p) for s, p in bat_idx} | {(b, p) for b, p in bowl_idx}
+    keys = {(s, g, p) for s, g, p in bat_idx} | {(b, g, p) for b, g, p in bowl_idx}
     rows = []
-    for ident, phase in keys:
-        pid = players.get(ident)
+    for ident, gender, phase in keys:
+        pid = unambiguous.get(ident) or split.get((ident, gender))
         if not pid:
             continue
-        b = bat_idx.get((ident, phase))
-        w = bowl_idx.get((ident, phase))
+        b = bat_idx.get((ident, gender, phase))
+        w = bowl_idx.get((ident, gender, phase))
         bpct = (round(100 * (b.size - b.rank) / (b.size - 1), 0)
                 if b is not None and pd.notna(b.rank) and b.size and b.size > 1 else
                 (100.0 if b is not None and pd.notna(b.rank) else None))

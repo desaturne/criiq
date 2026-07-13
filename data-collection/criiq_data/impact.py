@@ -8,6 +8,7 @@ import pandas as pd
 from .config import enabled_sources
 from .db import set_meta
 from .h2h import BOWLER_WICKETS
+from .identity import player_id_map
 from .logging_utils import get_logger
 from .opponents import potm_match_to_ident
 from .stats import build_innings
@@ -38,6 +39,10 @@ def _wicket_events(deliv: pd.DataFrame, name2id: dict) -> pd.DataFrame:
     wk = wk.merge(first[["match_id", "innings", "batter", "position"]],
                   left_on=["match_id", "innings", "player_dismissed"],
                   right_on=["match_id", "innings", "batter"], how="left")
+    # identifier, NOT player_id, despite the name -- gender is threaded
+    # alongside it (deliv already carries `gender`) so the final grouping
+    # below can disambiguate the handful of Cricsheet registry identifiers
+    # reused across two genuinely different people of different genders.
     wk["bowler_id"] = wk["bowler"].map(name2id)
     return wk[wk["credited"] & wk["bowler_id"].notna()]
 
@@ -51,13 +56,15 @@ def build_impact_for_format(conn, fmt: str) -> int:
     deliv = pd.read_sql_query(
         "SELECT d.match_id, d.innings, d.over, d.ball_in_over, d.batting_team, "
         "d.bowling_team, d.striker, d.non_striker, d.bowler, d.runs_off_bat, "
-        "d.wides, d.runs_total, d.wicket_type, d.player_dismissed "
+        "d.wides, d.runs_total, d.wicket_type, d.player_dismissed, m.gender "
         "FROM deliveries d JOIN matches m ON d.match_id=m.match_id WHERE m.format=?",
         conn, params=(fmt,))
     name2id = {r["player_name"]: r["identifier"]
                for r in conn.execute("SELECT player_name, identifier FROM identifier_map")}
-    players = {r["cricsheet_identifier"]: dict(r) for r in conn.execute(
-        "SELECT cricsheet_identifier, player_id, canonical_name FROM players")}
+    meta = {}
+    for r in conn.execute("SELECT cricsheet_identifier, gender, canonical_name FROM players"):
+        meta[(r["cricsheet_identifier"], r["gender"])] = dict(r)
+    unambiguous, split = player_id_map(conn)
     potm = potm_match_to_ident(conn, fmt)
 
     team_runs = deliv.groupby(["match_id", "batting_team"])["runs_total"].sum()
@@ -77,23 +84,27 @@ def build_impact_for_format(conn, fmt: str) -> int:
     deliv["legal"] = (deliv["wides"].fillna(0) == 0).astype(int)
     deliv["striker_id"] = deliv["striker"].map(name2id)
     sit = deliv[deliv["innings"].isin([1, 2]) & deliv["striker_id"].notna()]
-    sit_runs = sit.groupby(["striker_id", "innings"]).agg(
+    # gender kept alongside the identifier in every group key below, for the
+    # same reason as career.py/ml_features.py -- see identity.py.
+    sit_runs = sit.groupby(["striker_id", "gender", "innings"]).agg(
         runs=("runs_off_bat", "sum"), balls=("legal", "sum"))
     outs = (deliv[deliv["player_dismissed"].notna()].assign(
         did=lambda x: x["player_dismissed"].map(name2id))
-        .dropna(subset=["did"]).groupby(["did", "innings"]).size())
+        .dropna(subset=["did"]).groupby(["did", "gender", "innings"]).size())
 
     wk = _wicket_events(deliv, name2id)
-    bowl_impact = wk.groupby("bowler_id").agg(
+    bowl_impact = wk.groupby(["bowler_id", "gender"]).agg(
         wkts=("credited", "size"),
         avg_pp=("partnership_broken", "mean"),
         top_order=("position", lambda s: int((s <= TOP_ORDER).sum())))
 
     now = dt.datetime.now().isoformat(timespec="seconds")
     rows = []
-    for ident, g in inn.groupby("identifier"):
-        pm = players.get(ident)
-        if not pm:
+    for (ident, gender), g in inn.groupby(["identifier", "gender"]):
+        pid = unambiguous.get(ident) or split.get((ident, gender))
+        # unsplit (non-colliding) players are stored with gender=NULL.
+        pm = meta.get((ident, gender)) or meta.get((ident, None))
+        if not pid or not pm:
             continue
         matches = int(g["match_id"].nunique())
         batted = g[g["balls_faced"] > 0]
@@ -107,17 +118,19 @@ def build_impact_for_format(conn, fmt: str) -> int:
         potm_awards = int(g["potm"].sum())
         mwp = int((g["potm"] & (g["won"] == 1)).sum())
 
-        bi = bowl_impact.loc[ident] if ident in bowl_impact.index else None
+        bi_key = (ident, gender)
+        bi = bowl_impact.loc[bi_key] if bi_key in bowl_impact.index else None
         avg_pp = round(float(bi["avg_pp"]), 1) if bi is not None else None
         top_scalps = int(bi["top_order"]) if bi is not None else 0
         total_wk = int(bi["wkts"]) if bi is not None else 0
         top_pct = round(100 * top_scalps / total_wk, 1) if total_wk else None
 
         def _sit(innum):
-            if (ident, innum) not in sit_runs.index:
+            key = (ident, gender, innum)
+            if key not in sit_runs.index:
                 return None, None
-            r = sit_runs.loc[(ident, innum)]
-            o = int(outs.get((ident, innum), 0))
+            r = sit_runs.loc[key]
+            o = int(outs.get(key, 0))
             sr = round(100 * r["runs"] / r["balls"], 1) if r["balls"] else None
             avg = round(r["runs"] / o, 1) if o else None
             return sr, avg
@@ -141,7 +154,7 @@ def build_impact_for_format(conn, fmt: str) -> int:
         }
 
         rows.append((
-            pm["player_id"], fmt, matches, bat_contrib, bowl_contrib, win_pct,
+            pid, fmt, matches, bat_contrib, bowl_contrib, win_pct,
             round(runs_wins.mean(), 1) if len(runs_wins) else None,
             round(runs_loss.mean(), 1) if len(runs_loss) else None,
             potm_awards, round(potm_awards / matches, 3) if matches else None, mwp,
