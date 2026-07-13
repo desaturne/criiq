@@ -1,0 +1,170 @@
+from __future__ import annotations
+
+from criiq_models.recommend.explain import explain
+from criiq_models.recommend.score import RecommendationScorer
+from tests.conftest import (add_appearance, add_bowler_matchup, add_match, add_match_impact,
+                             add_match_wpa, register_player, set_career_bowling)
+
+
+def _seed_cold_start_player(conn):
+    register_player(conn, "p1", "A Player", role="batter")
+    for i, d in enumerate(["2024-01-01", "2024-02-01", "2024-03-01"]):
+        mid = f"m{i}"
+        add_match(conn, mid, d, "India", "Australia")
+        add_match_impact(conn, "p1", mid, d, "India", "Australia", won=1,
+                          bat_sr=110.0, bat_contrib=12.0)
+    conn.execute("INSERT INTO player_impact(player_id, format, importance_score, win_pct, "
+                 "potm_rate) VALUES('p1','T20',55.0,60.0,0.1)")
+    conn.execute("INSERT INTO player_career(player_id, format, bat_average, bat_strike_rate) "
+                 "VALUES('p1','T20',25.0,105.0)")
+    conn.execute("INSERT INTO dismissal_matchup(format, batter_id, bowler_id, bowler_team, "
+                 "balls, runs, dismissals) VALUES('T20','p1','bowler_x','Australia',30,20,1)")
+    conn.commit()
+
+
+def test_cold_start_skips_model_and_score_is_bounded(conn):
+    _seed_cold_start_player(conn)
+    scorer = RecommendationScorer(conn, "T20", "female", models={})
+    scored = scorer.score("p1", "Australia")
+
+    c = scored["components"]
+    assert c["model_applied"] is False
+    assert c["cold_start_reason"] is not None
+    assert 0.0 <= scored["score"] <= 100.0
+
+    parts_sum = (c["model_part"] + c["matchup_part"] + c["phase_fit_part"]
+                 + c["standing_part"] + c["risk_part"])
+    assert scored["score"] == round(max(0.0, min(100.0, parts_sum)), 1)
+
+
+def test_explain_mentions_player_and_opponent(conn):
+    _seed_cold_start_player(conn)
+    scorer = RecommendationScorer(conn, "T20", "female", models={})
+    scored = scorer.score("p1", "Australia")
+    payload = explain(scored)
+
+    assert payload["player_id"] == "p1"
+    assert any("A Player" in line for line in payload["summary"])
+    assert any("Australia" in line for line in payload["summary"])
+
+
+def test_explain_reports_comparison_against_next_best_alternative(conn):
+    _seed_cold_start_player(conn)
+    scorer = RecommendationScorer(conn, "T20", "female", models={})
+    scored = scorer.score("p1", "Australia")
+
+    alternative = {"player_id": "p2", "name": "B Bench", "score": 4.2}
+    payload = explain(scored, alternative=alternative, slot="opener")
+
+    assert any("B Bench" in line and "4.2" in line for line in payload["summary"])
+
+
+def test_explain_reports_uncontested_pick_when_no_alternative_exists(conn):
+    _seed_cold_start_player(conn)
+    scorer = RecommendationScorer(conn, "T20", "female", models={})
+    scored = scorer.score("p1", "Australia")
+
+    payload = explain(scored, alternative=None, slot="bowler_tail")
+    assert any("uncontested" in line.lower() for line in payload["summary"])
+
+
+def test_bowler_side_matchup_rewards_wicket_rate_above_career_baseline(conn):
+    register_player(conn, "p1", "C Bowler", role="bowler")
+    set_career_bowling(conn, "p1", wickets=20, balls_bowled=400)  # career rate = 0.05
+
+    register_player(conn, "opp1", "O Batter", role="batter")
+    add_match(conn, "m_opp", "2024-06-01", "India", "Australia")
+    add_appearance(conn, "m_opp", "Australia", "O Batter")
+
+    # p1 has struck far more often against this specific opponent's roster
+    # than her career average (rate 5/40=0.125 vs career 0.05) -- a bowler
+    # getting real credit for this was previously impossible: the aggregate
+    # matchup signal only ever looked at HER batting history vs opponent
+    # bowlers, never her bowling history vs opponent batters.
+    add_bowler_matchup(conn, bowler_id="p1", batter_id="opp1", balls=40, runs=30, dismissals=5)
+
+    scorer = RecommendationScorer(conn, "T20", "female", models={})
+    scored = scorer.score("p1", "Australia")
+    inp = scored["components"]["inputs"]
+
+    assert inp["bowl_matchup_balls_vs_opponent_batters"] == 40
+    assert inp["bowl_matchup_wicket_rate"] == 0.125
+    assert inp["bowl_matchup_part"] > 0
+
+    payload = explain(scored)
+    assert any("bowled 40 balls" in line.lower() for line in payload["summary"])
+
+
+def test_bowling_dot_and_boundary_pct_surface_as_descriptive_narrative(conn):
+    register_player(conn, "p1", "C Bowler", role="bowler")
+    for i, d in enumerate(["2024-01-01", "2024-02-01", "2024-03-01"]):
+        mid = f"m{i}"
+        add_match(conn, mid, d, "India", "Australia")
+        add_match_impact(conn, "p1", mid, d, "India", "Australia", won=1,
+                          economy=6.0, bowl_contrib=20.0, wickets=1, balls_bowled=24,
+                          bowl_dot_pct=50.0, bowl_boundary_pct=8.0)
+    conn.commit()
+
+    scorer = RecommendationScorer(conn, "T20", "female", models={})
+    scored = scorer.score("p1", "Australia")
+
+    inp = scored["components"]["inputs"]
+    assert inp["bowl_dot_pct"] == 50.0 and inp["bowl_boundary_pct"] == 8.0
+    # Descriptive only -- must never affect the actual score/component points.
+    assert "bowl_dot_pct" not in scored["components"]
+
+    payload = explain(scored)
+    assert any("dot ball" in line.lower() for line in payload["summary"])
+
+
+def test_model_part_driven_by_wpa_not_contribution_share(conn):
+    # The whole point of the WPA switch: a proven match-winner (high WPA,
+    # modest contribution-share) must score above a fringe player with a
+    # flashier-looking contribution-share but near-zero WPA — the exact
+    # failure mode found this session (a part-time all-rounder outranking a
+    # proven opener).
+    register_player(conn, "star", "Star Opener", role="batter")
+    register_player(conn, "fringe", "Fringe Allrounder", role="all-rounder")
+
+    for i, d in enumerate(["2021-01-01", "2021-06-01", "2022-01-01", "2022-06-01", "2023-01-01",
+                           "2023-06-01", "2024-01-01", "2024-06-01", "2025-01-01", "2025-06-01"]):
+        mid = f"star_m{i}"
+        add_match(conn, mid, d, "India", "England")
+        add_match_impact(conn, "star", mid, d, "India", "England", won=1, bat_contrib=15.0)
+        add_match_wpa(conn, "star", mid, batting_wpa=0.08)  # consistently a genuine match-winner
+
+    for i, d in enumerate(["2024-02-01", "2024-03-01", "2024-04-01"]):
+        mid = f"fringe_m{i}"
+        add_match(conn, mid, d, "India", "England")
+        add_match_impact(conn, "fringe", mid, d, "India", "England", won=1, bat_contrib=20.0)
+        add_match_wpa(conn, "fringe", mid, batting_wpa=-0.01)  # flashy share, near-zero real impact
+    conn.commit()
+
+    scorer = RecommendationScorer(conn, "T20", "female", models={})
+    star = scorer.score("star", "England")
+    fringe = scorer.score("fringe", "England")
+
+    assert star["components"]["inputs"]["predicted_batting_wpa"] > 0
+    assert fringe["components"]["inputs"]["predicted_batting_wpa"] < star["components"]["inputs"]["predicted_batting_wpa"]
+    assert star["score"] > fringe["score"]
+
+
+def test_score_many_applies_team_need_bonus_across_the_pool(conn):
+    register_player(conn, "p1", "Player One", role="batter")
+    register_player(conn, "p2", "Player Two", role="batter")
+    conn.execute("INSERT INTO player_phase_wpa(player_id, format, phase, matches, "
+                 "batting_wpa_per_match, bowling_wpa_per_match) VALUES "
+                 "('benchmark','T20','death',10,0.0,0.0), "
+                 "('p1','T20','death',10,-0.10,0.0), "  # pool average (-0.10+0.02)/2 = -0.04,
+                 "('p2','T20','death',10,0.02,0.0)")     # still below benchmark despite p2's edge
+    conn.commit()
+
+    scorer = RecommendationScorer(conn, "T20", "female", models={})
+    scored = {s["player_id"]: s for s in scorer.score_many(["p1", "p2"], "England")}
+
+    assert scored["p2"]["components"]["team_need_part"] > 0
+    assert scored["p2"]["components"]["team_need_phase"] == "death"
+    assert scored["p1"]["components"]["team_need_part"] == 0.0
+    # score() alone (no pool context) must never apply a team-need bonus
+    solo = scorer.score("p2", "England")
+    assert solo["components"]["team_need_part"] == 0.0
