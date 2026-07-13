@@ -5,8 +5,8 @@ import json
 
 from . import advanced, career, download_cricsheet, download_register, identity, impact
 from . import ingest, matchups, ml_features, opponents, overrides, phases, player_card
-from . import rankings, refresh, registry, rss_monitor, scrape_cricinfo, sheet, styles
-from . import venue_stats, winprob
+from . import rankings, refresh, registry, role_finalize, rss_monitor, scrape_cricinfo, sheet, styles
+from . import venue_stats, winprob, wpa
 from .db import connect, get_meta, init_schema, table_count
 from .h2h import batter_vs_bowler, names_for_player
 from .logging_utils import get_logger
@@ -117,9 +117,24 @@ def cmd_phases(args):
     _pp(phases.build_phases(conn)); conn.close()
 
 
+def cmd_role_finalize(args):
+    conn = connect(); init_schema(conn)
+    if args.load_external:
+        records = role_finalize.load_external_roles_csv(args.load_external)
+        _pp(role_finalize.merge_external_roles(conn, records, args.format))
+    else:
+        _pp(role_finalize.finalize_all_local(conn))
+    conn.close()
+
+
 def cmd_ml(args):
     conn = connect(); init_schema(conn)
     _pp(ml_features.build_all(conn)); conn.close()
+
+
+def cmd_wpa(args):
+    conn = connect(); init_schema(conn)
+    _pp(wpa.build_wpa(conn)); conn.close()
 
 
 def cmd_winprob(args):
@@ -318,6 +333,14 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("matchups").set_defaults(func=cmd_matchups)
     sub.add_parser("phases").set_defaults(func=cmd_phases)
     sub.add_parser("ml").set_defaults(func=cmd_ml)
+    sub.add_parser("wpa", help="win-probability-added per player/match/phase").set_defaults(func=cmd_wpa)
+
+    rf = sub.add_parser("role-finalize", help="finalized batter/bowler/all-rounder/keeper role")
+    rf.add_argument("--format", default="T20")
+    rf.add_argument("--load-external", metavar="CSV",
+                     help="merge an externally-researched roles CSV (key_cricinfo, is_keeper, ...) "
+                          "instead of running the local batting-position pass")
+    rf.set_defaults(func=cmd_role_finalize)
 
     wp = sub.add_parser("winprob", help="build/query ball-by-ball win probability")
     wp.add_argument("--format", default="T20")
