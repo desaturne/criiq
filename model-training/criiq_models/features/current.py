@@ -1,0 +1,258 @@
+"""Live scoring feature builder — one player, "as of now".
+
+Builds the same `MODEL_FEATURES` shape as `features/historical.py`, but with
+no leakage concern: since we are scoring a genuinely unplayed future match,
+using the player's *entire* history to date is correct (the historical
+builder only restricts to "before this date" because it's manufacturing
+training rows for *past* matches, where using the full history would leak
+the future into the label).
+
+Also assembles the extra context (`ExtraContext`) that `recommend/score.py`
+needs for the parts of the composite score that are NOT part of the trained
+model: opponent-bowler dismissal matchups, phase profile, track record,
+and eligibility/risk — see `features/historical.py`'s docstring for why
+matchup data isn't reconstructed for training.
+"""
+from __future__ import annotations
+
+import json
+import sqlite3
+from dataclasses import dataclass, field
+
+import numpy as np
+import pandas as pd
+
+from ..config import SETTINGS
+from ..roster import team_pool
+from .common import recency_weighted_mean, role_bucket, shrink
+from .schema import MODEL_FEATURES
+
+
+def resolve_role(conn: sqlite3.Connection, player_id: str, fmt: str) -> tuple[str, bool, float | None]:
+    """(role_bucket, is_keeper, batting_position_median), preferring
+    `player_role_final` — data-driven from batting position + ball-count
+    workload, refined further for known international squads via
+    Wikipedia-sourced keeper/role lookups (see data-collection's
+    `role_finalize.py`) — over the noisier Wikidata-derived
+    `player_registry.role` fallback, which is used only when a player has no
+    `player_role_final` row at all (shouldn't happen once role-finalize has
+    run, but a new player added since could lack one). Batting position has
+    no registry-side fallback — it's simply absent if `player_role_final`
+    hasn't been (re-)built since the player's matches were ingested.
+    """
+    final = conn.execute(
+        "SELECT primary_role, is_keeper, batting_position_median FROM player_role_final "
+        "WHERE player_id=? AND format=?", (player_id, fmt)).fetchone()
+    if final and final["primary_role"]:
+        return role_bucket(final["primary_role"]), bool(final["is_keeper"]), final["batting_position_median"]
+
+    registry = conn.execute(
+        "SELECT role FROM player_registry WHERE player_id=? AND format=?",
+        (player_id, fmt)).fetchone()
+    return role_bucket(registry["role"] if registry else None), False, None
+
+
+def _player_match_history(conn: sqlite3.Connection, player_id: str, fmt: str) -> pd.DataFrame:
+    hist = pd.read_sql_query(
+        "SELECT pmi.date AS date, pmi.opponent AS opponent, pmi.won AS won, "
+        "pmi.bat_strike_rate AS bat_strike_rate, pmi.bat_contribution_pct AS bat_contribution_pct, "
+        "pmi.economy AS economy, pmi.wickets AS wickets, pmi.balls_bowled AS balls_bowled, "
+        "pmi.bowl_contribution_pct AS bowl_contribution_pct, "
+        "pmi.bowl_dot_pct AS bowl_dot_pct, pmi.bowl_boundary_pct AS bowl_boundary_pct, "
+        "pw.batting_wpa AS batting_wpa, pw.bowling_wpa AS bowling_wpa, "
+        "m.venue_id AS venue_id "
+        "FROM player_match_impact pmi JOIN matches m ON pmi.match_id = m.match_id "
+        "LEFT JOIN player_match_wpa pw ON pw.player_id = pmi.player_id "
+        "AND pw.match_id = pmi.match_id AND pw.format = pmi.format "
+        "WHERE pmi.player_id = ? AND pmi.format = ? ORDER BY pmi.date",
+        conn, params=(player_id, fmt))
+    # see features/historical.py: wickets is 0 (not NULL) for non-bowling
+    # matches too, so it needs the same balls_bowled>0 mask before use.
+    hist["wickets_when_bowled"] = hist["wickets"].where(hist["balls_bowled"] > 0)
+    return hist
+
+
+def build_model_features(conn: sqlite3.Connection, player_id: str, opponent: str,
+                          venue_id: str | None, fmt: str = SETTINGS.format) -> dict:
+    hist = _player_match_history(conn, player_id, fmt)
+    row: dict = {f: None for f in MODEL_FEATURES}
+    row["career_matches"] = len(hist)
+    # Discipline-specific counts (not part of the trained model's feature
+    # schema — used only by score.py to shrink bat/bowl contribution toward a
+    # prior with the *right* sample size; a specialist bowler with 100 career
+    # matches but 3 batting innings should shrink hard on the batting side).
+    row["career_bat_matches"] = 0
+    row["career_bowl_matches"] = 0
+    row["career_batting_wpa_matches"] = 0
+    row["career_bowling_wpa_matches"] = 0
+    if hist.empty:
+        row["role_bucket"], _, _ = resolve_role(conn, player_id, fmt)
+        return row
+
+    row["career_bat_contribution_pct"] = hist["bat_contribution_pct"].mean()
+    row["career_bowl_contribution_pct"] = hist["bowl_contribution_pct"].mean()
+    row["career_bat_sr"] = hist["bat_strike_rate"].mean()
+    row["career_bowl_economy"] = hist["economy"].mean()
+    row["career_batting_wpa"] = hist["batting_wpa"].mean()
+    row["career_bowling_wpa"] = hist["bowling_wpa"].mean()
+    row["career_bowl_wickets_per_match"] = hist["wickets_when_bowled"].mean()
+    # Descriptive only -- NOT in MODEL_FEATURES. Tried as trained-model inputs
+    # (plus form_ variants and a balls-per-wicket strike rate) and checked
+    # against the real temporal holdout: every one of them made the bowling
+    # WPA model *worse* (correlation dropped from 0.103 to as low as 0.088 --
+    # see model-training/README.md). Kept here only as plain-language color
+    # for explain.py ("she builds pressure with a high dot-ball rate"), which
+    # carries no such risk since it isn't fed back into a prediction.
+    row["career_bowl_dot_pct"] = hist["bowl_dot_pct"].mean()
+    row["career_bowl_boundary_pct"] = hist["bowl_boundary_pct"].mean()
+    row["career_bat_matches"] = int(hist["bat_contribution_pct"].notna().sum())
+    row["career_bowl_matches"] = int(hist["bowl_contribution_pct"].notna().sum())
+    # Discipline-specific WPA sample sizes — used by score.py to shrink
+    # career_batting_wpa/career_bowling_wpa toward a prior with the *right*
+    # denominator, mirroring career_bat_matches/career_bowl_matches above.
+    row["career_batting_wpa_matches"] = int(hist["batting_wpa"].notna().sum())
+    row["career_bowling_wpa_matches"] = int(hist["bowling_wpa"].notna().sum())
+
+    recent = hist.tail(SETTINGS.form_window_matches)
+    order = pd.RangeIndex(len(recent))
+    row["form_bat_contribution_pct"] = recency_weighted_mean(
+        recent["bat_contribution_pct"], order, SETTINGS.form_recency_lambda)
+    row["form_bowl_contribution_pct"] = recency_weighted_mean(
+        recent["bowl_contribution_pct"], order, SETTINGS.form_recency_lambda)
+    row["form_bat_sr"] = recency_weighted_mean(
+        recent["bat_strike_rate"], order, SETTINGS.form_recency_lambda)
+    row["form_bowl_economy"] = recency_weighted_mean(
+        recent["economy"], order, SETTINGS.form_recency_lambda)
+    row["form_batting_wpa"] = recency_weighted_mean(
+        recent["batting_wpa"], order, SETTINGS.form_recency_lambda)
+    row["form_bowling_wpa"] = recency_weighted_mean(
+        recent["bowling_wpa"], order, SETTINGS.form_recency_lambda)
+    row["form_bowl_wickets_per_match"] = recency_weighted_mean(
+        recent["wickets_when_bowled"], order, SETTINGS.form_recency_lambda)
+
+    # vs-opponent and venue records are the sparsest features (often 0-2
+    # matches), so the raw mean is shrunk toward the career baseline exactly
+    # like `features/historical.py` does for training — this is what makes
+    # "no venue specified" (venue_matches=0) behave in-distribution: shrink()
+    # with n=0 simply returns the career prior, the same continuous
+    # degradation training rows see as venue_matches -> 0, instead of an
+    # abrupt raw-mean-vs-missing cliff (confirmed via the Mandhana-vs-
+    # Hemalatha sanity check to otherwise produce wildly unstable predictions).
+    vs_opp = hist[hist["opponent"] == opponent]
+    row["vs_opp_matches"] = len(vs_opp)
+    row["vs_opp_bat_contribution_pct"] = shrink(
+        vs_opp["bat_contribution_pct"].mean() if len(vs_opp) else None,
+        len(vs_opp), row["career_bat_contribution_pct"])
+    row["vs_opp_bowl_contribution_pct"] = shrink(
+        vs_opp["bowl_contribution_pct"].mean() if len(vs_opp) else None,
+        len(vs_opp), row["career_bowl_contribution_pct"])
+    row["vs_opp_win_pct"] = 100 * vs_opp["won"].mean() if len(vs_opp) else None
+
+    at_venue = hist[hist["venue_id"] == venue_id] if venue_id else hist.iloc[0:0]
+    row["venue_matches"] = len(at_venue)
+    row["venue_bat_contribution_pct"] = shrink(
+        at_venue["bat_contribution_pct"].mean() if len(at_venue) else None,
+        len(at_venue), row["career_bat_contribution_pct"])
+    row["venue_bowl_contribution_pct"] = shrink(
+        at_venue["bowl_contribution_pct"].mean() if len(at_venue) else None,
+        len(at_venue), row["career_bowl_contribution_pct"])
+
+    row["role_bucket"], _, _ = resolve_role(conn, player_id, fmt)
+    return row
+
+
+@dataclass
+class ExtraContext:
+    name: str | None = None
+    role_bucket: str = "unknown"
+    is_keeper: bool = False
+    batting_position_median: float | None = None
+    matchup_balls: int = 0
+    matchup_dismissal_rate: float | None = None   # dismissals per ball vs this opponent's bowlers
+    matchup_runs_per_ball: float | None = None
+    bowl_matchup_balls: int = 0
+    bowl_matchup_wicket_rate: float | None = None  # wickets per ball vs this opponent's specific batters
+    bowl_matchup_runs_per_ball: float | None = None
+    phase_profile: dict = field(default_factory=dict)
+    importance_score: float | None = None
+    win_pct: float | None = None
+    potm_rate: float | None = None
+    icc_rank: int | None = None
+    retirement_status: str | None = None
+    recall_flag: bool = False
+    age_advisory: bool = False
+    selection_rate: float | None = None
+
+
+def build_extra_context(conn: sqlite3.Connection, player_id: str, opponent: str,
+                         fmt: str = SETTINGS.format, gender: str = SETTINGS.gender,
+                         opponent_roster: list[str] | None = None) -> ExtraContext:
+    """`opponent_roster`: the opponent's current player_ids (`roster.team_pool`),
+    pre-computed and passed in by callers scoring many players against the
+    same opponent (e.g. `RecommendationScorer.score_many`) -- it doesn't
+    depend on `player_id`, so recomputing it fresh per player scored would be
+    pure waste. Computed internally when omitted (e.g. direct/test callers).
+    """
+    ctx = ExtraContext()
+
+    name_row = conn.execute(
+        "SELECT canonical_name FROM players WHERE player_id=?", (player_id,)).fetchone()
+    ctx.name = name_row["canonical_name"] if name_row else None
+
+    matchup = pd.read_sql_query(
+        "SELECT balls, runs, dismissals FROM dismissal_matchup "
+        "WHERE format=? AND batter_id=? AND bowler_team=?",
+        conn, params=(fmt, player_id, opponent))
+    if not matchup.empty and matchup["balls"].sum() > 0:
+        balls = int(matchup["balls"].sum())
+        ctx.matchup_balls = balls
+        ctx.matchup_dismissal_rate = float(matchup["dismissals"].sum()) / balls
+        ctx.matchup_runs_per_ball = float(matchup["runs"].sum()) / balls
+
+    # Symmetric bowling-side matchup: how well THIS player has bowled against
+    # the opponent's *specific current batters* (not the blunt "any batter,
+    # any team" aggregate) -- was entirely missing before: dismissal_matchup
+    # has no batting_team column, so unlike the batting axis above (which
+    # filters by the stored bowler_team), opponent-scoping here goes through
+    # the opponent's current roster membership on the batter_id side, same
+    # roster lookup `features/style_matchup.py`'s opponent_bowling_mix uses.
+    opponent_batters = opponent_roster if opponent_roster is not None else team_pool(conn, opponent, fmt, gender)
+    if opponent_batters:
+        placeholders = ",".join("?" * len(opponent_batters))
+        bowl_matchup = pd.read_sql_query(
+            f"SELECT balls, runs, dismissals FROM dismissal_matchup "
+            f"WHERE format=? AND bowler_id=? AND batter_id IN ({placeholders})",
+            conn, params=(fmt, player_id, *opponent_batters))
+        if not bowl_matchup.empty and bowl_matchup["balls"].sum() > 0:
+            balls = int(bowl_matchup["balls"].sum())
+            ctx.bowl_matchup_balls = balls
+            ctx.bowl_matchup_wicket_rate = float(bowl_matchup["dismissals"].sum()) / balls
+            ctx.bowl_matchup_runs_per_ball = float(bowl_matchup["runs"].sum()) / balls
+
+    phase_rows = conn.execute(
+        "SELECT phase, bat_strike_rate, bat_team_percentile, bowl_economy, bowl_team_rank, "
+        "bowl_team_size FROM player_phase WHERE player_id=? AND format=?",
+        (player_id, fmt)).fetchall()
+    ctx.phase_profile = {r["phase"]: dict(r) for r in phase_rows}
+
+    impact = conn.execute(
+        "SELECT importance_score, win_pct, potm_rate FROM player_impact "
+        "WHERE player_id=? AND format=?", (player_id, fmt)).fetchone()
+    if impact:
+        ctx.importance_score = impact["importance_score"]
+        ctx.win_pct = impact["win_pct"]
+        ctx.potm_rate = impact["potm_rate"]
+
+    ctx.role_bucket, ctx.is_keeper, ctx.batting_position_median = resolve_role(conn, player_id, fmt)
+
+    registry = conn.execute(
+        "SELECT retirement_status, recall_flag, age_advisory, selection_rate, icc_rank "
+        "FROM player_registry WHERE player_id=? AND format=?", (player_id, fmt)).fetchone()
+    if registry:
+        ctx.retirement_status = registry["retirement_status"]
+        ctx.recall_flag = bool(registry["recall_flag"])
+        ctx.age_advisory = bool(registry["age_advisory"])
+        ctx.selection_rate = registry["selection_rate"]
+        ctx.icc_rank = registry["icc_rank"]
+
+    return ctx
