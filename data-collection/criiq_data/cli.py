@@ -299,6 +299,34 @@ def cmd_h2h(args):
     conn.close()
 
 
+def cmd_vs_team(args):
+    """A player's full matchup breakdown against one specific opponent team
+    -- the "player card, clicked against Australia" view: every bowler
+    she's faced (runs/balls/strike rate/dismissal rate, bogey bowler
+    highlighted) if she bats, every batter she's bowled to (economy/wickets,
+    best-matchup and most-expensive batter highlighted) if she bowls. An
+    all-rounder gets both; a pure specialist just gets her one real side.
+    """
+    conn = connect(); init_schema(conn)
+    found = _find_player(conn, args.name)
+    if not found:
+        print("player not found"); conn.close(); return
+    player_id = found[0]["player_id"]
+    out = {"player": found[0]["canonical_name"], "opponent": args.team, "format": args.format}
+
+    batting = matchups.batter_vs_team_bowlers(conn, player_id, args.format, args.team)
+    if batting["bowlers"]:
+        out["batting"] = batting
+    bowling = matchups.bowler_vs_team_batters(conn, player_id, args.format, args.team, args.gender)
+    if bowling["batters"]:
+        out["bowling"] = bowling
+    if "batting" not in out and "bowling" not in out:
+        out["note"] = "no recorded matchup data vs this opponent"
+
+    _pp(out)
+    conn.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="criiq-data", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -392,6 +420,13 @@ def build_parser() -> argparse.ArgumentParser:
     h = sub.add_parser("h2h")
     h.add_argument("--batter", required=True); h.add_argument("--bowler", required=True)
     h.add_argument("--format", default="T20"); h.set_defaults(func=cmd_h2h)
+
+    vt = sub.add_parser("vs-team", help="a player's per-bowler/per-batter matchup breakdown vs one opponent team")
+    vt.add_argument("--name", required=True)
+    vt.add_argument("--team", required=True, help="opponent team name")
+    vt.add_argument("--format", default="T20")
+    vt.add_argument("--gender", default="female")
+    vt.set_defaults(func=cmd_vs_team)
 
     return p
 

@@ -22,7 +22,7 @@ A single SQLite database (`data/criiq.db`) containing:
 | `player_impact` | match-impact & importance: contribution share, partnership-breaking, top-order scalps, win contribution, PotM, setting-vs-chasing, importance score |
 | `player_phase` | phase split (PP/middle/death) batting+bowling with **rank within own team** |
 | `player_by_venue` | batting+bowling performance **at each ground** |
-| `dismissal_matchup` | batter-vs-bowler dismissals — **bogey bowler** (overall + per opponent) and favourite victims |
+| `dismissal_matchup` | every batter-vs-bowler pair with a real sample (**6+ balls**, safe matchups included, not just dismissals) — **bogey bowler** (overall + per opponent) and favourite victims |
 | `match_features` | **win/loss prediction** training table: leakage-safe pre-match form, H2H, toss + label |
 | `player_match_impact` | per-player per-match contribution + result label, incl. bowling containment quality (`bowl_dot_pct`, `bowl_boundary_pct`, `bowl_strike_rate`) |
 | `ball_state` (parquet, `data/features/`) | per-ball in-game state + outcome label for **live win-probability** models |
@@ -141,6 +141,7 @@ python -m criiq_data.cli impact                 # match-impact & importance
 python -m criiq_data.cli phases                 # phase splits + intra-team rank
 python -m criiq_data.cli venues                 # per-ground performance
 python -m criiq_data.cli matchups               # batter-vs-bowler dismissals (bogey bowler)
+python -m criiq_data.cli vs-team --name "S Mandhana" --team Australia   # her per-bowler/per-batter breakdown vs one opponent
 python -m criiq_data.cli ml                      # win/loss + ball-state + per-match impact (model-ready)
 python -m criiq_data.cli winprob                 # build ball-by-ball win-probability model (all phases)
 python -m criiq_data.cli winprob --match 1429395 # per-over WP timeline for a match (powerplay->death)
@@ -213,6 +214,47 @@ deliberately excluded rather than fabricated:
 The phase/control/aggression metrics above are the genuine, defensible
 equivalents derived from ball-by-ball. If a board supplies a proprietary feed,
 it can be wired into a dedicated table without touching the derived profile.
+
+### Per-opponent matchup breakdown (`vs-team` — the "player card, clicked against a team" view)
+
+`dismissal_matchup` used to only store a batter/bowler pair once the bowler
+had actually dismissed her at least once — meaning a bowler who had safely
+contained a batter for 50 balls without ever getting her out was invisible
+in this table entirely, even though "she's never lost her wicket to X" is
+exactly as real a matchup fact as "X has dismissed her 3 times". The filter
+is now `balls >= 6` (about an over — enough to be a real sample, not a
+single fluke ball) regardless of dismissal count, so every matchup with a
+genuine sample is kept (54,145 -> 74,931 rows on the live DB).
+
+`vs-team --name <player> --team <opponent>` surfaces this per-player,
+per-opponent, in both directions:
+
+- **Batting** (`batter_vs_team_bowlers`) — every bowler from the opponent
+  she's faced for 6+ balls: runs, balls faced, strike rate and dismissal
+  rate, with the **bogey bowler** highlighted (ranked by dismissal *count*
+  first, then balls — the same convention `top_dismissers` already uses, so
+  a bowler who's gotten her out 3 times in 80 balls outranks a lucky 1-for-6
+  even though the second has the higher raw rate).
+- **Bowling** (`bowler_vs_team_batters`) — every batter from the opponent
+  she's bowled 6+ balls to: runs, balls, economy and the batter's own strike
+  rate, with **two** highlights answering two different questions —
+  `best_matchup` is the batter she's dismissed the *most times*, `most_expensive`
+  is the batter who's hit the *most total runs* off her regardless of how many
+  balls that took. These are deliberately allowed to be different players
+  (verified live: Ellyse Perry vs India — `best_matchup` is Shafali Verma on
+  4 wickets, `most_expensive` is Jemimah Rodrigues on 44 runs).
+
+An all-rounder gets both sections; a specialist just gets her one real side
+(e.g. Sophie Ecclestone vs Australia carries both — she has a genuine, if
+thin, batting record too). Because `dismissal_matchup` has no
+`batting_team` column, the bowling direction scopes "the opponent's
+batters" through actual roster membership (`role_finalize.team_candidates`)
+rather than a stored team field — which surfaced and fixed a second,
+smaller instance of the cross-gender identity collision (see above):
+`team_candidates`'s join wasn't gender-qualified, so a split identifier
+could have matched both the male and female player rows for one real
+appearance. Fixed with the same `(p.gender IS NULL OR p.gender = m.gender)`
+pattern used everywhere else.
 
 ### Retirement, age & ICC rank
 

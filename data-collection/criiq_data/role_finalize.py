@@ -208,6 +208,13 @@ def team_candidates(conn, team: str, gender: str = "female") -> pd.DataFrame:
     """Players who have appeared for `team` (any T20 match, any format row in
     `matches`), for scoping a squad-page name match to a small, high-precision
     candidate set instead of matching against all ~7000 players.
+
+    The join is gender-qualified (`p.gender IS NULL OR p.gender = m.gender`)
+    -- the handful of Cricsheet registry identifiers reused across two
+    genuinely different people of different genders (see identity.py) would
+    otherwise match *both* split player rows for a single real appearance,
+    one of them for the wrong gender entirely. `p.gender IS NULL` always
+    passes for the ~99.5% of identifiers that were never split.
     """
     return pd.read_sql_query(
         "SELECT DISTINCT p.player_id, p.canonical_name, p.key_cricinfo "
@@ -215,6 +222,7 @@ def team_candidates(conn, team: str, gender: str = "female") -> pd.DataFrame:
         "JOIN matches m ON mp.match_id = m.match_id "
         "JOIN identifier_map im ON im.player_name = mp.player_name "
         "JOIN players p ON p.cricsheet_identifier = im.identifier "
+        "AND (p.gender IS NULL OR p.gender = m.gender) "
         "WHERE mp.team = ? AND m.gender = ?", conn, params=(team, gender))
 
 

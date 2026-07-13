@@ -749,6 +749,59 @@ def test_colliding_identifier_splits_by_gender():
     c.close()
 
 
+def test_batter_and_bowler_vs_team_breakdowns_include_safe_matchups(tmp_path):
+    # A bowler who's contained a batter for 12 balls without ever dismissing
+    # her used to be entirely invisible in dismissal_matchup (the old
+    # `dismissals >= 1` filter) -- "never been dismissed by X" is exactly as
+    # real a matchup fact as "X has dismissed her 3 times", and a batter
+    # clicking into a matchup view should see both, not just the bogeymen.
+    c = connect(tmp_path / "vs.db")
+    init_schema(c)
+    _add_player_meta(c, "AA Batter", "id_bat2", "701")
+    _add_player_meta(c, "BB Dangerous", "id_bowl_d", "702")
+    _add_player_meta(c, "CC Safe", "id_bowl_s", "703")
+
+    _add_match(c, "V1", "2024-01-01", "Team A", "Team B", "Team A")
+    for t, n in [("Team A", "AA Batter"), ("Team B", "BB Dangerous"), ("Team B", "CC Safe")]:
+        _add_match_player(c, "V1", t, n)
+    ball_no = 0
+    for _ in range(7):
+        ball_no += 1
+        _ball(c, "V1", 1, 0, ball_no, "Team A", "Team B", "AA Batter", "x", "BB Dangerous", 1)
+    ball_no += 1
+    _ball(c, "V1", 1, 0, ball_no, "Team A", "Team B", "AA Batter", "x", "BB Dangerous",
+          0, wkt="bowled", dismissed="AA Batter")
+    for _ in range(12):
+        ball_no += 1
+        _ball(c, "V1", 1, 1, ball_no, "Team A", "Team B", "AA Batter", "x", "CC Safe", 4)
+    c.commit()
+    identity.resolve_players(c)
+    matchups.build_for_format(c, "T20")
+
+    bat_id = identity.player_id_for("id_bat2")
+    dangerous_id = identity.player_id_for("id_bowl_d")
+    safe_id = identity.player_id_for("id_bowl_s")
+
+    result = matchups.batter_vs_team_bowlers(c, bat_id, "T20", "Team B")
+    names = {b["bowler_name"] for b in result["bowlers"]}
+    assert names == {"BB Dangerous", "CC Safe"}  # the safe bowler is no longer hidden
+    assert result["bogey_bowler"]["bowler_name"] == "BB Dangerous"  # a real dismissal, not raw rate/volume, wins
+    safe_entry = next(b for b in result["bowlers"] if b["bowler_name"] == "CC Safe")
+    assert safe_entry["dismissals"] == 0
+    assert safe_entry["balls"] == 12
+    assert safe_entry["strike_rate"] == 400.0
+
+    dangerous_view = matchups.bowler_vs_team_batters(c, dangerous_id, "T20", "Team A")
+    assert dangerous_view["best_matchup"]["batter_name"] == "AA Batter"
+    assert dangerous_view["best_matchup"]["wickets"] == 1
+
+    safe_view = matchups.bowler_vs_team_batters(c, safe_id, "T20", "Team A")
+    assert safe_view["most_expensive"]["batter_name"] == "AA Batter"
+    assert safe_view["most_expensive"]["runs"] == 48
+    assert safe_view["best_matchup"] is None  # never took a wicket -- no real "best matchup" to claim
+    c.close()
+
+
 def test_validate_deliveries_rejects_bad_rows():
     df = pd.DataFrame({
         "match_id": ["1", "1"], "innings": ["1", "1"], "ball": ["0.1", "0.2"],
