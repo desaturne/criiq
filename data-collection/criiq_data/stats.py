@@ -12,7 +12,7 @@ def build_innings(conn, fmt: str) -> pd.DataFrame:
     deliv = pd.read_sql_query(
         """
         SELECT d.match_id, d.striker, d.bowler, d.runs_off_bat, d.wides,
-               d.noballs, d.wicket_type, d.player_dismissed
+               d.noballs, d.runs_total, d.wicket_type, d.player_dismissed
         FROM deliveries d JOIN matches m ON d.match_id = m.match_id
         WHERE m.format = ?
         """, conn, params=(fmt,))
@@ -41,14 +41,25 @@ def build_innings(conn, fmt: str) -> pd.DataFrame:
         _bb=legal_bowl.astype(int),
         _rc=(deliv["runs_off_bat"].fillna(0) + deliv["wides"].fillna(0) + deliv["noballs"].fillna(0)),
         _wk=bowl_credit.astype(int),
+        # Dot ball: a legal delivery off which the batting team scored
+        # nothing at all (the standard commentary definition — includes the
+        # rare bye/leg-bye-only ball, which isn't charged to the bowler's
+        # economy but still reads as pressure applied). A wide/no-ball is
+        # never a dot: the bowler has already conceded a run by bowling it.
+        _dot=(legal_bowl & (deliv["runs_total"].fillna(0) == 0)).astype(int),
+        # Boundary conceded off the bat (4s/6s) -- containment quality that
+        # economy alone doesn't distinguish from "gave away ones and twos".
+        _bdry=(legal_bowl & (deliv["runs_off_bat"].fillna(0) >= 4)).astype(int),
     ).groupby(["match_id", "bowler"]).agg(
         balls_bowled=("_bb", "sum"), runs_conceded=("_rc", "sum"),
-        wickets=("_wk", "sum")).reset_index()
+        wickets=("_wk", "sum"), dot_balls=("_dot", "sum"),
+        boundary_balls=("_bdry", "sum")).reset_index()
     bw = bw.rename(columns={"bowler": "player_name"})
 
     pm = bat.merge(bw, on=["match_id", "player_name"], how="outer")
     pm = pm.merge(outs, on=["match_id", "player_name"], how="left")
-    for c in ["runs", "balls_faced", "balls_bowled", "runs_conceded", "wickets", "out"]:
+    for c in ["runs", "balls_faced", "balls_bowled", "runs_conceded", "wickets",
+              "dot_balls", "boundary_balls", "out"]:
         pm[c] = pm[c].fillna(0)
 
     pm = pm.merge(mp, on=["match_id", "player_name"], how="left")
@@ -63,7 +74,8 @@ def build_innings(conn, fmt: str) -> pd.DataFrame:
     agg = pm.groupby(["identifier", "match_id"]).agg(
         runs=("runs", "sum"), balls_faced=("balls_faced", "sum"),
         balls_bowled=("balls_bowled", "sum"), runs_conceded=("runs_conceded", "sum"),
-        wickets=("wickets", "sum"), out=("out", "max"),
+        wickets=("wickets", "sum"), dot_balls=("dot_balls", "sum"),
+        boundary_balls=("boundary_balls", "sum"), out=("out", "max"),
         team=("team", "first"), opponent=("opponent", "first"),
         won=("won", "max"), date=("date", "first"), gender=("gender", "first"),
         venue_id=("venue_id", "first"),
