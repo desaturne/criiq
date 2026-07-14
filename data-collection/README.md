@@ -2,7 +2,10 @@
 
 Reliable, incremental data pipeline for the Criiq cricket selection system.
 Cricsheet ball-by-ball data is the authoritative spine; ESPNcricinfo enrichment
-is best-effort and optional. Scope: **T20I** (women's primary, men's in scope).
+is best-effort and optional. Scope: **T20I** (women's primary, men's in scope)
+**and** major women's domestic T20 leagues (WBBL, WPL, The Hundred, Women's
+T20 Blast, Women's T20 Challenge, Women's CSL, T20 Blaze) — see "Domestic
+leagues" below.
 
 ## What it produces
 
@@ -10,7 +13,8 @@ A single SQLite database (`data/criiq.db`) containing:
 
 | Table | Contents |
 |---|---|
-| `matches` / `deliveries` | every international T20I match and ball |
+| `matches` / `deliveries` | every T20I **and** domestic T20 league match/ball, tagged `team_type` ('international'/'club') |
+| `matches_holdout` / `deliveries_holdout` / `match_players_holdout` | anything dated after `SETTINGS.data_cutoff_date` — a genuine forward-test set, never read by any production builder |
 | `people` | Cricsheet register incl. **`key_cricinfo`** (the match key) |
 | `players` | canonical players (stable `player_id`, joined to ESPNcricinfo id) |
 | `player_registry` | eligibility per player/format: activity status (ACTIVE/INCONSISTENT/INACTIVE/UNKNOWN/RETIRED), selection rate, recall flag, age advisory, career phase, ICC rank |
@@ -19,12 +23,14 @@ A single SQLite database (`data/criiq.db`) containing:
 | `player_cards` | dashboard-ready cards: career totals, latest score, form/RFI, team impact, H2H |
 | `player_advanced` | derived strengths: phase splits, control/aggression, archetype, bowling usage, vs-pace/spin, vs-LHB/RHB |
 | `player_vs_opponent` | full batting+bowling record vs **each opponent** + W/L + Player-of-the-Match |
-| `player_impact` | match-impact & importance: contribution share, partnership-breaking, top-order scalps, win contribution, PotM, setting-vs-chasing, importance score |
+| `player_impact` | match-impact & importance: contribution share, partnership-breaking, top-order scalps, win contribution, PotM, setting-vs-chasing, importance score (**batting and bowling bonuses are symmetric** — see below) |
 | `player_phase` | phase split (PP/middle/death) batting+bowling with **rank within own team** |
 | `player_by_venue` | batting+bowling performance **at each ground** |
 | `dismissal_matchup` | every batter-vs-bowler pair with a real sample (**6+ balls**, safe matchups included, not just dismissals) — **bogey bowler** (overall + per opponent) and favourite victims |
 | `match_features` | **win/loss prediction** training table: leakage-safe pre-match form, H2H, toss + label |
-| `player_match_impact` | per-player per-match contribution + result label, incl. bowling containment quality (`bowl_dot_pct`, `bowl_boundary_pct`, `bowl_strike_rate`) |
+| `player_match_impact` | per-player per-match contribution + result label (**international-only** — see "Domestic leagues"), incl. bowling containment quality (`bowl_dot_pct`, `bowl_boundary_pct`, `bowl_strike_rate`) |
+| `player_match_wpa` / `player_phase_wpa` | per-match / career-phase Win-Probability-Added, tagged `team_type`; `player_phase_wpa` stays international-only, same reason as `player_career` |
+| `player_domestic_form` | recent-N **domestic-only** matches' average batting/bowling WPA per player — the "quiet internationally, in-form domestically" signal |
 | `ball_state` (parquet, `data/features/`) | per-ball in-game state + outcome label for **live win-probability** models |
 | `win_prob` (parquet, `data/features/`) | per-ball **win probability** (batting & bowling team) across all phases, from the empirical model in `data/models/` |
 | `player_styles` | bowling style / batting hand / role + provenance |
@@ -101,6 +107,79 @@ data-collection's own standalone reporting commands for those specific 32
 identifiers. `player_card.py` has the same residual gap for the same reason
 (a display/dashboard table, not read by model-training).
 
+## Domestic leagues, a hard data cutoff, and the national-team-vs-recency split
+
+International T20I alone had a real selection blind spot: a player who's gone
+quiet internationally but is in strong current form in a domestic league
+(WBBL, WPL, The Hundred, ...) couldn't outrank someone still picked
+internationally but playing poorly, because domestic data simply wasn't
+ingested, and even *eligibility* (`player_registry`'s activity status) was
+computed purely from international appearances — a 3+ year international
+absence hard-excluded her from any team pool regardless of what she was doing
+domestically.
+
+**Data ethics**: domestic leagues are downloaded from the same Cricsheet site,
+same politely rate-limited `download_cricsheet.py` mechanism, same shared
+people-register identity resolution already relied on for the international
+data — no new scraping target, no new legal exposure beyond what's already
+accepted for the international pipeline. `config.py`'s men's domestic entries
+are scaffolded `enabled=False`, matching the existing men's ODI pattern —
+present, not yet active, trivial to flip on later.
+
+**`ingest.py`** no longer drops non-international matches — it stores
+Cricsheet's own `team_type` field ('international'/'club') on every row
+instead. A new `SETTINGS.data_cutoff_date` (`"2026-06-15"`, the live DB's
+actual latest date at time of writing — a forward safeguard, not a present-day
+trim) routes anything newer into `matches_holdout`/`deliveries_holdout`/
+`match_players_holdout` — a genuinely untouched forward-test set, so **no
+other file needs a date filter added anywhere**.
+
+**The critical fix, found by a design-review pass before this shipped**: two
+different questions were sharing one data path and had to be split.
+"Which national team does she currently play for" (`registry.py`'s
+`recent_team`/`team_dates`/`selection_rate` windowing, and model-training's
+`roster.player_current_teams`) must stay **international-only** — otherwise a
+domestically-heavy recent window resolves a player's "team" to a franchise
+name, silently dropping her out of her own *country's* candidate pool
+entirely (the opposite of the intended effect). "Is she still playing
+competitive cricket" (the recency signal feeding
+ACTIVE/INCONSISTENT/INACTIVE/UNKNOWN) is the **union** of international and
+domestic appearance dates — this is the actual fix for the scenario above.
+Explicit `RETIRED` status (Cricsheet's own signal, or `overrides.py`'s manual
+override) is untouched by either change — a domestic cameo never un-retires
+someone a human explicitly marked retired (verified live: Meg Lanning's
+`last_appearance_date` correctly updates to her recent WBBL matches, but her
+manual `RETIRED_ALL` override still holds).
+
+Every derived-table builder that was previously implicitly international-only
+(by construction, since nothing else existed) now says so explicitly —
+`career.py`, `impact.py`, `phases.py`, `matchups.py`, `advanced.py`,
+`venue_stats.py`, `opponents.py`, `player_card.py`, `h2h.py`, `role_finalize.py`,
+and `ml_features.py`'s win/loss + win-probability training data all filter to
+`team_type='international'` (via `stats.build_innings`'s new `team_type`
+parameter where they share that helper, or a direct clause where they don't) —
+otherwise the moment domestic matches existed in `matches`/`deliveries`, every
+one of these would have silently blended domestic stats into what's meant to
+be a pure international career line.
+
+**`wpa.py`** is the one deliberate exception: it processes *every* match
+(international and domestic both, tagged by `team_type` in the resulting
+`player_match_wpa` row) — domestic matches are *scored* by the same
+already-fitted, international-trained `EmpiricalWinProb` model, the same way
+an international match is (a reasonable reuse, not a new assumption; domestic
+T20 win-probability dynamics are similar enough, and building a separate
+domestic-only model wasn't warranted for this signal). `player_phase_wpa`
+(the career-phase aggregate) still filters back down to international-only,
+matching `player_career`; `player_domestic_form` is the new, separate,
+domestic-only aggregate built from the same tagged rows.
+
+Real verification (live DB): `GA Elwiss`, `A Wellington`, `L Winfield` — all
+last appeared internationally 3+ years ago, all recently active in WBBL/The
+Hundred — now correctly resolve to their real country (not a franchise) via
+`player_current_teams`, are no longer misclassified `INACTIVE`, and are
+present in their country's full eligible roster pool (previously hard-excluded
+entirely).
+
 ## Setup
 
 ```bash
@@ -165,6 +244,26 @@ reads from `player_career`, `player_impact`, `player_vs_opponent`, `player_advan
 and the card, so it is assembled instantly with no recomputation.
 
 `python run.py <command>` is equivalent to `python -m criiq_data.cli <command>`.
+
+### Importance score: a symmetric batting bonus
+
+`impact.py`'s importance score used to give bowlers/all-rounders a
+`bowling_impact_part` bonus (up to 15 pts, for a high rate of top-order
+wickets) with no batting equivalent — checked against the live DB, this
+wasn't theoretical: pure batters averaged **28.3** importance score vs
+**50.5** for all-rounders, and ~10.4 of that ~22-point gap was specifically
+the bonus a pure batter could structurally never earn (the rest is the
+`contribution_part` bucket legitimately rewarding genuine dual-discipline
+contribution). Fixed by adding a real, percentile-matched `batting_impact_part`
+(rate of 30+ run innings — "an innings worth having", mirroring "a wicket
+worth having" — multiplied by 70, chosen so its mean and 75th-percentile line
+up with `bowling_impact_part`'s own real distribution, not a guessed
+constant), plus the final-score clamp to 100 this makes necessary now that a
+genuine all-rounder can earn both 15-pt bonuses at once. Re-checked post-fix:
+pure batters' average rose to **37.85** — almost exactly the ~9.4 the
+calibration targeted — and the residual gap to all-rounders is attributable
+only to genuine dual-discipline contribution, not a structural bonus a pure
+batter could never reach.
 
 ## "Updated regularly"
 
@@ -416,7 +515,10 @@ python -m criiq_data.cli role-finalize --load-external CSV           # merge ext
 ## Scope & config
 
 Edit `criiq_data/config.py`:
-- `CRICSHEET_SOURCES` — flip `enabled` to add ODI (scaffolded, off by default).
+- `CRICSHEET_SOURCES` — flip `enabled` to add ODI or men's domestic leagues
+  (all scaffolded, off by default).
+- `data_cutoff_date` — the forward-test-set boundary (see "Domestic leagues..."
+  above); anything newer routes to the `_holdout` tables automatically.
 - polite delays, recall-flag window, RFI parameters, freshness thresholds.
 
 Set `CRIIQ_DATA_DIR` / `CRIIQ_DB` env vars to relocate data.

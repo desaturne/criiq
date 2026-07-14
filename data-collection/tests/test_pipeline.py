@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import io
+import json
+import zipfile
+
 import pytest
 
-from criiq_data import (career, identity, impact, matchups, ml_features, opponents,
-                        phases, player_card, rankings, registry, venue_stats)
+from criiq_data import (career, identity, impact, ingest, matchups, ml_features,
+                        opponents, phases, player_card, rankings, registry, venue_stats)
+from criiq_data.config import CricsheetSource
 from criiq_data.db import connect, init_schema
 from criiq_data.h2h import batter_vs_bowler, names_for_player
 from criiq_data.ingest import _parse_info, _shape_deliveries
@@ -11,11 +16,11 @@ from criiq_data.validate import validate_deliveries
 import pandas as pd
 
 
-def _add_match(conn, mid, date, t1, t2, winner):
+def _add_match(conn, mid, date, t1, t2, winner, team_type="international"):
     conn.execute(
         "INSERT INTO matches(match_id, format, gender, date, team1, team2, winner, "
-        "venue_raw, venue_id) VALUES(?,?,?,?,?,?,?,?,?)",
-        (mid, "T20", "female", date, t1, t2, winner, "Test Ground", "test-ground"))
+        "venue_raw, venue_id, team_type) VALUES(?,?,?,?,?,?,?,?,?,?)",
+        (mid, "T20", "female", date, t1, t2, winner, "Test Ground", "test-ground", team_type))
 
 
 def _add_player_meta(conn, name, ident, key_cricinfo):
@@ -39,6 +44,40 @@ def _ball(conn, mid, inn, over, b, bat_team, bowl_team, striker, nonstr, bowler,
         "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (mid, inn, over, b, bat_team, bowl_team, striker, nonstr, bowler,
          runs, 0, 0, 0, runs, wkt, dismissed))
+
+
+def _cricsheet_zip(matches: list[dict]) -> bytes:
+    """Builds a minimal real-shaped Cricsheet csv2 zip in memory -- one
+    `{match_id}.csv` (deliveries) + `{match_id}_info.csv` (info) pair per
+    match -- so `ingest_source` is exercised against the actual file format,
+    not a shortcut fixture.
+    """
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        for m in matches:
+            info_lines = [
+                f"info,team,{m['team1']}", f"info,team,{m['team2']}",
+                f"info,gender,{m['gender']}", "info,match_type,T20",
+                f"info,team_type,{m['team_type']}", f"info,date,{m['date']}",
+                f"info,winner,{m['team1']}",
+                f"info,player,{m['team1']},{m['striker']}",
+                f"info,player,{m['team2']},{m['victim']}",
+                f"info,registry,people,{m['striker']},{m['striker_id']}",
+                f"info,registry,people,{m['victim']},{m['victim_id']}",
+            ]
+            z.writestr(f"{m['match_id']}_info.csv", "\n".join(info_lines) + "\n")
+
+            header = ("match_id,innings,ball,batting_team,bowling_team,striker,"
+                      "non_striker,bowler,runs_off_bat,extras,wides,noballs,"
+                      "wicket_type,player_dismissed")
+            rows = [
+                f"{m['match_id']},1,0.1,{m['team1']},{m['team2']},{m['striker']},"
+                f"Non Striker,Some Bowler,4,0,0,0,,",
+                f"{m['match_id']},2,0.1,{m['team2']},{m['team1']},{m['victim']},"
+                f"Other Partner,{m['striker']},0,0,0,0,bowled,{m['victim']}",
+            ]
+            z.writestr(f"{m['match_id']}.csv", header + "\n" + "\n".join(rows) + "\n")
+    return buf.getvalue()
 
 
 @pytest.fixture()
@@ -152,6 +191,55 @@ def test_recall_flag_never_overrides_a_genuinely_inactive_player(tmp_path):
     c.close()
 
 
+def test_domestic_activity_flagged_without_faking_the_international_status(tmp_path):
+    # The user's exact scenario: gone quiet internationally, but still
+    # playing -- just domestically. An earlier version of this fix made the
+    # *status label itself* domestic-aware, which was wrong: a genuinely
+    # INACTIVE-internationally player showed as "ACTIVE", which is a lie a
+    # selector could act on. The corrected design: `retirement_status` stays
+    # an honest, international-only fact; `recent_domestic_activity` is a
+    # separate, explicit flag consumed by model-training's roster.py for
+    # eligibility -- it must never overwrite the status label.
+    c = connect(tmp_path / "domform.db")
+    init_schema(c)
+    _add_player_meta(c, "OO OldStar", "id_oldstar", "901")
+    _add_player_meta(c, "PP TrulyGone", "id_gone", "902")
+    # Both players' only international appearance: the same old match.
+    _add_match(c, "D1", "2022-01-01", "India", "Australia", "India",
+               team_type="international")
+    _add_match_player(c, "D1", "India", "OO OldStar")
+    _add_match_player(c, "D1", "India", "PP TrulyGone")
+    # Only OO OldStar has a recent domestic appearance; PP TrulyGone has none.
+    _add_match(c, "D2", "2025-12-20", "Some Franchise", "Other Franchise",
+               "Some Franchise", team_type="club")
+    _add_match_player(c, "D2", "Some Franchise", "OO OldStar")
+    c.commit()
+    identity.resolve_players(c)
+
+    registry.build_registry_for_format(c, "T20")
+    star = c.execute("SELECT * FROM player_registry WHERE player_id=?",
+                      (identity.player_id_for("id_oldstar"),)).fetchone()
+    gone = c.execute("SELECT * FROM player_registry WHERE player_id=?",
+                      (identity.player_id_for("id_gone"),)).fetchone()
+
+    # `days_since_last_appearance` (informational, union-based) still
+    # follows the domestic appearance...
+    assert star["days_since_last_appearance"] == 0
+    # ...but the STATUS is a true international fact: her only international
+    # appearance was ~3 years 11 months before as-of (2025-12-20), well past
+    # inactive_window_days -- she genuinely is INACTIVE internationally, and
+    # the label must say so, not "ACTIVE".
+    assert star["retirement_status"] == "INACTIVE"
+    # The distinct, honest carve-out flag: this is what tells model-training
+    # she shouldn't be silently excluded, without lying about her status.
+    assert star["recent_domestic_activity"] == 1
+    # The control: no domestic follow-up at all -- genuinely stale, and no
+    # carve-out flag either.
+    assert gone["retirement_status"] == "INACTIVE"
+    assert gone["recent_domestic_activity"] == 0
+    c.close()
+
+
 def test_winprob_empirical_learns_and_calibrates():
     from criiq_data.winprob import EmpiricalWinProb
     # Synthetic chase: the batting team wins iff the ask is gettable
@@ -245,6 +333,66 @@ def test_wpa_credits_striker_and_debits_bowler(conn, tmp_path, monkeypatch):
     assert phase_row is not None and phase_row["matches"] >= 1
 
 
+def test_domestic_matches_tagged_and_kept_out_of_international_phase_wpa(conn, tmp_path, monkeypatch):
+    from criiq_data import wpa, winprob
+
+    monkeypatch.setattr(winprob, "MODELS_DIR", tmp_path)
+    model = winprob.EmpiricalWinProb()
+    model.grids = {
+        "set_full": pd.DataFrame([
+            {"k_bowled": 0, "k_wk": 0, "k_score": 0, "wp": 0.55},
+            {"k_bowled": 1, "k_wk": 1, "k_score": 0, "wp": 0.45},
+        ]),
+        "set_coarse": pd.DataFrame(columns=["k_bowled", "k_wk", "wp"]),
+        "chase_full": pd.DataFrame(columns=["k_rem", "k_wk", "k_rr", "wp"]),
+        "chase_coarse": pd.DataFrame(columns=["k_rem", "k_wk", "wp"]),
+    }
+    model.save("T20")
+
+    # AA Batter already has an international match (M1, from the shared
+    # fixture); add a domestic one for her too, same shape as M1's over.
+    _add_match(conn, "D1", "2025-07-01", "Some Franchise", "Other Franchise",
+               "Some Franchise", team_type="club")
+    _add_match_player(conn, "D1", "Some Franchise", "AA Batter")
+    _add_match_player(conn, "D1", "Other Franchise", "BB Bowler")
+    seq = [1, 0, 4, 2, 0]
+    for i, r in enumerate(seq):
+        _ball(conn, "D1", 1, 0, i + 1, "Some Franchise", "Other Franchise",
+              "AA Batter", "DD Old", "BB Bowler", r)
+    _ball(conn, "D1", 1, 0, 6, "Some Franchise", "Other Franchise",
+          "AA Batter", "DD Old", "BB Bowler", 0, wkt="bowled", dismissed="AA Batter")
+    conn.commit()
+
+    wpa.build_wpa_for_format(conn, "T20")
+    wpa.build_domestic_form_for_format(conn, "T20")
+    bat_id = identity.player_id_for("id_bat")
+
+    d1_row = conn.execute(
+        "SELECT team_type, batting_wpa FROM player_match_wpa WHERE player_id=? AND match_id='D1'",
+        (bat_id,)).fetchone()
+    assert d1_row["team_type"] == "club"
+    assert d1_row["batting_wpa"] == pytest.approx(-0.10)
+
+    m1_row = conn.execute(
+        "SELECT team_type FROM player_match_wpa WHERE player_id=? AND match_id='M1'",
+        (bat_id,)).fetchone()
+    assert m1_row["team_type"] == "international"
+
+    # player_phase_wpa (the international career aggregate) must not blend in
+    # D1 -- still just the 2 international matches from the shared fixture
+    # (M1 and M2, both int'l), not 3.
+    phase_row = conn.execute(
+        "SELECT matches FROM player_phase_wpa WHERE player_id=? AND format='T20' "
+        "AND phase='powerplay'", (bat_id,)).fetchone()
+    assert phase_row["matches"] == 2
+
+    dom_row = conn.execute(
+        "SELECT matches, batting_wpa_per_match FROM player_domestic_form "
+        "WHERE player_id=? AND format='T20'", (bat_id,)).fetchone()
+    assert dom_row["matches"] == 1
+    assert dom_row["batting_wpa_per_match"] == pytest.approx(-0.10)
+
+
 def test_registry_flags_inconsistent_selection(tmp_path):
     # Team A plays 10 matches in one recent season. A regular is picked for all
     # of them (ACTIVE); an in-and-out player is picked for only 2 (INCONSISTENT).
@@ -325,6 +473,100 @@ def test_impact_metrics(conn):
     assert bb["avg_partnership_broken"] == 7.0
 
 
+def test_importance_score_batting_bonus_symmetric_with_bowling(tmp_path):
+    c = connect(tmp_path / "sym.db")
+    init_schema(c)
+    _add_player_meta(c, "CC AllRounder", "id_ar", "901")
+    for mid, date in [("S1", "2025-01-01"), ("S2", "2025-01-08")]:
+        _add_match(c, mid, date, "Team A", "Team B", "Team A")
+        c.execute("UPDATE matches SET player_of_match=? WHERE match_id=?", ("CC AllRounder", mid))
+        _add_match_player(c, mid, "Team A", "CC AllRounder")
+        # Innings 1: Team A bats, CC alone scores 30 -- her whole team's total,
+        # so bat_contribution_pct comes out at exactly 100%.
+        for b, runs in enumerate([4, 4, 4, 4, 4, 10], start=1):
+            _ball(c, mid, 1, 0, b, "Team A", "Team B", "CC AllRounder", "ZZ Partner", "YY Bowler", runs)
+        # Innings 2: Team B bats, CC bowls and removes the opening (top-order)
+        # batter -- the team's only wicket, so bowl_contribution_pct is 100% too.
+        _ball(c, mid, 2, 0, 1, "Team B", "Team A", "XX Victim", "WW Partner", "CC AllRounder",
+              0, wkt="bowled", dismissed="XX Victim")
+    c.commit()
+    identity.resolve_players(c)
+    impact.build_impact_for_format(c, "T20")
+
+    row = c.execute("SELECT * FROM player_impact WHERE player_id=?",
+                     (identity.player_id_for("id_ar"),)).fetchone()
+    comps = json.loads(row["importance_components"])
+    # A 30+ run innings every match (rate 1.0) and a top-order wicket every
+    # match (rate 1.0) hit the same 15.0 cap on both sides -- the fix under
+    # test: before it, batting_impact_part didn't exist at all.
+    assert comps["bowling_impact_part"] == 15.0
+    assert comps["batting_impact_part"] == 15.0
+    # 35 (contribution, capped) + 25 (100% win rate) + 25 (100% PotM rate,
+    # capped) + 15 + 15 = 115, clamped to the intended 0-100 scale.
+    assert row["importance_score"] == 100.0
+    c.close()
+
+
+def test_ingest_tags_team_type_and_keeps_within_cutoff_data_in_production(tmp_path, monkeypatch):
+    c = connect(tmp_path / "ing.db")
+    init_schema(c)
+    monkeypatch.setattr(ingest, "RAW_DIR", tmp_path)
+    payload = _cricsheet_zip([{
+        "match_id": "9001", "team1": "Some Club", "team2": "Other Club",
+        "gender": "female", "team_type": "club", "date": "2025-03-01",
+        "striker": "Domestic Player", "victim": "Domestic Victim",
+        "striker_id": "id_domestic", "victim_id": "id_domvictim",
+    }])
+    src = CricsheetSource("T20", "female", "domestic_test.zip")
+    (tmp_path / src.filename).write_bytes(payload)
+
+    result = ingest.ingest_source(c, src)
+    assert result["new_matches"] == 1
+    assert result["holdout_matches"] == 0
+
+    row = c.execute("SELECT * FROM matches WHERE match_id='9001'").fetchone()
+    assert row is not None
+    assert row["team_type"] == "club"
+    assert c.execute("SELECT COUNT(*) FROM matches_holdout").fetchone()[0] == 0
+    assert c.execute("SELECT COUNT(*) FROM deliveries WHERE match_id='9001'").fetchone()[0] == 2
+    c.close()
+
+
+def test_ingest_routes_matches_after_data_cutoff_to_holdout_tables(tmp_path, monkeypatch):
+    c = connect(tmp_path / "ing2.db")
+    init_schema(c)
+    monkeypatch.setattr(ingest, "RAW_DIR", tmp_path)
+    from criiq_data.config import SETTINGS
+    after_cutoff = "2026-06-16"
+    assert after_cutoff > SETTINGS.data_cutoff_date
+    payload = _cricsheet_zip([{
+        "match_id": "9002", "team1": "India", "team2": "Australia",
+        "gender": "female", "team_type": "international", "date": after_cutoff,
+        "striker": "Future Player", "victim": "Future Victim",
+        "striker_id": "id_future", "victim_id": "id_futurevictim",
+    }])
+    src = CricsheetSource("T20", "female", "future_test.zip")
+    (tmp_path / src.filename).write_bytes(payload)
+
+    result = ingest.ingest_source(c, src)
+    assert result["new_matches"] == 1
+    assert result["holdout_matches"] == 1
+
+    assert c.execute("SELECT COUNT(*) FROM matches WHERE match_id='9002'").fetchone()[0] == 0
+    hrow = c.execute("SELECT * FROM matches_holdout WHERE match_id='9002'").fetchone()
+    assert hrow is not None
+    assert hrow["team_type"] == "international"
+    assert c.execute("SELECT COUNT(*) FROM deliveries WHERE match_id='9002'").fetchone()[0] == 0
+    assert c.execute("SELECT COUNT(*) FROM deliveries_holdout WHERE match_id='9002'").fetchone()[0] == 2
+    assert c.execute("SELECT COUNT(*) FROM match_players_holdout WHERE match_id='9002'").fetchone()[0] == 2
+
+    # Re-running ingest against the same zip must not duplicate the holdout
+    # rows -- `_existing_match_ids` has to see holdout matches too.
+    ingest.ingest_source(c, src)
+    assert c.execute("SELECT COUNT(*) FROM deliveries_holdout WHERE match_id='9002'").fetchone()[0] == 2
+    c.close()
+
+
 def test_venue_record(conn):
     venue_stats.build_for_format(conn, "T20")
     aa = conn.execute(
@@ -332,6 +574,38 @@ def test_venue_record(conn):
         (identity.player_id_for("id_bat"),)).fetchone()
     assert aa["matches"] == 2 and aa["runs"] == 20
     assert aa["bat_strike_rate"] == 200.0
+    # Both M1 and M2 (the shared fixture) have her batting in innings=1
+    # (batting first/setting) -- no chasing innings recorded for her at all.
+    assert aa["setting_runs"] == 20 and aa["setting_balls"] == 10
+    assert aa["chasing_runs"] is None and aa["chasing_balls"] is None
+
+
+def test_venue_setting_vs_chasing_distinguishes_innings(tmp_path):
+    c = connect(tmp_path / "sitvenue.db")
+    init_schema(c)
+    _add_player_meta(c, "AA Batter", "id_bat", "111")
+    _add_player_meta(c, "BB Bowler", "id_bowl", "222")
+    _add_match(c, "S1", "2024-01-01", "Team A", "Team B", "Team A")
+    _add_match_player(c, "S1", "Team A", "AA Batter")
+    _add_match_player(c, "S1", "Team B", "BB Bowler")
+    for i, r in enumerate([4, 4, 4]):  # batting first (innings=1): 12 off 3
+        _ball(c, "S1", 1, 0, i + 1, "Team A", "Team B", "AA Batter", "x", "BB Bowler", r)
+
+    _add_match(c, "S2", "2024-02-01", "Team B", "Team A", "Team A")
+    _add_match_player(c, "S2", "Team A", "AA Batter")
+    _add_match_player(c, "S2", "Team B", "BB Bowler")
+    for i, r in enumerate([1, 1]):  # chasing (innings=2): 2 off 2
+        _ball(c, "S2", 2, 0, i + 1, "Team A", "Team B", "AA Batter", "x", "BB Bowler", r)
+    c.commit()
+    identity.resolve_players(c)
+
+    venue_stats.build_for_format(c, "T20")
+    row = c.execute(
+        "SELECT * FROM player_by_venue WHERE player_id=? AND venue_id='test-ground'",
+        (identity.player_id_for("id_bat"),)).fetchone()
+    assert row["setting_runs"] == 12 and row["setting_balls"] == 3
+    assert row["chasing_runs"] == 2 and row["chasing_balls"] == 2
+    c.close()
 
 
 def test_dismissal_matchup(conn):
@@ -343,6 +617,17 @@ def test_dismissal_matchup(conn):
     bogey = matchups.top_dismissers(conn, identity.player_id_for("id_bat"), "T20")
     assert bogey["overall"][0]["bowler_name"] == "BB Bowler"
     assert bogey["worst_bowler_per_opponent"]["Team B"]["dismissals"] == 1
+
+
+def test_venue_dismissal_matchup(conn):
+    matchups.build_venue_matchups_for_format(conn, "T20")
+    row = conn.execute(
+        "SELECT * FROM venue_dismissal_matchup WHERE batter_id=? AND bowler_id=? AND venue_id='test-ground'",
+        (identity.player_id_for("id_bat"), identity.player_id_for("id_bowl"))).fetchone()
+    assert row["dismissals"] == 1 and row["balls"] == 10
+    top = matchups.top_dismissers_at_venue(
+        conn, identity.player_id_for("id_bat"), "T20", "test-ground")
+    assert top[0]["bowler_name"] == "BB Bowler"
 
 
 def test_phase_intra_team_rank(conn):
