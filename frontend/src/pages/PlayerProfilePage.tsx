@@ -4,12 +4,20 @@ import { ChevronLeft, Star } from "lucide-react";
 import { PhaseBar } from "../components/common/PhaseBar";
 import { RadialGauge } from "../components/common/RadialGauge";
 import { StatusBadge } from "../components/common/StatusBadge";
+import { useApp } from "../context/AppContext";
 import { PLAYERS } from "../data/players";
+import { SelectionControl } from "../components/common/SelectionControl";
 
 export function PlayerProfilePage() {
   const { id: playerId } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const { selections, setSelections } = useApp();
   const player = PLAYERS.find(p => p.id === playerId) || PLAYERS[0];
+  const selection = selections[player.id] ?? "undecided";
+
+  const setSelection = (next: typeof selection) => {
+    setSelections(prev => ({ ...prev, [player.id]: next }));
+  };
   return (
     <div className="p-5 max-w-screen-xl mx-auto">
       <button onClick={() => navigate(-1)} className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground mb-5 transition-colors">
@@ -32,11 +40,22 @@ export function PlayerProfilePage() {
             </div>
           </div>
 
+          <div className="bg-card border border-border rounded-xl p-4 space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Selection</div>
+                <div className="text-sm font-medium text-foreground mt-0.5">Update squad status</div>
+              </div>
+              <span className="text-[11px] text-muted-foreground capitalize">{selection}</span>
+            </div>
+            <SelectionControl state={selection} onChange={setSelection} />
+          </div>
+
           {/* Scouting note */}
-          <div className="bg-amber-500/5 border border-amber-500/20 rounded-xl p-4">
+          <div className="bg-secondary/40 border border-border rounded-xl p-4">
             <div className="flex items-center gap-2 mb-2">
-              <Star size={13} className="text-amber-400" />
-              <span className="text-[11px] font-medium text-amber-400 uppercase tracking-wider">Scouting Note</span>
+              <Star size={13} className="text-[#5F7F24]" />
+              <span className="text-[11px] font-medium text-[#5F7F24] uppercase tracking-wider">Scouting Note</span>
             </div>
             <p className="text-[13px] text-foreground leading-relaxed">{player.vsInsight}. Phase analysis shows exceptional middle-over performance — a key asset in chasing targets above 170.</p>
           </div>
@@ -94,7 +113,7 @@ export function PlayerProfilePage() {
             <h3 className="font-display text-base font-semibold text-foreground mb-4">Recent Form</h3>
             <div className="space-y-2">
               {player.recentForm.map((v, i) => (
-                <div key={i} className="flex items-center gap-3 p-2.5 rounded-lg bg-secondary/40">
+                <div key={i} className="flex items-center gap-3 p-2.5 rounded-lg bg-secondary/30">
                   <span className="text-[11px] text-muted-foreground w-14">Match {5 - i}</span>
                   <div className="flex-1 h-1.5 rounded-full bg-border overflow-hidden">
                     <motion.div initial={{ width: 0 }} animate={{ width: `${(v / Math.max(...player.recentForm)) * 100}%` }} transition={{ delay: i * 0.1 + 0.3, duration: 0.8 }}

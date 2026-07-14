@@ -10,6 +10,7 @@ import { DashboardPage } from "../pages/DashboardPage";
 import { MatchDetailPage } from "../pages/MatchDetailPage";
 import { MatchesPage } from "../pages/MatchesPage";
 import { PlayerProfilePage } from "../pages/PlayerProfilePage";
+import { ProfilePage } from "../pages/ProfilePage";
 import { RecommendationsPage } from "../pages/RecommendationsPage";
 import { ReportsPage } from "../pages/ReportsPage";
 import { SettingsPage } from "../pages/SettingsPage";
@@ -20,7 +21,7 @@ import { AuthMode, SelectionState } from "../types/index";
 
 export function AppWithAuth() {
   const [authMode, setAuthMode] = useState<AuthMode>("user-login");
-  const [dark, setDark] = useState(true);
+  const [dark, setDark] = useState(false);
   const [selections, setSelections] = useState<Record<string, SelectionState>>({});
 
   // Admin login — completely separate, no user context
@@ -52,7 +53,7 @@ export function AppWithAuth() {
   const router = createBrowserRouter([
     {
       path: "/",
-      Component: Root,
+      element: <Root onLogout={() => setAuthMode("user-login")} />,
       children: [
         { index: true, element: <Navigate to="/dashboard" replace /> },
         { path: "dashboard",       Component: DashboardOverviewPage },
@@ -62,6 +63,7 @@ export function AppWithAuth() {
         { path: "matches",         Component: MatchesPage },
         { path: "matches/:id",     Component: MatchDetailPage },
         { path: "recommendations", Component: RecommendationsPage },
+        { path: "profile",         Component: ProfilePage },
         { path: "assistant",       Component: AssistantPage },
         { path: "reports",         Component: ReportsPage },
         { path: "settings",        Component: SettingsPage },

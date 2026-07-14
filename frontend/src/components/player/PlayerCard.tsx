@@ -19,7 +19,7 @@ export function PlayerCard({ player, index, opposition, selection, onSelect, com
 
   const borderColor =
     selection === "select"  ? "#5FA800" :
-    selection === "exclude" ? "#E5484D" :
+    selection === "exclude" ? "#B35A52" :
     selection === "reserve" ? "#8A8970" :
     "var(--border)";
 
@@ -83,8 +83,8 @@ export function PlayerCard({ player, index, opposition, selection, onSelect, com
       </div>
 
       {/* Footer: stats + compare + selection */}
-      <div className="px-4 py-3 border-t border-border bg-secondary/30 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2 flex-shrink-0">
+      <div className="px-4 py-3 border-t border-border bg-secondary/25 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-2 flex-wrap min-w-0">
           <button onClick={() => setExpanded(!expanded)} className="text-[11px] text-muted-foreground hover:text-foreground flex items-center gap-1 transition-colors">
             <BarChart2 size={11} /> Stats
             <ChevronRight size={10} className={`transition-transform ${expanded ? "rotate-90" : ""}`} />
@@ -103,7 +103,9 @@ export function PlayerCard({ player, index, opposition, selection, onSelect, com
             <Scale size={10} /> {comparing ? "Comparing" : "Compare"}
           </motion.button>
         </div>
-        <SelectionControl state={selection} onChange={onSelect} />
+        <div className="w-full sm:max-w-[252px] sm:ml-auto">
+          <SelectionControl state={selection} onChange={onSelect} />
+        </div>
       </div>
 
       <AnimatePresence>

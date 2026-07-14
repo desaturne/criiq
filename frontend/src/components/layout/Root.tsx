@@ -7,7 +7,7 @@ import { Navbar } from "./Navbar";
 import { Sidebar } from "./Sidebar";
 import { useApp } from "../../context/AppContext";
 
-export function Root() {
+export function Root({ onLogout }: { onLogout: () => void }) {
   const { dark } = useApp();
   const [sidebarOpen, setSidebarOpen] = useState(() => typeof window !== "undefined" ? window.innerWidth > 768 : true);
   const location = useLocation();
@@ -24,7 +24,7 @@ export function Root() {
   return (
     <div className={`${dark ? "dark" : ""} h-screen`} style={{ fontFamily: "var(--font-sans)" }}>
       <div className="bg-background text-foreground h-full flex flex-col overflow-hidden">
-        <Navbar sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen} />
+        <Navbar sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen} onLogout={onLogout} />
         <div className="flex flex-1 overflow-hidden">
           <Sidebar open={sidebarOpen} />
           <div className="flex flex-col flex-1 overflow-hidden">

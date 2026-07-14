@@ -29,7 +29,7 @@ export function CountdownTimer({ targetDate }: { targetDate: string }) {
             initial={{ y: -6, opacity: 0 }}
             animate={{ y: 0, opacity: 1 }}
             className="font-mono font-bold tabular-nums leading-none"
-            style={{ fontSize: "2.6rem", color: "#AAFF57", textShadow: "0 0 24px rgba(170,255,87,0.5)" }}
+            style={{ fontSize: "2.6rem", color: "#5F7F24" }}
           >
             {String(t.v).padStart(2, "0")}
           </motion.div>
