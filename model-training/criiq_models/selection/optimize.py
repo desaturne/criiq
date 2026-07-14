@@ -136,6 +136,118 @@ def _team_sheet_order(xi: list[dict], opener_threshold: float) -> list[dict]:
     return openers + core + bowler_tail
 
 
+_ROLE_POOL_KEYS = {"batter": "batters", "all-rounder": "all_rounders", "bowler": "bowlers"}
+
+
+def role_pools(scored_players: list[dict]) -> dict:
+    """Splits a scored pool into the three views a coach actually thinks in
+    -- batters / all-rounders / bowlers -- each independently ranked by
+    score, plus an `unknown` bucket for the handful of players with no
+    reliable ball-count signal to classify from. `select_xi`'s MILP already
+    enforces batting/bowling-capable *minimums* under the hood (an
+    all-rounder counts toward both); this is the presentation those
+    constraints deserve, not a new selection mechanism -- the XI it produces
+    is unchanged by this function existing.
+    """
+    pools = {"batters": [], "all_rounders": [], "bowlers": [], "unknown": []}
+    for p in scored_players:
+        key = _ROLE_POOL_KEYS.get(p.get("role_bucket"), "unknown")
+        pools[key].append(p)
+    for key in pools:
+        pools[key] = sorted(pools[key], key=lambda p: -p["score"])
+    return pools
+
+
+def analyze_xi(scored_players: list[dict], player_ids: list[str],
+               settings: object = SETTINGS) -> dict:
+    """Scores and checks a SPECIFIC, already-chosen XI -- e.g. a coach's own
+    pick from the roster -- against the identical constraints `select_xi`
+    enforces, and reports how it compares to the provably-optimal pick.
+    Distinct from `select_xi`, which *finds* the best XI: every real
+    selector sometimes overrides the algorithm (form momentum a model can't
+    see, a tactical matchup call, team chemistry), and this answers "how
+    good is THIS specific XI", not "what's the best one" -- reusing the same
+    scoring/constraint logic so the two are directly, fairly comparable.
+
+    `player_ids` not found in `scored_players` (typo, retired, wrong format/
+    gender scope) are reported in `missing_player_ids` rather than silently
+    dropped or raising.
+    """
+    by_id = {p["player_id"]: p for p in scored_players}
+    chosen, missing = [], []
+    for pid in player_ids:
+        if pid in by_id:
+            chosen.append(by_id[pid])
+        else:
+            missing.append(pid)
+
+    opener_threshold = settings.opener_position_threshold
+    # Same soft-degradation `select_xi` applies (a requirement no player in
+    # the *whole eligible pool* can satisfy -- e.g. zero recorded keepers --
+    # is unenforceable, not a real violation), computed from the full pool
+    # so the comparison to `select_xi`'s own XI is apples-to-apples.
+    full_bat, full_bowl, full_keeper, full_opener = _capability_masks(scored_players, opener_threshold)
+    required = {
+        "xi_size": min(settings.xi_size, len(scored_players)),
+        "min_batting_capable": int(min(settings.min_batting_capable, full_bat.sum())),
+        "min_bowling_capable": int(min(settings.min_bowling_capable, full_bowl.sum())),
+        "min_keepers": int(min(settings.min_keepers, full_keeper.sum())),
+        "min_openers": int(min(settings.min_openers, full_opener.sum())),
+    }
+
+    bat_mask, bowl_mask, keeper_mask, opener_mask = _capability_masks(chosen, opener_threshold)
+    counts = {
+        "size": len(chosen),
+        "batting_capable": int(bat_mask.sum()),
+        "bowling_capable": int(bowl_mask.sum()),
+        "keepers": int(keeper_mask.sum()),
+        "openers": int(opener_mask.sum()),
+    }
+
+    violations = []
+    if counts["size"] != required["xi_size"]:
+        violations.append(f"{counts['size']} players selected, not {required['xi_size']}")
+    if counts["batting_capable"] < required["min_batting_capable"]:
+        violations.append(f"only {counts['batting_capable']} batting-capable, "
+                           f"need {required['min_batting_capable']}")
+    if counts["bowling_capable"] < required["min_bowling_capable"]:
+        violations.append(f"only {counts['bowling_capable']} bowling-capable, "
+                           f"need {required['min_bowling_capable']}")
+    if counts["keepers"] < required["min_keepers"]:
+        violations.append(f"no recognized wicket-keeper (need {required['min_keepers']})")
+    if counts["openers"] < required["min_openers"]:
+        violations.append(f"only {counts['openers']} recognized opener(s), "
+                           f"need {required['min_openers']}")
+
+    total_score = round(sum(p["score"] for p in chosen), 1)
+    ordered = (_team_sheet_order(chosen, opener_threshold)
+               if counts["size"] == required["xi_size"] else chosen)
+
+    optimal = select_xi(scored_players, settings)
+    optimal_ids = {p["player_id"] for p in optimal["xi"]}
+    optimal_total = round(sum(p["score"] for p in optimal["xi"]), 1)
+    chosen_ids = {p["player_id"] for p in chosen}
+
+    def _brief(p):
+        return {"player_id": p["player_id"], "name": p.get("name"), "score": p["score"]}
+
+    return {
+        "xi": ordered,
+        "missing_player_ids": missing,
+        "total_score": total_score,
+        "average_score": round(total_score / len(chosen), 1) if chosen else None,
+        "counts": counts,
+        "requirements": required,
+        "violations": violations,
+        "comparison_to_optimal": {
+            "optimal_total_score": optimal_total,
+            "score_gap": round(optimal_total - total_score, 1),
+            "in_optimal_not_chosen": [_brief(p) for p in optimal["xi"] if p["player_id"] not in chosen_ids],
+            "in_chosen_not_optimal": [_brief(p) for p in chosen if p["player_id"] not in optimal_ids],
+        },
+    }
+
+
 def select_xi(scored_players: list[dict], settings: object = SETTINGS) -> dict:
     """`scored_players`: output of `RecommendationScorer.score_many` — dicts
     with at least `player_id`, `score`, `role_bucket`, `is_keeper`,

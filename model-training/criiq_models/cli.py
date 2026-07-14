@@ -24,11 +24,12 @@ from .evaluate.backtest import backtest
 from .evaluate.rank_backtest import rank_backtest
 from .features.historical import build_training_table
 from .recommend.explain import explain
-from .recommend.render import render_team_sheet
+from .recommend.render import render_team_sheet, render_xi_analysis
 from .recommend.score import RecommendationScorer
 from .recommend.train import load_metadata, train
 from .roster import known_teams, team_pool
-from .selection.optimize import select_xi, slot_category
+from .venues import resolve_venue
+from .selection.optimize import analyze_xi, role_pools, select_xi, slot_category
 
 
 def _pp(obj) -> None:
@@ -41,6 +42,43 @@ def _find_player(conn, name: str):
         "WHERE canonical_name LIKE ? OR unique_name LIKE ? LIMIT 10",
         (f"%{name}%", f"%{name}%")).fetchall()
     return [dict(r) for r in rows]
+
+
+def _resolve_venue_arg(conn, venue_arg: str | None) -> tuple[str | None, bool]:
+    """`--venue` takes a ground *name* now, not the raw `venue_id` slug --
+    resolves it here so every caller (recommend/explain) gets the same
+    ambiguity handling. Returns `(venue_id, ok)`; `ok=False` means an
+    ambiguous name was already reported and the caller should abort rather
+    than silently score with no venue at all.
+    """
+    if not venue_arg:
+        return None, True
+    venue_id, candidates = resolve_venue(conn, venue_arg)
+    if venue_id is None and candidates:
+        print(f"'{venue_arg}' matches multiple grounds -- be more specific, or pass one of:")
+        for c in candidates:
+            print(f"  {c['canonical_name']}")
+        return None, False
+    return venue_id, True
+
+
+def _resolve_player_name(conn, name: str) -> tuple[str | None, bool]:
+    """Fuzzy name -> player_id, with the same "did you mean" ambiguity
+    handling `_resolve_venue_arg` uses -- a name matching several real
+    players (a genuine, previously-found issue: several distinct real
+    players can share one short name) must not silently take the first
+    match. Returns `(player_id, ok)`; `ok=False` means already reported.
+    """
+    matches = _find_player(conn, name)
+    if not matches:
+        print(f"no player matching {name!r}")
+        return None, False
+    if len(matches) > 1:
+        print(f"'{name}' matches multiple players -- be more specific, or pass one of:")
+        for m in matches:
+            print(f"  {m['canonical_name']} ({m['player_id']})")
+        return None, False
+    return matches[0]["player_id"], True
 
 
 def cmd_features(args):
@@ -78,6 +116,10 @@ def cmd_teams(args):
 
 def cmd_recommend(args):
     conn = connect()
+    venue_id, ok = _resolve_venue_arg(conn, args.venue)
+    if not ok:
+        conn.close()
+        return
     pool_ids = team_pool(conn, args.team, args.format, args.gender)
     if not pool_ids:
         print(f"no eligible players found for team={args.team!r} "
@@ -85,7 +127,7 @@ def cmd_recommend(args):
         conn.close()
         return
     scorer = RecommendationScorer(conn, args.format, args.gender)
-    scored = scorer.score_many(pool_ids, args.opponent, args.venue)
+    scored = scorer.score_many(pool_ids, args.opponent, venue_id)
     result = select_xi(scored)
 
     def _brief(p):
@@ -120,16 +162,23 @@ def cmd_recommend(args):
         pool_out = [_brief(p) for p in result["pool"]]
 
     if args.pretty:
-        print(render_team_sheet(args.team, args.opponent, args.venue, xi_out, pool_out,
+        print(render_team_sheet(args.team, args.opponent, venue_id, xi_out, pool_out,
                                  load_metadata(), result.get("constraints")))
         conn.close()
         return
 
+    # Same players as `pool`, grouped into the three views a coach actually
+    # picks from (batting/all-rounder/bowling options) instead of one flat
+    # list -- a real frontend's "pick your XI" screen reads from this
+    # directly rather than re-deriving the grouping from role_bucket itself.
+    pools_out = {k: [p for p in v] for k, v in role_pools(pool_out).items()}
+
     _pp({
-        "team": args.team, "opponent": args.opponent, "venue_id": args.venue,
+        "team": args.team, "opponent": args.opponent, "venue_id": venue_id,
         "model_metadata": load_metadata(),
         "xi": xi_out,
         "pool": pool_out,
+        "pools": pools_out,
         "selection_method": result["method"], "constraints": result.get("constraints"),
     })
     conn.close()
@@ -137,6 +186,10 @@ def cmd_recommend(args):
 
 def cmd_explain(args):
     conn = connect()
+    venue_id, ok = _resolve_venue_arg(conn, args.venue)
+    if not ok:
+        conn.close()
+        return
     if args.name:
         matches = _find_player(conn, args.name)
         if not matches:
@@ -147,8 +200,71 @@ def cmd_explain(args):
     else:
         player_id = args.player_id
     scorer = RecommendationScorer(conn, args.format, args.gender)
-    scored = scorer.score(player_id, args.opponent, args.venue)
+    scored = scorer.score(player_id, args.opponent, venue_id)
     _pp(explain(scored))
+    conn.close()
+
+
+def cmd_analyze_xi(args):
+    """Scores and checks a COACH'S OWN hand-picked XI -- distinct from
+    `recommend`, which finds the algorithm's best one. Every real selector
+    sometimes overrides the model (form momentum, a tactical call, team
+    chemistry); this is the honest scorecard for that specific choice:
+    her own score/reasoning for each of the 11, whether the pick satisfies
+    the same batting/bowling/keeper/opener constraints `recommend`'s XI is
+    held to, and exactly how it compares to the provably-optimal one.
+    """
+    conn = connect()
+    venue_id, ok = _resolve_venue_arg(conn, args.venue)
+    if not ok:
+        conn.close()
+        return
+    pool_ids = team_pool(conn, args.team, args.format, args.gender)
+    if not pool_ids:
+        print(f"no eligible players found for team={args.team!r} "
+              f"(format={args.format}, gender={args.gender})")
+        conn.close()
+        return
+
+    if args.players:
+        player_ids = []
+        for name in args.players.split(","):
+            pid, ok = _resolve_player_name(conn, name.strip())
+            if not ok:
+                conn.close()
+                return
+            player_ids.append(pid)
+    else:
+        player_ids = [x.strip() for x in args.player_ids.split(",")]
+
+    scorer = RecommendationScorer(conn, args.format, args.gender)
+    scored = scorer.score_many(pool_ids, args.opponent, venue_id)
+    analysis = analyze_xi(scored, player_ids)
+
+    def _brief(p):
+        return {"player_id": p["player_id"], "name": p["name"], "role_bucket": p["role_bucket"],
+                "is_keeper": p["is_keeper"], "batting_position_median": p["batting_position_median"],
+                "score": p["score"]}
+
+    if args.explain or args.pretty:
+        xi_out = [{**_brief(p), "reasoning": explain(p)["summary"]} for p in analysis["xi"]]
+    else:
+        xi_out = [_brief(p) for p in analysis["xi"]]
+
+    if args.pretty:
+        print(render_xi_analysis(args.team, args.opponent, venue_id, xi_out, analysis))
+        conn.close()
+        return
+
+    _pp({
+        "team": args.team, "opponent": args.opponent, "venue_id": venue_id,
+        "xi": xi_out,
+        "missing_player_ids": analysis["missing_player_ids"],
+        "total_score": analysis["total_score"], "average_score": analysis["average_score"],
+        "counts": analysis["counts"], "requirements": analysis["requirements"],
+        "violations": analysis["violations"],
+        "comparison_to_optimal": analysis["comparison_to_optimal"],
+    })
     conn.close()
 
 
@@ -201,6 +317,21 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--format", default=SETTINGS.format)
     e.add_argument("--gender", default=SETTINGS.gender)
     e.set_defaults(func=cmd_explain)
+
+    a = sub.add_parser("analyze-xi", help="score + check a coach's own hand-picked XI against the same "
+                                           "constraints and the AI's optimal pick")
+    a.add_argument("--team", required=True)
+    a.add_argument("--opponent", required=True)
+    a.add_argument("--venue", default=None)
+    a.add_argument("--format", default=SETTINGS.format)
+    a.add_argument("--gender", default=SETTINGS.gender)
+    a.add_argument("--players", help="comma-separated player names, e.g. \"S Mandhana,H Kaur,...\"")
+    a.add_argument("--player-ids", dest="player_ids", help="comma-separated player_ids (alternative to --players)")
+    a.add_argument("--explain", action="store_true",
+                    help="include per-player plain-language reasoning")
+    a.add_argument("--pretty", action="store_true",
+                    help="render a human-readable analysis instead of JSON (implies --explain)")
+    a.set_defaults(func=cmd_analyze_xi)
 
     return p
 

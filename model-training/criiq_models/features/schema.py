@@ -27,6 +27,9 @@ NUMERIC_FEATURES = [
     "venue_matches",
     "venue_bat_contribution_pct",
     "venue_bowl_contribution_pct",
+    "domestic_form_matches",
+    "domestic_form_batting_wpa",
+    "domestic_form_bowling_wpa",
 ]
 
 CATEGORICAL_FEATURES = ["role_bucket"]

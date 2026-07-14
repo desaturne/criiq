@@ -85,6 +85,7 @@ def build_model_features(conn: sqlite3.Connection, player_id: str, opponent: str
     row["career_bowl_matches"] = 0
     row["career_batting_wpa_matches"] = 0
     row["career_bowling_wpa_matches"] = 0
+    row["domestic_form_matches"] = 0
     if hist.empty:
         row["role_bucket"], _, _ = resolve_role(conn, player_id, fmt)
         return row
@@ -157,6 +158,22 @@ def build_model_features(conn: sqlite3.Connection, player_id: str, opponent: str
         at_venue["bowl_contribution_pct"].mean() if len(at_venue) else None,
         len(at_venue), row["career_bowl_contribution_pct"])
 
+    # Domestic form: no leakage concern here (unlike historical.py's
+    # merge_asof reconstruction) -- data-collection's player_domestic_form is
+    # already "current, as of the last refresh", so a live scoring query just
+    # reads it directly. Same shrink-toward-international-career-baseline,
+    # same effective-sample-size cap, as training.
+    dom = conn.execute(
+        "SELECT matches, batting_wpa_per_match, bowling_wpa_per_match "
+        "FROM player_domestic_form WHERE player_id=? AND format=?", (player_id, fmt)).fetchone()
+    if dom:
+        row["domestic_form_matches"] = dom["matches"] or 0
+        capped_n = min(row["domestic_form_matches"], SETTINGS.domestic_form_max_effective_matches)
+        row["domestic_form_batting_wpa"] = shrink(
+            dom["batting_wpa_per_match"], capped_n, row["career_batting_wpa"])
+        row["domestic_form_bowling_wpa"] = shrink(
+            dom["bowling_wpa_per_match"], capped_n, row["career_bowling_wpa"])
+
     row["role_bucket"], _, _ = resolve_role(conn, player_id, fmt)
     return row
 
@@ -179,14 +196,23 @@ class ExtraContext:
     potm_rate: float | None = None
     icc_rank: int | None = None
     retirement_status: str | None = None
+    status_reason: str | None = None
     recall_flag: bool = False
+    recent_domestic_activity: bool = False
     age_advisory: bool = False
     selection_rate: float | None = None
+    venue_name: str | None = None
+    venue_setting_average: float | None = None
+    venue_setting_strike_rate: float | None = None
+    venue_chasing_average: float | None = None
+    venue_chasing_strike_rate: float | None = None
+    venue_bogey_bowler: dict | None = None  # this opponent's top dismisser of her, at this ground
 
 
 def build_extra_context(conn: sqlite3.Connection, player_id: str, opponent: str,
                          fmt: str = SETTINGS.format, gender: str = SETTINGS.gender,
-                         opponent_roster: list[str] | None = None) -> ExtraContext:
+                         opponent_roster: list[str] | None = None,
+                         venue_id: str | None = None) -> ExtraContext:
     """`opponent_roster`: the opponent's current player_ids (`roster.team_pool`),
     pre-computed and passed in by callers scoring many players against the
     same opponent (e.g. `RecommendationScorer.score_many`) -- it doesn't
@@ -235,6 +261,30 @@ def build_extra_context(conn: sqlite3.Connection, player_id: str, opponent: str,
         (player_id, fmt)).fetchall()
     ctx.phase_profile = {r["phase"]: dict(r) for r in phase_rows}
 
+    if venue_id:
+        vrow = conn.execute(
+            "SELECT venue_name, setting_average, setting_strike_rate, "
+            "chasing_average, chasing_strike_rate FROM player_by_venue "
+            "WHERE player_id=? AND format=? AND venue_id=?",
+            (player_id, fmt, venue_id)).fetchone()
+        if vrow:
+            ctx.venue_name = vrow["venue_name"]
+            ctx.venue_setting_average = vrow["setting_average"]
+            ctx.venue_setting_strike_rate = vrow["setting_strike_rate"]
+            ctx.venue_chasing_average = vrow["chasing_average"]
+            ctx.venue_chasing_strike_rate = vrow["chasing_strike_rate"]
+        # This opponent's top dismisser of her, at this specific ground --
+        # same `bowler_team=?` direct match the batting matchup above uses
+        # (venue_dismissal_matchup stores it the same way dismissal_matchup
+        # does), not a roster join.
+        bogey = conn.execute(
+            "SELECT bowler_name, bowler_team, dismissals, balls, runs "
+            "FROM venue_dismissal_matchup WHERE batter_id=? AND format=? "
+            "AND venue_id=? AND bowler_team=? ORDER BY dismissals DESC, balls DESC LIMIT 1",
+            (player_id, fmt, venue_id, opponent)).fetchone()
+        if bogey and bogey["dismissals"] > 0:
+            ctx.venue_bogey_bowler = dict(bogey)
+
     impact = conn.execute(
         "SELECT importance_score, win_pct, potm_rate FROM player_impact "
         "WHERE player_id=? AND format=?", (player_id, fmt)).fetchone()
@@ -246,13 +296,17 @@ def build_extra_context(conn: sqlite3.Connection, player_id: str, opponent: str,
     ctx.role_bucket, ctx.is_keeper, ctx.batting_position_median = resolve_role(conn, player_id, fmt)
 
     registry = conn.execute(
-        "SELECT retirement_status, recall_flag, age_advisory, selection_rate, icc_rank "
-        "FROM player_registry WHERE player_id=? AND format=?", (player_id, fmt)).fetchone()
+        "SELECT retirement_status, recall_flag, age_advisory, selection_rate, icc_rank, "
+        "status_reason, recent_domestic_activity FROM player_registry "
+        "WHERE player_id=? AND format=?",
+        (player_id, fmt)).fetchone()
     if registry:
         ctx.retirement_status = registry["retirement_status"]
         ctx.recall_flag = bool(registry["recall_flag"])
         ctx.age_advisory = bool(registry["age_advisory"])
         ctx.selection_rate = registry["selection_rate"]
         ctx.icc_rank = registry["icc_rank"]
+        ctx.status_reason = registry["status_reason"]
+        ctx.recent_domestic_activity = bool(registry["recent_domestic_activity"])
 
     return ctx

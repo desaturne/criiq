@@ -44,11 +44,24 @@ def _player_id_map(conn: sqlite3.Connection) -> tuple[dict[str, str], dict[tuple
 
 def player_current_teams(conn: sqlite3.Connection, fmt: str = SETTINGS.format,
                           gender: str = SETTINGS.gender) -> pd.DataFrame:
-    """One row per player_id: team + date of their most recent appearance."""
+    """One row per player_id: their current *national* team + date of their
+    most recent international appearance.
+
+    Deliberately `team_type='international'`-only: `matches`/`match_players`
+    now also carry domestic league fixtures (WBBL, WPL, ...), whose `team1`/
+    `team2` are franchise names, not countries. Without this filter, a
+    player's recent-form-heavy domestic schedule could resolve her "current
+    team" to a franchise, silently dropping her out of her actual country's
+    candidate pool in `team_pool()` below. Recency for *eligibility*
+    (ACTIVE/INACTIVE) is intentionally broader than this -- see
+    `data-collection/criiq_data/registry.py`'s union of international and
+    domestic appearance dates -- this function only answers "which country".
+    """
     appearances = pd.read_sql_query(
         "SELECT mp.player_name, mp.team, m.date "
         "FROM match_players mp JOIN matches m ON mp.match_id = m.match_id "
-        "WHERE m.format = ? AND m.gender = ? AND m.date IS NOT NULL",
+        "WHERE m.format = ? AND m.gender = ? AND m.date IS NOT NULL "
+        "AND m.team_type = 'international'",
         conn, params=(fmt, gender))
     if appearances.empty:
         return pd.DataFrame(columns=["player_id", "team", "last_appearance_date"])
@@ -76,7 +89,15 @@ def team_pool(conn: sqlite3.Connection, team: str, fmt: str = SETTINGS.format,
     """player_ids who currently represent `team`, eligibility-filtered.
 
     Hard-excludes RETIRED_* always; excludes INACTIVE unless `include_inactive`
-    (e.g. an explicit recall scenario) or the registry's own recall_flag is set.
+    (e.g. an explicit recall scenario), the registry's own recall_flag is set,
+    or she has `recent_domestic_activity` (see data-collection's registry.py)
+    -- genuinely INACTIVE internationally, but not dropped from selection
+    just because of it. This is a distinct eligibility carve-out, not a
+    correction to `retirement_status` itself: that label stays an honest,
+    international-only fact (a real bug this session caught: an
+    INCONSISTENT/INACTIVE-internationally player was showing as "ACTIVE"
+    because her domestic recency had been folded into the classification
+    directly -- fixed at the source in registry.py, not patched here).
     """
     teams = player_current_teams(conn, fmt, gender)
     teams = teams[teams["team"] == team]
@@ -84,12 +105,15 @@ def team_pool(conn: sqlite3.Connection, team: str, fmt: str = SETTINGS.format,
         return []
 
     registry = pd.read_sql_query(
-        "SELECT player_id, retirement_status, recall_flag FROM player_registry WHERE format = ?",
+        "SELECT player_id, retirement_status, recall_flag, recent_domestic_activity "
+        "FROM player_registry WHERE format = ?",
         conn, params=(fmt,))
     merged = teams.merge(registry, on="player_id", how="left")
 
     excluded = merged["retirement_status"].isin(SETTINGS.excluded_statuses)
-    inactive = (merged["retirement_status"] == SETTINGS.inactive_status) & (merged["recall_flag"].fillna(0) == 0)
+    inactive = ((merged["retirement_status"] == SETTINGS.inactive_status)
+                & (merged["recall_flag"].fillna(0) == 0)
+                & (merged["recent_domestic_activity"].fillna(0) == 0))
     keep = ~excluded & (include_inactive | ~inactive)
     return merged.loc[keep, "player_id"].tolist()
 

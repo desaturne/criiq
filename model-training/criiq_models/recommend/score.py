@@ -101,7 +101,7 @@ class RecommendationScorer:
     def score(self, player_id: str, opponent: str, venue_id: str | None = None) -> dict:
         feats = build_model_features(self.conn, player_id, opponent, venue_id, self.fmt)
         ctx = build_extra_context(self.conn, player_id, opponent, self.fmt, self.gender,
-                                   opponent_roster=self._opponent_roster(opponent))
+                                   opponent_roster=self._opponent_roster(opponent), venue_id=venue_id)
         bucket = feats["role_bucket"] or ctx.role_bucket
 
         model_applied = (feats["career_matches"] or 0) >= SETTINGS.min_matches_for_model \
@@ -223,7 +223,7 @@ class RecommendationScorer:
             risk_part -= 3.0
         if ctx.retirement_status == "INCONSISTENT":
             risk_part -= 5.0
-        if ctx.retirement_status == "INACTIVE" and ctx.recall_flag:
+        if ctx.retirement_status == "INACTIVE" and (ctx.recall_flag or ctx.recent_domestic_activity):
             risk_part -= 4.0
         risk_part = round(risk_part, 1)
 
@@ -248,6 +248,22 @@ class RecommendationScorer:
                 "predicted_bowling_wpa": round(predicted_bowling_wpa, 4) if predicted_bowling_wpa is not None else None,
                 "vs_opponent_matches": feats["vs_opp_matches"],
                 "venue_matches": feats["venue_matches"],
+                # shrink()/shrink_series() can return pandas NaN (not None)
+                # when both the raw observation and the prior it'd fall back
+                # to are missing (a pure batter's bowling side, career-wide) —
+                # normalize the same way bowl_dot_pct/bowl_boundary_pct below
+                # already do, so explain.py never has to render a literal "nan%".
+                "venue_bat_contribution_pct": None if pd.isna(feats["venue_bat_contribution_pct"]) else feats["venue_bat_contribution_pct"],
+                "venue_bowl_contribution_pct": None if pd.isna(feats["venue_bowl_contribution_pct"]) else feats["venue_bowl_contribution_pct"],
+                "venue_name": ctx.venue_name,
+                "venue_setting_average": ctx.venue_setting_average,
+                "venue_setting_strike_rate": ctx.venue_setting_strike_rate,
+                "venue_chasing_average": ctx.venue_chasing_average,
+                "venue_chasing_strike_rate": ctx.venue_chasing_strike_rate,
+                "venue_bogey_bowler": ctx.venue_bogey_bowler,
+                "domestic_form_matches": feats["domestic_form_matches"],
+                "domestic_form_batting_wpa": feats["domestic_form_batting_wpa"],
+                "domestic_form_bowling_wpa": feats["domestic_form_bowling_wpa"],
                 "matchup_balls_vs_opponent_bowlers": ctx.matchup_balls,
                 "matchup_dismissal_rate": ctx.matchup_dismissal_rate,
                 "aggregate_matchup_part": aggregate_matchup_part,
@@ -259,7 +275,10 @@ class RecommendationScorer:
                 "bowl_matchup_part": bowl_matchup_part,
                 "importance_score": ctx.importance_score, "win_pct": ctx.win_pct,
                 "icc_rank": ctx.icc_rank, "retirement_status": ctx.retirement_status,
-                "recall_flag": ctx.recall_flag, "age_advisory": ctx.age_advisory,
+                "status_reason": ctx.status_reason,
+                "recall_flag": ctx.recall_flag,
+                "recent_domestic_activity": ctx.recent_domestic_activity,
+                "age_advisory": ctx.age_advisory,
                 "is_keeper": ctx.is_keeper,
                 # Descriptive only, not model inputs -- see features/current.py's
                 # docstring on why these were tried as trained-model features

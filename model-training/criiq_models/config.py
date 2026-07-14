@@ -79,6 +79,17 @@ class Settings:
 
     random_state: int = 42
 
+    # Domestic form (data-collection's player_domestic_form -- see wpa.py):
+    # shrunk toward the player's international career WPA the same way
+    # vs-opponent/venue records are (features/common.py's shrink_series), but
+    # with the *sample size fed to the shrink capped* at this value -- so no
+    # amount of domestic match volume can ever fully outweigh the
+    # international prior, on top of whatever weight the trained regressor
+    # itself learns for the feature. Placeholder default pending the real
+    # grid-search backtest (5/10/15/20) this plan's verification step runs
+    # once real domestic data exists -- see model_comparison_robust.ipynb.
+    domestic_form_max_effective_matches: int = 10
+
 
 SETTINGS = Settings()
 

@@ -67,6 +67,68 @@ def _rolling_form(grouped_col: pd.Series, window: int, decay: float) -> pd.Serie
     )
 
 
+def _attach_domestic_form(conn: sqlite3.Connection, df: pd.DataFrame, fmt: str) -> pd.DataFrame:
+    """"Her domestic form as of this (international) match's date" -- bridges
+    two separate event streams (international rows in `df`, domestic rows
+    from `player_match_wpa`) with `merge_asof`, not a plain `.transform()`:
+    an international row isn't a member of the domestic-only subgroup being
+    rolled, so a groupby/transform on the domestic series alone would never
+    align back onto it (misaligned index, or all-NaN). `merge_asof(direction=
+    "backward")` instead finds, for each international row, the most recent
+    domestic checkpoint at or before that date -- international and domestic
+    matches for the same player on the exact same calendar date can't happen
+    in practice, so backward-inclusive is safe here, not a leakage risk.
+    """
+    empty_cols = {"domestic_form_matches": 0, "domestic_form_batting_wpa": None,
+                  "domestic_form_bowling_wpa": None}
+    domestic = pd.read_sql_query(
+        "SELECT player_id, date, batting_wpa, bowling_wpa FROM player_match_wpa "
+        "WHERE format=? AND team_type='club'", conn, params=(fmt,))
+    if domestic.empty:
+        return df.assign(**empty_cols)
+
+    domestic["date"] = pd.to_datetime(domestic["date"], errors="coerce")
+    domestic = domestic.dropna(subset=["date"]).sort_values(["player_id", "date"])
+    dom_by_player = domestic.groupby("player_id")
+    window, decay = SETTINGS.form_window_matches, SETTINGS.form_recency_lambda
+    # Not shifted: by the time a *later* international row looks this
+    # checkpoint up via merge_asof below, it's already in the past for that
+    # row -- this is the domestic stream's own point-in-time value, not a
+    # leak of "this row's own future".
+    domestic["domestic_form_batting_wpa"] = dom_by_player["batting_wpa"].transform(
+        lambda s: s.rolling(window, min_periods=1).apply(lambda a: _weighted_recent(a, decay), raw=True))
+    domestic["domestic_form_bowling_wpa"] = dom_by_player["bowling_wpa"].transform(
+        lambda s: s.rolling(window, min_periods=1).apply(lambda a: _weighted_recent(a, decay), raw=True))
+    domestic["domestic_form_matches"] = dom_by_player.cumcount() + 1
+
+    # `df["date"]` stays a plain string throughout this module (train.py does
+    # its own `pd.to_datetime` on the final output) -- merge_asof needs a
+    # real datetime `on` column, so join on a temporary one instead of
+    # mutating the column every other feature/the caller still expects.
+    df = df.reset_index(drop=True)
+    df["_orig_order"] = df.index
+    df["_date_dt"] = pd.to_datetime(df["date"], errors="coerce")
+    left = df.sort_values("_date_dt")
+    right = domestic.rename(columns={"date": "_date_dt"}).sort_values("_date_dt")[
+        ["player_id", "_date_dt", "domestic_form_matches",
+         "domestic_form_batting_wpa", "domestic_form_bowling_wpa"]]
+    merged = pd.merge_asof(left, right, on="_date_dt", by="player_id", direction="backward")
+    merged = merged.sort_values("_orig_order").reset_index(drop=True).drop(
+        columns=["_orig_order", "_date_dt"])
+    merged["domestic_form_matches"] = merged["domestic_form_matches"].fillna(0).astype(int)
+
+    # Shrink toward the player's own international career WPA -- "to some
+    # extent", capped: `domestic_form_max_effective_matches` bounds the
+    # sample size fed to the shrink, so no amount of domestic volume can
+    # ever fully outweigh the international prior.
+    capped_n = merged["domestic_form_matches"].clip(upper=SETTINGS.domestic_form_max_effective_matches)
+    merged["domestic_form_batting_wpa"] = shrink_series(
+        merged["domestic_form_batting_wpa"], capped_n, merged["career_batting_wpa"])
+    merged["domestic_form_bowling_wpa"] = shrink_series(
+        merged["domestic_form_bowling_wpa"], capped_n, merged["career_bowling_wpa"])
+    return merged
+
+
 def build_training_table(conn: sqlite3.Connection, fmt: str = SETTINGS.format,
                           gender: str = SETTINGS.gender) -> pd.DataFrame:
     pmi = pd.read_sql_query(
@@ -143,6 +205,8 @@ def build_training_table(conn: sqlite3.Connection, fmt: str = SETTINGS.format,
         raw_venue_bat, df["venue_matches"], df["career_bat_contribution_pct"])
     df["venue_bowl_contribution_pct"] = shrink_series(
         raw_venue_bowl, df["venue_matches"], df["career_bowl_contribution_pct"])
+
+    df = _attach_domestic_form(conn, df, fmt)
 
     # Prefer player_role_final (data-driven from batting position + workload,
     # refined for known internationals via Wikipedia keeper/role lookups —

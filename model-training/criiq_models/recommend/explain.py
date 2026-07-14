@@ -96,6 +96,48 @@ def explain(scored: dict, alternative: dict | None = None, slot: str | None = No
             f"A proven track record backs this up: importance score {inp['importance_score']}/100, "
             f"{inp['win_pct']}% win rate{rank_note} ({c['standing_part']:+} pts).")
 
+    if (inp.get("venue_matches") or 0) > 0:
+        bat_pct, bowl_pct = inp.get("venue_bat_contribution_pct"), inp.get("venue_bowl_contribution_pct")
+        parts = []
+        if bat_pct is not None:
+            parts.append(f"{bat_pct:.0f}% of the team's runs")
+        if bowl_pct is not None:
+            parts.append(f"{bowl_pct:.0f}% of the team's wickets")
+        detail = " and ".join(parts) if parts else "a recorded track record"
+        plural = "es" if inp["venue_matches"] != 1 else ""
+        ground = f" ({inp['venue_name']})" if inp.get("venue_name") else ""
+        lines.append(
+            f"At this ground specifically{ground}: {inp['venue_matches']} match{plural} of history, "
+            f"averaging {detail}.")
+
+        set_avg, set_sr = inp.get("venue_setting_average"), inp.get("venue_setting_strike_rate")
+        chase_avg, chase_sr = inp.get("venue_chasing_average"), inp.get("venue_chasing_strike_rate")
+        if set_avg is not None or chase_avg is not None:
+            set_desc = f"avg {set_avg}, SR {set_sr}" if set_avg is not None else "no record batting first here"
+            chase_desc = f"avg {chase_avg}, SR {chase_sr}" if chase_avg is not None else "no record chasing here"
+            lines.append(f"Batting first at this ground: {set_desc}. Chasing: {chase_desc}.")
+
+        bogey = inp.get("venue_bogey_bowler")
+        if bogey:
+            lines.append(
+                f"At this ground against {scored['opponent']} specifically, {bogey['bowler_name']} "
+                f"has been her toughest opponent: {bogey['dismissals']} dismissal(s) in "
+                f"{bogey['balls']} balls.")
+
+    dom_matches = inp.get("domestic_form_matches") or 0
+    if dom_matches > 0:
+        plural = "es" if dom_matches != 1 else ""
+        lines.append(
+            f"Recent domestic form ({dom_matches} match{plural}): shifting win probability by "
+            f"{_pct(inp.get('domestic_form_batting_wpa'))} per match with the bat and "
+            f"{_pct(inp.get('domestic_form_bowling_wpa'))} with the ball — factored into the "
+            f"model above, alongside {inp['career_matches']} international career matches.")
+
+    if inp.get("retirement_status"):
+        reason = inp.get("status_reason")
+        reason_note = f" — {reason}" if reason else ""
+        lines.append(f"Current status: {inp['retirement_status']}{reason_note}.")
+
     if c["risk_part"] < 0:
         flags = []
         if inp["age_advisory"]:
@@ -104,6 +146,8 @@ def explain(scored: dict, alternative: dict | None = None, slot: str | None = No
             flags.append("inconsistent selection history")
         if inp["retirement_status"] == "INACTIVE" and inp["recall_flag"]:
             flags.append("recalled after an inactive spell")
+        if inp["retirement_status"] == "INACTIVE" and inp.get("recent_domestic_activity") and not inp["recall_flag"]:
+            flags.append("internationally inactive — included on recent domestic activity, not an international recall")
         lines.append(f"Worth flagging: {', '.join(flags)} ({c['risk_part']} pts).")
 
     return {
