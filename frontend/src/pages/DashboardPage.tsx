@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { useNavigate } from "react-router";
 import { Users, FileText, Search, CheckCircle, GitCompare } from "lucide-react";
@@ -7,8 +7,9 @@ import { PlayerCard } from "../components/player/PlayerCard";
 import { PlayerCompareModal } from "../components/player/PlayerCompareModal";
 import { SquadSelectionPanel } from "../components/squad/SquadSelectionPanel";
 import { useApp } from "../context/AppContext";
-import { PLAYERS } from "../data/players";
-import { SelectionState } from "../types/index";
+import * as api from "../lib/api";
+import { mapApiPlayerListItem } from "../lib/mappers";
+import { Player, SelectionState } from "../types/index";
 
 export function DashboardPage() {
   const { selections, setSelections } = useApp();
@@ -20,6 +21,17 @@ export function DashboardPage() {
   const [showSquadPanel, setShowSquadPanel] = useState(false);
   const [compareIds, setCompareIds] = useState<string[]>([]);
   const [showCompare, setShowCompare] = useState(false);
+  const [players, setPlayers] = useState<Player[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    api.listPlayers({ search, limit: 100 })
+      .then(res => { if (!cancelled) setPlayers(res.players.map(mapApiPlayerListItem)); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [search]);
 
   const toggleCompare = (id: string) => {
     setCompareIds(prev =>
@@ -35,11 +47,10 @@ export function DashboardPage() {
   const selectedCount = Object.values(selections).filter(s => s === "select").length;
   const reserveCount  = Object.values(selections).filter(s => s === "reserve").length;
 
-  const filtered = PLAYERS.filter(p => {
+  const filtered = players.filter(p => {
     const matchRole = filterRole === "All" || p.role === filterRole;
-    const matchSearch = p.name.toLowerCase().includes(search.toLowerCase());
     const matchStatus = filterStatus === "All" || selections[p.id] === filterStatus;
-    return matchRole && matchSearch && matchStatus;
+    return matchRole && matchStatus;
   });
 
   return (
@@ -110,18 +121,22 @@ export function DashboardPage() {
       </div>
 
       {/* Player grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-        {filtered.map((p, i) => (
-          <PlayerCard
-            key={p.id} player={p} index={i} opposition={opposition}
-            selection={selections[p.id] ?? "undecided"}
-            onSelect={s => setSelection(p.id, s)}
-            comparing={compareIds.includes(p.id)}
-            onToggleCompare={() => toggleCompare(p.id)}
-            onViewProfile={() => navigate("/players/" + p.id)}
-          />
-        ))}
-      </div>
+      {loading ? (
+        <div className="py-16 text-center text-sm text-muted-foreground">Loading players…</div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          {filtered.map((p, i) => (
+            <PlayerCard
+              key={p.id} player={p} index={i} opposition={opposition}
+              selection={selections[p.id] ?? "undecided"}
+              onSelect={s => setSelection(p.id, s)}
+              comparing={compareIds.includes(p.id)}
+              onToggleCompare={() => toggleCompare(p.id)}
+              onViewProfile={() => navigate("/players/" + p.id)}
+            />
+          ))}
+        </div>
+      )}
 
       {/* Floating action buttons */}
       <div className="fixed bottom-6 right-6 flex flex-col items-end gap-2.5">
@@ -169,6 +184,7 @@ export function DashboardPage() {
       <AnimatePresence>
         {showSquadPanel && (
           <SquadSelectionPanel
+            players={players}
             selections={selections}
             opposition={opposition}
             format="T20I"
@@ -182,6 +198,7 @@ export function DashboardPage() {
       {/* Player Compare Modal */}
       {showCompare && compareIds.length >= 2 && (
         <PlayerCompareModal
+          players={players}
           playerIds={compareIds}
           opposition={opposition}
           selections={selections}

@@ -1,11 +1,26 @@
+import { useEffect, useState } from "react";
 import { motion } from "motion/react";
 import { useNavigate } from "react-router";
 import { MapPin, Filter, ArrowRight } from "lucide-react";
-import { MATCHES } from "../data/matches";
+import * as api from "../lib/api";
+import { mapApiMatch } from "../lib/mappers";
+import { Match } from "../types/index";
 
 export function MatchesPage() {
   const navigate = useNavigate();
+  const [matches, setMatches] = useState<Match[]>([]);
+  const [loading, setLoading] = useState(true);
   const statusColor = { Upcoming: "bg-blue-500/15 text-blue-400", Live: "bg-green-500/15 text-green-400", Completed: "bg-secondary text-muted-foreground" };
+
+  useEffect(() => {
+    api.listMatches()
+      .then(res => setMatches([...res.upcoming, ...res.completed].map(mapApiMatch)))
+      .finally(() => setLoading(false));
+  }, []);
+
+  if (loading) {
+    return <div className="p-5 max-w-screen-xl mx-auto py-16 text-center text-sm text-muted-foreground">Loading matches…</div>;
+  }
   return (
     <div className="p-5 max-w-screen-xl mx-auto">
       <div className="flex items-center justify-between mb-5">
@@ -18,7 +33,7 @@ export function MatchesPage() {
         </button>
       </div>
       <div className="grid gap-3">
-        {MATCHES.map((m, i) => (
+        {matches.map((m, i) => (
           <motion.div key={m.id} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.06 }}
             onClick={() => navigate("/matches/" + m.id)}
             className="bg-card border border-border rounded-xl p-5 hover:border-[#AAFF57]/30 transition-all cursor-pointer group">

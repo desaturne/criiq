@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { motion } from "motion/react";
 import { useNavigate } from "react-router";
 import { Users, Calendar, Zap, FileText, MapPin, Cloud, TrendingUp, TrendingDown, AlertTriangle, ArrowRight, Star, Shield, BarChart2, Wind } from "lucide-react";
@@ -6,8 +7,9 @@ import { CountdownTimer } from "../components/common/CountdownTimer";
 import { CricketBall } from "../components/common/CricketBall";
 import { RadialGauge } from "../components/common/RadialGauge";
 import { useApp } from "../context/AppContext";
-import { MATCHES } from "../data/matches";
-import { PLAYERS } from "../data/players";
+import * as api from "../lib/api";
+import { mapApiMatch, mapApiPlayerListItem } from "../lib/mappers";
+import { Match, Player } from "../types/index";
 
 export function DashboardOverviewPage() {
   const { selections } = useApp();
@@ -16,28 +18,47 @@ export function DashboardOverviewPage() {
     const map: Record<string, string> = { playerform: "players", match: "matches/m1" };
     navigate("/" + (map[p] ?? p));
   };
-  const nextMatch = MATCHES[0];
+
+  const [nextMatch, setNextMatch] = useState<Match | null>(null);
+  const [players, setPlayers] = useState<Player[]>([]);
+  const [totalPlayers, setTotalPlayers] = useState(0);
+  const [winProb, setWinProb] = useState(50);
+  const [formAlerts, setFormAlerts] = useState<{ player: string; msg: string; type: string }[]>([]);
+  const [targetDate, setTargetDate] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([
+      api.dashboardSummary(),
+      api.listPlayers({ limit: 100 }),
+      api.dashboardAlerts(),
+    ]).then(([summary, playerRes, alerts]) => {
+      if (cancelled) return;
+      setNextMatch(summary.next_match ? mapApiMatch(summary.next_match) : null);
+      setTargetDate(summary.next_match ? `${summary.next_match.date}T00:00:00` : null);
+      setWinProb(Math.round((summary.win_probability?.win_probability_batting ?? 0.5) * 100));
+      setPlayers(playerRes.players.map(mapApiPlayerListItem));
+      setTotalPlayers(playerRes.total);
+      setFormAlerts(alerts.map((a: any) => ({ player: a.player, msg: a.message, type: a.type })));
+    }).finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, []);
+
   const selectedCount  = Object.values(selections).filter(s => s === "select").length;
   const reserveCount   = Object.values(selections).filter(s => s === "reserve").length;
-  const batters        = PLAYERS.filter(p => selections[p.id] === "select" && p.isBatsman).length;
-  const bowlers        = PLAYERS.filter(p => selections[p.id] === "select" && !p.isBatsman && p.role === "Bowler").length;
-  const allRounders    = PLAYERS.filter(p => selections[p.id] === "select" && p.role === "All-rounder").length;
-  const winProb        = Math.round(45 + selectedCount * 3.2);
-
-  // Target date ~3 days from "now" (mock)
-  const target = new Date("2025-01-15T14:00:00+11:00");
-
-  const formAlerts = [
-    { player: "Jasprit Bumrah",   msg: "Career-best form — 3-2-4 wkts in last 3. Lock in.", type: "positive" },
-    { player: "Shubman Gill",     msg: "3 consecutive 50+ scores. Confidence at a peak.",   type: "positive" },
-    { player: "Hardik Pandya",    msg: "Economy 8.14 last 3 games. Consider alternatives.", type: "warning"  },
-    { player: "Yuzvendra Chahal", msg: "Full-toss count elevated. Form dip this month.",    type: "negative" },
-  ];
+  const batters        = players.filter(p => selections[p.id] === "select" && p.isBatsman).length;
+  const bowlers        = players.filter(p => selections[p.id] === "select" && !p.isBatsman && p.role === "Bowler").length;
+  const allRounders    = players.filter(p => selections[p.id] === "select" && p.role === "All-rounder").length;
 
   const alertColor = (t: string) =>
     t === "positive" ? "#AAFF57" : t === "warning" ? "#F59E0B" : "#FF5C5C";
   const alertIcon  = (t: string) =>
     t === "positive" ? <TrendingUp size={11} /> : t === "warning" ? <AlertTriangle size={11} /> : <TrendingDown size={11} />;
+
+  if (loading || !nextMatch) {
+    return <div className="p-5 max-w-screen-xl mx-auto py-16 text-center text-sm text-muted-foreground">Loading dashboard…</div>;
+  }
 
   return (
     <div className="p-5 max-w-screen-xl mx-auto space-y-5 pb-10">
@@ -59,7 +80,7 @@ export function DashboardOverviewPage() {
         <div className="bg-card border border-border rounded-2xl p-5">
           <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-[0.12em] mb-3">Squad</div>
           <div className="font-mono text-4xl font-bold text-foreground tabular-nums leading-none">
-            <AnimatedStat value={15} />
+            <AnimatedStat value={totalPlayers} />
           </div>
           <div className="text-[11px] text-muted-foreground mt-2">Players registered</div>
         </div>
@@ -116,7 +137,7 @@ export function DashboardOverviewPage() {
                   {/* Teams */}
                   <div className="flex items-center gap-5 mb-5">
                     <div>
-                      <div className="font-display font-bold tracking-tight" style={{ fontSize: "clamp(2rem, 5vw, 3.5rem)", lineHeight: 1, color: "#FFFFFF" }}>INDIA</div>
+                      <div className="font-display font-bold tracking-tight" style={{ fontSize: "clamp(2rem, 5vw, 3.5rem)", lineHeight: 1, color: "#FFFFFF" }}>{nextMatch.team1.toUpperCase()}</div>
                       <div className="text-[11px] mt-1.5" style={{ color: "rgba(255,255,255,0.55)" }}>Home</div>
                     </div>
                     <div className="flex flex-col items-center gap-1.5 flex-shrink-0">
@@ -124,27 +145,25 @@ export function DashboardOverviewPage() {
                       <span className="text-xs font-bold" style={{ color: "rgba(255,255,255,0.55)" }}>VS</span>
                     </div>
                     <div>
-                      <div className="font-display font-bold tracking-tight" style={{ fontSize: "clamp(2rem, 5vw, 3.5rem)", lineHeight: 1, color: "#FFFFFF" }}>AUSTRALIA</div>
+                      <div className="font-display font-bold tracking-tight" style={{ fontSize: "clamp(2rem, 5vw, 3.5rem)", lineHeight: 1, color: "#FFFFFF" }}>{nextMatch.team2.toUpperCase()}</div>
                       <div className="text-[11px] mt-1.5" style={{ color: "rgba(255,255,255,0.55)" }}>Away</div>
                     </div>
                   </div>
 
                   {/* Venue + date */}
                   <div className="flex items-center flex-wrap gap-x-5 gap-y-1.5 text-[13px] mb-4" style={{ color: "rgba(255,255,255,0.6)" }}>
-                    <span className="flex items-center gap-1.5"><MapPin size={13} style={{ color: "#3ADCFF" }} /> MCG, Melbourne</span>
+                    <span className="flex items-center gap-1.5"><MapPin size={13} style={{ color: "#3ADCFF" }} /> {nextMatch.venue}</span>
                     <span className="hidden sm:inline opacity-30">·</span>
-                    <span>Jan 15, 2025</span>
-                    <span className="hidden sm:inline opacity-30">·</span>
-                    <span>14:00 AEDT</span>
+                    <span>{nextMatch.date}</span>
                   </div>
 
-                  {/* Condition chips */}
+                  {/* Condition chips — no weather/pitch API yet, neutral placeholders */}
                   <div className="flex flex-wrap gap-2 mb-5">
                     {[
-                      { label: "Clear · 26°C",  icon: Cloud,    color: "#3ADCFF" },
-                      { label: "Wind 14 km/h",  icon: Wind,     color: "#3ADCFF" },
-                      { label: "Pace 78%",      icon: BarChart2, color: "#AAFF57" },
-                      { label: "Spin 42%",      icon: Shield,   color: "#A78BFA" },
+                      { label: nextMatch.weatherDesc,             icon: Cloud,    color: "#3ADCFF" },
+                      { label: `Wind ${nextMatch.windSpeed} km/h`, icon: Wind,     color: "#3ADCFF" },
+                      { label: `Pace ${nextMatch.paceSupport}%`,   icon: BarChart2, color: "#AAFF57" },
+                      { label: `Spin ${nextMatch.spinSupport}%`,   icon: Shield,   color: "#A78BFA" },
                     ].map(c => (
                       <div key={c.label} className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-medium"
                            style={{ background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.12)" }}>
@@ -156,7 +175,7 @@ export function DashboardOverviewPage() {
 
                   {/* Opposition form */}
                   <div className="flex items-center gap-3">
-                    <span className="text-[11px] flex-shrink-0" style={{ color: "rgba(255,255,255,0.6)" }}>AUS last 5:</span>
+                    <span className="text-[11px] flex-shrink-0" style={{ color: "rgba(255,255,255,0.6)" }}>{nextMatch.team2.slice(0, 3).toUpperCase()} last 5:</span>
                     <div className="flex gap-1.5">
                       {nextMatch.opponentForm.map((r, i) => (
                         <motion.div key={i}
@@ -174,7 +193,7 @@ export function DashboardOverviewPage() {
                 <div className="flex flex-col items-start xl:items-center gap-7 xl:flex-shrink-0">
                   <div>
                     <div className="text-[10px] font-semibold uppercase tracking-[0.15em] mb-4" style={{ color: "rgba(255,255,255,0.55)" }}>Match begins in</div>
-                    <CountdownTimer targetDate={target.toISOString()} />
+                    {targetDate && <CountdownTimer targetDate={new Date(targetDate).toISOString()} />}
                   </div>
                   <div className="flex flex-col gap-2.5 w-full xl:min-w-[220px]">
                     <motion.button

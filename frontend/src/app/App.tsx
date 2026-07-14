@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { RouterProvider, createBrowserRouter, Navigate } from "react-router";
 import { AdminShell } from "../admin/AdminShell";
 import { Root } from "../components/layout/Root";
 import { AppContext } from "../context/AppContext";
+import * as api from "../lib/api";
 import { AssistantPage } from "../pages/AssistantPage";
 import { DashboardOverviewPage } from "../pages/DashboardOverviewPage";
 import { DashboardPage } from "../pages/DashboardPage";
@@ -16,12 +17,47 @@ import { SettingsPage } from "../pages/SettingsPage";
 import { SquadsPage } from "../pages/SquadsPage";
 import { AdminLoginPage } from "../pages/auth/AdminLoginPage";
 import { LoginPage } from "../pages/auth/LoginPage";
-import { AuthMode, SelectionState } from "../types/index";
+import { AuthMode, AuthUser, SelectionState } from "../types/index";
 
 export function AppWithAuth() {
-  const [authMode, setAuthMode] = useState<AuthMode>("user-login");
+  const [authMode, setAuthMode] = useState<AuthMode>(api.getToken() ? "user-app" : "user-login");
   const [dark, setDark] = useState(true);
   const [selections, setSelections] = useState<Record<string, SelectionState>>({});
+  const [token, setToken] = useState<string | null>(api.getToken());
+  const [user, setUser] = useState<AuthUser | null>(null);
+
+  const login = async (email: string, password: string) => {
+    const result = await api.login(email, password);
+    api.setToken(result.token);
+    setToken(result.token);
+    setUser(result.user);
+    setAuthMode("user-app");
+  };
+
+  const register = async (name: string, email: string, password: string) => {
+    const result = await api.register(name, email, password);
+    api.setToken(result.token);
+    setToken(result.token);
+    setUser(result.user);
+    setAuthMode("user-app");
+  };
+
+  const logout = async () => {
+    try { await api.logout(); } catch { /* token may already be invalid — clear locally regardless */ }
+    api.clearToken();
+    setToken(null);
+    setUser(null);
+    setAuthMode("user-login");
+  };
+
+  // A persisted token might have expired or been revoked server-side since
+  // the last visit — confirm it's still live and recover the user's name/role.
+  useEffect(() => {
+    if (!token || user) return;
+    api.me()
+      .then(me => setUser({ id: 0, name: me.name, role: me.role }))
+      .catch(() => { api.clearToken(); setToken(null); setAuthMode("user-login"); });
+  }, [token, user]);
 
   // Admin login — completely separate, no user context
   if (authMode === "admin-login") {
@@ -40,7 +76,7 @@ export function AppWithAuth() {
         <div className="bg-background text-foreground h-full">
           <AnimatePresence mode="wait">
             <motion.div key="login" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="h-full">
-              <LoginPage onLogin={() => setAuthMode("user-app")} onAdminAccess={() => setAuthMode("admin-login")} />
+              <LoginPage onLogin={login} onRegister={register} onAdminAccess={() => setAuthMode("admin-login")} />
             </motion.div>
           </AnimatePresence>
         </div>
@@ -71,7 +107,7 @@ export function AppWithAuth() {
   ]);
 
   return (
-    <AppContext.Provider value={{ dark, setDark, selections, setSelections }}>
+    <AppContext.Provider value={{ dark, setDark, selections, setSelections, token, user, login, register, logout }}>
       <RouterProvider router={router} />
     </AppContext.Provider>
   );

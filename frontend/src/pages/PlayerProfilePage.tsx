@@ -1,15 +1,52 @@
+import { useEffect, useState } from "react";
 import { motion } from "motion/react";
 import { useNavigate, useParams } from "react-router";
 import { ChevronLeft, Star } from "lucide-react";
 import { PhaseBar } from "../components/common/PhaseBar";
 import { RadialGauge } from "../components/common/RadialGauge";
 import { StatusBadge } from "../components/common/StatusBadge";
-import { PLAYERS } from "../data/players";
+import * as api from "../lib/api";
+import { applyVsOpponent, mapApiPlayerDetail } from "../lib/mappers";
+import { Player } from "../types/index";
 
 export function PlayerProfilePage() {
   const { id: playerId } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const player = PLAYERS.find(p => p.id === playerId) || PLAYERS[0];
+  const [player, setPlayer] = useState<Player | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [notFound, setNotFound] = useState(false);
+  const opposition = "Australia";
+
+  useEffect(() => {
+    if (!playerId) return;
+    let cancelled = false;
+    setLoading(true);
+    setNotFound(false);
+    api.getPlayer(playerId)
+      .then(detail => {
+        if (cancelled) return;
+        const mapped = mapApiPlayerDetail(detail);
+        setPlayer(mapped);
+        api.getPlayerVsOpponent(playerId, opposition)
+          .then(vs => { if (!cancelled) setPlayer(p => p && applyVsOpponent(p, vs, opposition)); })
+          .catch(() => { /* no head-to-head record vs this opponent — keep the default */ });
+      })
+      .catch(() => { if (!cancelled) setNotFound(true); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [playerId]);
+
+  if (loading) {
+    return <div className="p-5 max-w-screen-xl mx-auto py-16 text-center text-sm text-muted-foreground">Loading player…</div>;
+  }
+  if (notFound || !player) {
+    return (
+      <div className="p-5 max-w-screen-xl mx-auto py-16 text-center">
+        <p className="text-sm text-muted-foreground mb-4">Unknown player.</p>
+        <button onClick={() => navigate(-1)} className="text-sm text-[#AAFF57] hover:underline">Go back</button>
+      </div>
+    );
+  }
   return (
     <div className="p-5 max-w-screen-xl mx-auto">
       <button onClick={() => navigate(-1)} className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground mb-5 transition-colors">

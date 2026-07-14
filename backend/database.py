@@ -1,13 +1,18 @@
 """
-database.py — opens the two SQLite databases the backend uses.
+database.py — opens the three SQLite databases the backend uses.
 
 1) criiq.db  — Sushma's analytics database, built by the criiq_data pipeline.
                We open it READ-ONLY: the pipeline owns this file and rebuilds
                it, so the backend must never write to it.
 
 2) app.db    — the backend's OWN database (created automatically on first run)
-               for things the pipeline knows nothing about: users, upcoming
-               fixtures, saved Playing-XI selections, manually added players.
+               for things the pipeline knows nothing about: upcoming fixtures,
+               saved Playing-XI selections, manually added players.
+
+3) auth.db   — login credentials and sessions, kept in their own file so that
+               resetting app.db (fixtures/selections/manual players) can never
+               accidentally wipe out user accounts, and so a login session can
+               be revoked server-side (see sessions table + auth.py logout).
 
 Why plain sqlite3 and not SQLAlchemy?  Everything we do is a handful of simple
 SELECT/INSERT statements. SQLAlchemy would force us to describe all 25 pipeline
@@ -51,14 +56,6 @@ app_db.row_factory = sqlite3.Row
 
 app_db.executescript(
     """
-    CREATE TABLE IF NOT EXISTS users (
-        id            INTEGER PRIMARY KEY AUTOINCREMENT,
-        email         TEXT NOT NULL UNIQUE,
-        password_hash TEXT NOT NULL,
-        name          TEXT NOT NULL,
-        role          TEXT NOT NULL DEFAULT 'coach'
-    );
-
     CREATE TABLE IF NOT EXISTS fixtures (
         id      INTEGER PRIMARY KEY AUTOINCREMENT,
         team1   TEXT NOT NULL,
@@ -88,17 +85,45 @@ app_db.executescript(
     """
 )
 
-# --- 3. Seed data (only inserted the first time) -----------------------------
+# --- 3. Auth database (writable, separate file) ------------------------------
+
+AUTH_DB_PATH = Path(os.environ.get("AUTH_DB", BACKEND_DIR / "auth.db"))
+auth_db = sqlite3.connect(AUTH_DB_PATH, check_same_thread=False)
+auth_db.row_factory = sqlite3.Row
+
+auth_db.executescript(
+    """
+    CREATE TABLE IF NOT EXISTS users (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        email         TEXT NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL,
+        name          TEXT NOT NULL,
+        role          TEXT NOT NULL DEFAULT 'coach'
+    );
+
+    -- One row per issued login token, so a token can be revoked (logout)
+    -- instead of staying valid until it naturally expires.
+    CREATE TABLE IF NOT EXISTS sessions (
+        jti        TEXT PRIMARY KEY,
+        user_id    INTEGER NOT NULL,
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    """
+)
+
+# --- 4. Seed data (only inserted the first time) -----------------------------
 
 def seed():
     """Create the demo coach account and a few upcoming fixtures."""
-    has_users = app_db.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]
+    has_users = auth_db.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]
     if not has_users:
         pw_hash = bcrypt.hashpw(b"coach1234", bcrypt.gensalt()).decode()
-        app_db.execute(
+        auth_db.execute(
             "INSERT INTO users (email, password_hash, name, role) VALUES (?,?,?,?)",
             ("rahul@criiq.local", pw_hash, "Rahul Coach", "coach"),
         )
+        auth_db.commit()
 
     has_fixtures = app_db.execute("SELECT COUNT(*) AS n FROM fixtures").fetchone()["n"]
     if not has_fixtures:

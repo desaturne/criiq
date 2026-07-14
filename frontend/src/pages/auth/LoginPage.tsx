@@ -1,18 +1,42 @@
 import React, { useState } from "react";
 import { motion } from "motion/react";
-import { Lock, RefreshCw, Mail } from "lucide-react";
+import { Lock, RefreshCw, Mail, User } from "lucide-react";
 import { CricketBall } from "../../components/common/CricketBall";
 
-export function LoginPage({ onLogin, onAdminAccess }: { onLogin: () => void; onAdminAccess?: () => void }) {
+export function LoginPage({ onLogin, onRegister, onAdminAccess }: {
+  onLogin: (email: string, password: string) => Promise<void>;
+  onRegister: (name: string, email: string, password: string) => Promise<void>;
+  onAdminAccess?: () => void;
+}) {
+  const [mode, setMode] = useState<"signin" | "signup">("signin");
+  const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [shake, setShake] = useState(false);
-  const handleSubmit = (e: React.FormEvent) => {
+  const [error, setError] = useState<string | null>(null);
+
+  const switchMode = (next: "signin" | "signup") => {
+    setMode(next); setError(null); setPassword("");
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!email || !password) { setShake(true); setTimeout(() => setShake(false), 600); return; }
+    const missing = mode === "signup" ? (!name || !email || !password) : (!email || !password);
+    if (missing) { setShake(true); setTimeout(() => setShake(false), 600); return; }
     setLoading(true);
-    setTimeout(onLogin, 1200);
+    setError(null);
+    try {
+      if (mode === "signup") {
+        await onRegister(name, email, password);
+      } else {
+        await onLogin(email, password);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : mode === "signup" ? "Sign up failed" : "Sign in failed");
+      setShake(true); setTimeout(() => setShake(false), 600);
+      setLoading(false);
+    }
   };
   return (
     <div className="min-h-screen flex">
@@ -67,10 +91,21 @@ export function LoginPage({ onLogin, onAdminAccess }: { onLogin: () => void; onA
         <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.5, delay: 0.2 }}
           className="w-full max-w-sm">
           <div className="mb-8">
-            <h2 className="font-display text-3xl font-bold text-foreground">Sign in</h2>
-            <p className="text-muted-foreground text-sm mt-1">Access your coaching dashboard</p>
+            <h2 className="font-display text-3xl font-bold text-foreground">{mode === "signup" ? "Create your account" : "Sign in"}</h2>
+            <p className="text-muted-foreground text-sm mt-1">{mode === "signup" ? "Set up coach access in a minute" : "Access your coaching dashboard"}</p>
           </div>
           <motion.form onSubmit={handleSubmit} animate={shake ? { x: [0, -8, 8, -8, 8, 0] } : {}} transition={{ duration: 0.4 }} className="space-y-4">
+            {error && <p className="text-[12px] text-red-400">{error}</p>}
+            {mode === "signup" && (
+              <div className="space-y-1.5">
+                <label className="text-[13px] font-medium text-foreground">Full name</label>
+                <div className="relative">
+                  <User size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                  <input type="text" value={name} onChange={e => setName(e.target.value)} placeholder="Rahul Coach"
+                    className="w-full pl-9 pr-4 py-2.5 text-sm bg-input-background border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-[#AAFF57]/40 focus:border-[#AAFF57] text-foreground placeholder:text-muted-foreground transition-all" />
+                </div>
+              </div>
+            )}
             <div className="space-y-1.5">
               <label className="text-[13px] font-medium text-foreground">Email</label>
               <div className="relative">
@@ -83,23 +118,31 @@ export function LoginPage({ onLogin, onAdminAccess }: { onLogin: () => void; onA
               <label className="text-[13px] font-medium text-foreground">Password</label>
               <div className="relative">
                 <Lock size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-                <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="••••••••"
+                <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder={mode === "signup" ? "At least 8 characters" : "••••••••"}
                   className="w-full pl-9 pr-4 py-2.5 text-sm bg-input-background border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-[#AAFF57]/40 focus:border-[#AAFF57] text-foreground placeholder:text-muted-foreground transition-all" />
               </div>
             </div>
-            <div className="flex items-center justify-between text-[12px]">
-              <label className="flex items-center gap-2 text-muted-foreground cursor-pointer">
-                <input type="checkbox" className="rounded" /> Remember me
-              </label>
-              <button type="button" className="text-[#AAFF57] hover:underline">Forgot password?</button>
-            </div>
+            {mode === "signin" && (
+              <div className="flex items-center justify-between text-[12px]">
+                <label className="flex items-center gap-2 text-muted-foreground cursor-pointer">
+                  <input type="checkbox" className="rounded" /> Remember me
+                </label>
+                <button type="button" className="text-[#AAFF57] hover:underline">Forgot password?</button>
+              </div>
+            )}
             <button type="submit" disabled={loading}
               className="w-full py-2.5 bg-[#AAFF57] text-[#0D0D06] text-sm font-semibold rounded-lg hover:opacity-90 active:scale-[0.98] transition-all flex items-center justify-center gap-2 disabled:opacity-60">
-              {loading ? <><RefreshCw size={14} className="animate-spin" /> Signing in…</> : "Sign in"}
+              {loading
+                ? <><RefreshCw size={14} className="animate-spin" /> {mode === "signup" ? "Creating account…" : "Signing in…"}</>
+                : mode === "signup" ? "Create account" : "Sign in"}
             </button>
           </motion.form>
           <p className="text-center text-[12px] text-muted-foreground mt-6">
-            No account? <button className="text-[#AAFF57] hover:underline">Request access</button>
+            {mode === "signup" ? (
+              <>Already have an account? <button onClick={() => switchMode("signin")} className="text-[#AAFF57] hover:underline">Sign in</button></>
+            ) : (
+              <>No account? <button onClick={() => switchMode("signup")} className="text-[#AAFF57] hover:underline">Create one</button></>
+            )}
           </p>
           {onAdminAccess && (
             <p className="text-center text-[11px] text-muted-foreground/60 mt-3">

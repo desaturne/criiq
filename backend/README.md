@@ -21,25 +21,35 @@ uvicorn main:app --reload
 Server: http://localhost:8000 — interactive docs at **http://localhost:8000/docs**
 (you can try every endpoint from the browser there).
 
-## Login
+## Login / sign up
 
 Seeded demo user (created automatically on first run):
 
 - email: `rahul@criiq.local`
 - password: `coach1234`
 
+New accounts: `POST /auth/register` with `{"name", "email", "password"}` (password
+8+ chars) creates a user — everyone who self-registers gets the `coach` role —
+and, like `/auth/login`, immediately returns a JWT token. Duplicate emails get
+a 409.
+
 `POST /auth/login` returns a JWT token. Send it on every other request:
 `Authorization: Bearer <token>`. In `/docs`, click **Authorize** and paste the token.
+`POST /auth/logout` revokes that token server-side (its session row is deleted,
+so reusing it afterward gets a 401 even though it hasn't expired yet).
 
-## The two databases
+## The three databases
 
 | File | Owner | Access | Contents |
 |---|---|---|---|
 | `../data-collection/data/criiq.db` | pipeline | **read-only** | matches, deliveries, players, cards, careers… |
-| `backend/app.db` | this API | read-write | users, fixtures, saved XIs, manually added players |
+| `backend/app.db` | this API | read-write | fixtures, saved XIs, manually added players |
+| `backend/auth.db` | this API | read-write | users, login sessions |
 
-`app.db` is created and seeded automatically the first time the server starts.
-Delete it to reset users/fixtures/selections.
+Both `app.db` and `auth.db` are created and seeded automatically the first
+time the server starts. They're kept separate on purpose: deleting `app.db`
+to reset fixtures/selections/manual players can never accidentally wipe out
+user accounts. Delete `auth.db` to reset users/sessions.
 
 ## Endpoints
 
@@ -47,7 +57,7 @@ Everything returns `{"data": ..., "error": null}` (or `{"data": null, "error": "
 
 **Phase 1 — foundations**
 - `GET /health`
-- `POST /auth/login` · `GET /auth/me`
+- `POST /auth/register` · `POST /auth/login` · `GET /auth/me` · `POST /auth/logout`
 
 **Phase 2 — players & squads**
 - `GET /players?search=&role=&status=&page=&limit=`
@@ -77,8 +87,8 @@ Everything returns `{"data": ..., "error": null}` (or `{"data": null, "error": "
 | File | Job |
 |---|---|
 | `main.py` | app setup, CORS, error shape, health, mounts the routers |
-| `database.py` | opens criiq.db (read-only) + app.db (ours), creates/seeds tables |
-| `auth.py` | login, JWT check (`require_user`), `/auth/me` |
+| `database.py` | opens criiq.db (read-only) + app.db + auth.db (ours), creates/seeds tables |
+| `auth.py` | login/logout, JWT check (`require_user`), `/auth/me` |
 | `players.py` | player list/detail/vs/compare + add/edit/delete manual players |
 | `matches.py` | matches, dashboard summary + alerts, ticker |
 | `selection.py` | playing XI save/load, recommendations, winprob |

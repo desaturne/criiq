@@ -1,23 +1,49 @@
+import { useEffect, useState } from "react";
 import { motion } from "motion/react";
-import { CheckCircle, X, TrendingUp, TrendingDown, ArrowRight } from "lucide-react";
+import { CheckCircle, X, TrendingUp, TrendingDown, ArrowRight, Loader2 } from "lucide-react";
 import { AvatarWithRing } from "../common/AvatarWithRing";
 import { SparkLine } from "../common/SparkLine";
-import { PLAYERS } from "../../data/players";
-import { SelectionState } from "../../types/index";
+import * as api from "../../lib/api";
+import { Player, SelectionState } from "../../types/index";
 
-export function SquadSelectionPanel({ selections, opposition, format, onClose, onReset, onChangeSelection }: {
+export function SquadSelectionPanel({ players, selections, opposition, format, onClose, onReset, onChangeSelection }: {
+  players: Player[];
   selections: Record<string, SelectionState>;
   opposition: string; format: string;
   onClose: () => void; onReset: () => void;
   onChangeSelection: (id: string, s: SelectionState) => void;
 }) {
-  const selected  = PLAYERS.filter(p => selections[p.id] === "select");
-  const reserves  = PLAYERS.filter(p => selections[p.id] === "reserve");
-  const excluded  = PLAYERS.filter(p => selections[p.id] === "exclude");
+  const selected  = players.filter(p => selections[p.id] === "select");
+  const reserves  = players.filter(p => selections[p.id] === "reserve");
+  const excluded  = players.filter(p => selections[p.id] === "exclude");
   const batters   = selected.filter(p => p.isBatsman).length;
   const bowlers   = selected.filter(p => !p.isBatsman && p.role === "Bowler").length;
   const allRound  = selected.filter(p => p.role === "All-rounder").length;
   const isComplete = selected.length === 11;
+
+  // Squad selections are saved per-match; use the next upcoming fixture as
+  // the implicit "current match" since there's no match picker in this panel.
+  const [matchId, setMatchId] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    api.listMatches().then(res => setMatchId(res.upcoming[0]?.id ?? null)).catch(() => setMatchId(null));
+  }, []);
+
+  const handleSave = async () => {
+    if (!matchId) return;
+    setSaving(true);
+    try {
+      await api.saveSelection(matchId, {
+        xi: selected.map(p => p.id), extra: reserves.map(p => p.id), excluded: excluded.map(p => p.id),
+      });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const roleTag = (role: string) => {
     if (role === "Batsman")    return { bg: "bg-blue-500/15",    text: "text-blue-400"  };
@@ -198,11 +224,13 @@ export function SquadSelectionPanel({ selections, opposition, format, onClose, o
         <div className="flex-shrink-0 border-t border-border px-6 py-4 bg-background flex items-center gap-3">
           <motion.button
             whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.97 }}
-            className="flex-1 py-3 font-semibold text-sm rounded-xl flex items-center justify-center gap-2 transition-all"
+            onClick={handleSave}
+            disabled={!isComplete || saving || !matchId}
+            className="flex-1 py-3 font-semibold text-sm rounded-xl flex items-center justify-center gap-2 transition-all disabled:cursor-not-allowed"
             style={{ background: isComplete ? "#5FA800" : "var(--secondary)", color: isComplete ? "#fff" : "var(--muted-foreground)" }}
           >
-            <CheckCircle size={15} />
-            {isComplete ? "Save Playing XI" : `Select ${11 - selected.length} more…`}
+            {saving ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle size={15} />}
+            {saved ? "Saved!" : saving ? "Saving…" : isComplete ? "Save Playing XI" : `Select ${11 - selected.length} more…`}
           </motion.button>
           <button onClick={onReset}
             className="px-6 py-3 border border-border text-muted-foreground text-sm rounded-xl hover:text-foreground hover:border-foreground/30 transition-all">

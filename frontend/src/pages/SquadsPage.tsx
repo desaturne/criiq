@@ -1,10 +1,11 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { useNavigate } from "react-router";
 import { Search, CheckCircle, X, Eye, Download, UserPlus, Edit, Trash2 } from "lucide-react";
 import { SparkLine } from "../components/common/SparkLine";
 import { StatusBadge } from "../components/common/StatusBadge";
-import { PLAYERS } from "../data/players";
+import * as api from "../lib/api";
+import { mapApiPlayerListItem } from "../lib/mappers";
 import { Player, PlayerStatus } from "../types/index";
 
 export function SquadsPage() {
@@ -12,10 +13,22 @@ export function SquadsPage() {
   const [search, setSearch] = useState("");
   const [selectedRows, setSelectedRows] = useState<string[]>([]);
   const [filterStatus, setFilterStatus] = useState("All");
-  const [players, setPlayers] = useState<Player[]>(PLAYERS);
+  const [players, setPlayers] = useState<Player[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [showAddPanel, setShowAddPanel] = useState(false);
   const [addSuccess, setAddSuccess] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [newPlayer, setNewPlayer] = useState({ name: "", role: "Batsman", battingHand: "Right", bowlingStyle: "", status: "ACTIVE" as PlayerStatus });
+
+  const loadPlayers = () => {
+    setLoading(true);
+    return api.listPlayers({ limit: 100 })
+      .then(res => setPlayers(res.players.map(mapApiPlayerListItem)))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => { loadPlayers(); }, []);
 
   const filtered = players.filter(p =>
     p.name.toLowerCase().includes(search.toLowerCase()) &&
@@ -23,25 +36,53 @@ export function SquadsPage() {
   );
   const toggleRow = (id: string) => setSelectedRows(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
 
-  const handleAddPlayer = (e: React.FormEvent) => {
+  const openAdd = () => {
+    setEditingId(null);
+    setNewPlayer({ name: "", role: "Batsman", battingHand: "Right", bowlingStyle: "", status: "ACTIVE" });
+    setShowAddPanel(true);
+  };
+
+  const openEdit = (p: Player) => {
+    setEditingId(p.id);
+    setNewPlayer({ name: p.name, role: p.role, battingHand: p.battingHand, bowlingStyle: p.bowlingStyle === "—" ? "" : p.bowlingStyle, status: p.status === "UNKNOWN" ? "ACTIVE" : p.status });
+    setShowAddPanel(true);
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!confirm("Delete this player?")) return;
+    setError(null);
+    try {
+      await api.deletePlayer(id);
+      await loadPlayers();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't delete this player");
+    }
+  };
+
+  const handleAddPlayer = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newPlayer.name.trim()) return;
-    const initials = newPlayer.name.trim().split(" ").map((w: string) => w[0]).join("").toUpperCase().slice(0, 3);
-    const colors = ["#60A5FA", "#34D399", "#F59E0B", "#EC4899", "#A78BFA", "#FB923C", "#2DD4BF"];
-    const color = colors[players.length % colors.length];
-    const created: Player = {
-      id: String(Date.now()), name: newPlayer.name.trim(), role: newPlayer.role, archetype: newPlayer.role,
-      battingHand: newPlayer.battingHand as "Right" | "Left", bowlingStyle: newPlayer.bowlingStyle || "—",
-      status: newPlayer.status, team: "India", initials, color, isBatsman: newPlayer.role === "Batsman" || newPlayer.role === "Wicket-keeper",
-      recentForm: [30, 25, 40, 20, 35], recentSR: [130, 125, 140, 120, 135],
-      vsOpponent: 65, vsInsight: "New addition — building match record.",
-      powerplay: 60, middle: 65, death: 60,
-      career: { matches: 0, innings: 0, runs: 0, avg: 0, sr: 0, fifties: 0, hundreds: 0 },
-      score: 60, breakdown: { form: 60, vsOpponent: 60, venueFit: 60, matchupAdvantage: 60 },
+    const body = {
+      name: newPlayer.name.trim(), role: newPlayer.role,
+      batting_hand: newPlayer.battingHand, bowling_style: newPlayer.bowlingStyle || null,
+      status: newPlayer.status,
     };
-    setPlayers(prev => [...prev, created]);
-    setAddSuccess(true);
-    setTimeout(() => { setAddSuccess(false); setShowAddPanel(false); setNewPlayer({ name: "", role: "Batsman", battingHand: "Right", bowlingStyle: "", status: "ACTIVE" }); }, 1500);
+    setError(null);
+    try {
+      if (editingId) {
+        await api.updatePlayer(editingId, body);
+      } else {
+        await api.addPlayer(body);
+      }
+      await loadPlayers();
+      setAddSuccess(true);
+      setTimeout(() => {
+        setAddSuccess(false); setShowAddPanel(false); setEditingId(null);
+        setNewPlayer({ name: "", role: "Batsman", battingHand: "Right", bowlingStyle: "", status: "ACTIVE" });
+      }, 1500);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't save this player");
+    }
   };
 
   return (
@@ -55,11 +96,14 @@ export function SquadsPage() {
           <button className="flex items-center gap-1.5 px-3 py-1.5 text-xs border border-border rounded-lg text-muted-foreground hover:text-foreground transition-colors">
             <Download size={12} /> Export
           </button>
-          <button onClick={() => setShowAddPanel(true)} className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-[#AAFF57] text-[#0D0D06] rounded-lg font-medium hover:opacity-90 transition-opacity">
+          <button onClick={openAdd} className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-[#AAFF57] text-[#0D0D06] rounded-lg font-medium hover:opacity-90 transition-opacity">
             <UserPlus size={12} /> Add Player
           </button>
         </div>
       </div>
+      {error && (
+        <div className="mb-3 text-[12px] text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">{error}</div>
+      )}
       <div className="flex gap-2 mb-4 flex-wrap">
         <div className="relative">
           <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
@@ -80,6 +124,9 @@ export function SquadsPage() {
           <button className="text-xs text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1"><Download size={11} /> Export selected</button>
         </motion.div>
       )}
+      {loading ? (
+        <div className="py-16 text-center text-sm text-muted-foreground">Loading squad…</div>
+      ) : (
       <div className="bg-card border border-border rounded-xl overflow-hidden">
         <table className="w-full">
           <thead>
@@ -114,8 +161,8 @@ export function SquadsPage() {
                 <td className="p-3">
                   <div className="flex items-center gap-1">
                     <button onClick={() => navigate("/players/" + p.id)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors"><Eye size={13} /></button>
-                    <button className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors"><Edit size={13} /></button>
-                    <button className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-destructive transition-colors"><Trash2 size={13} /></button>
+                    <button onClick={() => openEdit(p)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors"><Edit size={13} /></button>
+                    <button onClick={() => handleDelete(p.id)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-destructive transition-colors"><Trash2 size={13} /></button>
                   </div>
                 </td>
               </motion.tr>
@@ -123,6 +170,7 @@ export function SquadsPage() {
           </tbody>
         </table>
       </div>
+      )}
 
       {/* Add Player Slide-in Panel */}
       <AnimatePresence>
@@ -137,8 +185,8 @@ export function SquadsPage() {
             >
               <div className="flex items-center justify-between px-6 py-5 border-b border-border flex-shrink-0">
                 <div>
-                  <h2 className="font-display text-xl font-bold text-foreground">Add Player</h2>
-                  <p className="text-[12px] text-muted-foreground mt-0.5">Register a new squad member</p>
+                  <h2 className="font-display text-xl font-bold text-foreground">{editingId ? "Edit Player" : "Add Player"}</h2>
+                  <p className="text-[12px] text-muted-foreground mt-0.5">{editingId ? "Update squad member details" : "Register a new squad member"}</p>
                 </div>
                 <button onClick={() => setShowAddPanel(false)} className="p-2 rounded-lg hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors"><X size={16} /></button>
               </div>
@@ -146,8 +194,8 @@ export function SquadsPage() {
                 {addSuccess ? (
                   <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="flex flex-col items-center justify-center h-full gap-4">
                     <CheckCircle size={48} className="text-[#AAFF57]" />
-                    <p className="text-lg font-semibold text-foreground">Player Added!</p>
-                    <p className="text-sm text-muted-foreground">{newPlayer.name} has been registered.</p>
+                    <p className="text-lg font-semibold text-foreground">{editingId ? "Player Updated!" : "Player Added!"}</p>
+                    <p className="text-sm text-muted-foreground">{newPlayer.name} has been {editingId ? "updated" : "registered"}.</p>
                   </motion.div>
                 ) : (
                   <form onSubmit={handleAddPlayer} className="space-y-4">
@@ -188,7 +236,7 @@ export function SquadsPage() {
                     <div className="pt-4 flex gap-3">
                       <button type="submit"
                         className="flex-1 py-2.5 bg-[#AAFF57] text-[#0D0D06] text-sm font-semibold rounded-lg hover:opacity-90 active:scale-[0.98] transition-all flex items-center justify-center gap-2">
-                        <UserPlus size={14} /> Add Player
+                        <UserPlus size={14} /> {editingId ? "Save Changes" : "Add Player"}
                       </button>
                       <button type="button" onClick={() => setShowAddPanel(false)}
                         className="px-5 py-2.5 border border-border text-sm text-muted-foreground rounded-lg hover:text-foreground hover:border-foreground/30 transition-all">

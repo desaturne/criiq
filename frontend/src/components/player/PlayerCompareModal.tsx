@@ -5,10 +5,10 @@ import { RadialGauge } from "../common/RadialGauge";
 import { SelectionControl } from "../common/SelectionControl";
 import { SparkLine } from "../common/SparkLine";
 import { StatusBadge } from "../common/StatusBadge";
-import { PLAYERS } from "../../data/players";
 import { Player, SelectionState } from "../../types/index";
 
 export function PlayerCompareModal({
+  players: allPlayers,
   playerIds,
   opposition,
   selections,
@@ -16,6 +16,7 @@ export function PlayerCompareModal({
   onClose,
   onRemove,
 }: {
+  players: Player[];
   playerIds: string[];
   opposition: string;
   selections: Record<string, SelectionState>;
@@ -23,7 +24,7 @@ export function PlayerCompareModal({
   onClose: () => void;
   onRemove: (id: string) => void;
 }) {
-  const players = playerIds.map(id => PLAYERS.find(p => p.id === id)!).filter(Boolean);
+  const players = playerIds.map(id => allPlayers.find(p => p.id === id)!).filter(Boolean);
 
   const statRows: { label: string; render: (p: Player) => React.ReactNode }[] = [
     {

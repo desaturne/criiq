@@ -1,32 +1,48 @@
 import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { Zap, ChevronDown, RefreshCw } from "lucide-react";
-import { FactorBar } from "../components/common/FactorBar";
 import { RadialGauge } from "../components/common/RadialGauge";
 import { SelectionControl } from "../components/common/SelectionControl";
-import { PLAYERS } from "../data/players";
+import * as api from "../lib/api";
+import { colorFor, initialsFor } from "../lib/mappers";
 import { SelectionState } from "../types/index";
+
+interface Recommendation { rank: number; player_name: string; role: string; score: number; reason: string; }
 
 export function RecommendationsPage() {
   const [generated, setGenerated] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [opponent, setOpponent] = useState("Australia");
   const [venue, setVenue] = useState("MCG, Melbourne");
   const [format, setFormat] = useState("T20I");
   const [pitch, setPitch] = useState("Pace-friendly");
   const [selections, setSelections] = useState<Record<string, SelectionState>>({});
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const ranked = [...PLAYERS].sort((a, b) => b.score - a.score);
+  const [ranked, setRanked] = useState<Recommendation[]>([]);
   const selectedCount = Object.values(selections).filter(s => s === "select").length;
-  const winProb = 45 + selectedCount * 3.2;
+  const [winProb, setWinProb] = useState(50);
   const [winFilled, setWinFilled] = useState(0);
   useEffect(() => {
     if (generated) { const t = setTimeout(() => setWinFilled(winProb), 600); return () => clearTimeout(t); }
   }, [generated, winProb]);
 
-  const handleGenerate = () => {
+  const handleGenerate = async () => {
     setLoading(true);
-    setTimeout(() => { setLoading(false); setGenerated(true); }, 1800);
+    setError(null);
+    try {
+      const [recRes, winRes] = await Promise.all([
+        api.recommendations({ opponent, venue, format }),
+        api.winProb(),
+      ]);
+      setRanked(recRes.recommendations);
+      setWinProb(Math.round(winRes.win_probability_batting * 100));
+      setGenerated(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't generate recommendations");
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -86,7 +102,7 @@ export function RecommendationsPage() {
         {/* Results */}
         <div className="lg:col-span-2">
           <AnimatePresence mode="wait">
-            {!generated && !loading && (
+            {!generated && !loading && !error && (
               <motion.div key="empty" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="h-64 flex flex-col items-center justify-center text-center bg-card border border-dashed border-border rounded-xl">
                 <Zap size={32} className="text-muted-foreground mb-3 opacity-40" />
                 <p className="text-muted-foreground text-sm">Configure match parameters and generate recommendations</p>
@@ -98,54 +114,48 @@ export function RecommendationsPage() {
                 <p className="text-muted-foreground text-sm">Analysing player data, form, and matchup factors…</p>
               </motion.div>
             )}
+            {!loading && error && (
+              <motion.div key="error" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="h-64 flex flex-col items-center justify-center text-center bg-card border border-border rounded-xl">
+                <p className="text-red-400 text-sm">{error}</p>
+              </motion.div>
+            )}
             {generated && (
               <motion.div key="results" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-2">
                 <div className="flex items-center justify-between mb-3">
                   <p className="text-[13px] text-muted-foreground">Ranked by recommendation score for <strong className="text-foreground">vs {opponent}</strong> at <strong className="text-foreground">{venue}</strong></p>
                   <span className="text-[12px] font-medium text-[#AAFF57]">{selectedCount}/11 selected</span>
                 </div>
-                {ranked.map((player, i) => (
-                  <motion.div key={player.id} initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.06 }}
+                {ranked.map((rec, i) => {
+                  const color = colorFor(rec.player_name);
+                  return (
+                  <motion.div key={rec.rank} initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.06 }}
                     className="bg-card border border-border rounded-xl overflow-hidden">
                     <div className="p-3 flex items-center gap-3">
-                      <span className="font-mono text-[11px] text-muted-foreground w-5 text-right flex-shrink-0">#{i + 1}</span>
-                      <div className="w-8 h-8 rounded-full flex items-center justify-center text-[10px] font-bold flex-shrink-0" style={{ backgroundColor: player.color + "33", color: player.color }}>{player.initials}</div>
+                      <span className="font-mono text-[11px] text-muted-foreground w-5 text-right flex-shrink-0">#{rec.rank}</span>
+                      <div className="w-8 h-8 rounded-full flex items-center justify-center text-[10px] font-bold flex-shrink-0" style={{ backgroundColor: color + "33", color }}>{initialsFor(rec.player_name)}</div>
                       <div className="flex-1 min-w-0">
-                        <div className="text-[13px] font-semibold text-foreground truncate">{player.name}</div>
-                        <div className="text-[10px] text-muted-foreground">{player.archetype}</div>
+                        <div className="text-[13px] font-semibold text-foreground truncate">{rec.player_name}</div>
+                        <div className="text-[10px] text-muted-foreground capitalize">{rec.role}</div>
                       </div>
-                      <RadialGauge value={player.score} size={44} strokeWidth={3.5} color={player.score >= 85 ? "#AAFF57" : player.score >= 70 ? "#60A5FA" : "#FB923C"} />
-                      <button onClick={() => setExpandedId(expandedId === player.id ? null : player.id)} className="text-[11px] text-muted-foreground hover:text-foreground flex items-center gap-0.5 px-2">
-                        Explain <ChevronDown size={10} className={`transition-transform ${expandedId === player.id ? "rotate-180" : ""}`} />
+                      <RadialGauge value={Math.round(rec.score)} size={44} strokeWidth={3.5} color={rec.score >= 85 ? "#AAFF57" : rec.score >= 70 ? "#60A5FA" : "#FB923C"} />
+                      <button onClick={() => setExpandedId(expandedId === rec.player_name ? null : rec.player_name)} className="text-[11px] text-muted-foreground hover:text-foreground flex items-center gap-0.5 px-2">
+                        Explain <ChevronDown size={10} className={`transition-transform ${expandedId === rec.player_name ? "rotate-180" : ""}`} />
                       </button>
-                      <SelectionControl state={selections[player.id] || "undecided"} onChange={s => setSelections(prev => ({ ...prev, [player.id]: s }))} />
-                    </div>
-                    {/* Factor breakdown */}
-                    <div className="px-3 pb-2">
-                      <div className="flex gap-2 flex-wrap">
-                        {Object.entries(player.breakdown).map(([k, v]) => {
-                          const labels: Record<string, string> = { form: "Form", vsOpponent: "vs Opp", venueFit: "Venue", matchupAdvantage: "Matchup" };
-                          const color = v >= 80 ? "bg-[#AAFF57]/15 text-[#AAFF57]" : v >= 60 ? "bg-blue-500/15 text-blue-400" : "bg-amber-500/15 text-amber-400";
-                          return <span key={k} className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${color}`}>{labels[k]} {v}</span>;
-                        })}
-                      </div>
+                      <SelectionControl state={selections[rec.player_name] || "undecided"} onChange={s => setSelections(prev => ({ ...prev, [rec.player_name]: s }))} />
                     </div>
                     <AnimatePresence>
-                      {expandedId === player.id && (
+                      {expandedId === rec.player_name && (
                         <motion.div initial={{ height: 0 }} animate={{ height: "auto" }} exit={{ height: 0 }} className="overflow-hidden border-t border-border">
-                          <div className="p-4 space-y-2 bg-secondary/30">
-                            <p className="text-[12px] text-muted-foreground mb-3 font-medium">Factor breakdown</p>
-                            {Object.entries(player.breakdown).map(([k, v]) => {
-                              const labels: Record<string, string> = { form: "Recent Form", vsOpponent: "vs Opponent", venueFit: "Venue Fit", matchupAdvantage: "Matchup Advantage" };
-                              return <FactorBar key={k} label={labels[k]} value={v} />;
-                            })}
-                            <p className="text-[12px] text-foreground mt-3 pt-3 border-t border-border leading-relaxed">{player.vsInsight}</p>
+                          <div className="p-4 bg-secondary/30">
+                            <p className="text-[12px] text-muted-foreground mb-1 font-medium">Why this recommendation</p>
+                            <p className="text-[12px] text-foreground leading-relaxed">{rec.reason}</p>
                           </div>
                         </motion.div>
                       )}
                     </AnimatePresence>
                   </motion.div>
-                ))}
+                  );
+                })}
               </motion.div>
             )}
           </AnimatePresence>

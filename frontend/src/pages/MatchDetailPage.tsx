@@ -3,13 +3,28 @@ import { motion } from "motion/react";
 import { useNavigate, useParams } from "react-router";
 import { Zap, ChevronLeft, MapPin, Cloud, AlertTriangle, Shield, Wind } from "lucide-react";
 import { RadialGauge } from "../components/common/RadialGauge";
-import { MATCHES } from "../data/matches";
+import * as api from "../lib/api";
+import { mapApiMatch } from "../lib/mappers";
+import { Match } from "../types/index";
 
 export function MatchDetailPage() {
   const { id: matchId } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const match = MATCHES.find(m => m.id === matchId) || MATCHES[0];
+  const [match, setMatch] = useState<Match | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [notFound, setNotFound] = useState(false);
   const [animated, setAnimated] = useState(false);
+
+  useEffect(() => {
+    if (!matchId) return;
+    let cancelled = false;
+    api.getMatch(matchId)
+      .then(m => { if (!cancelled) setMatch(mapApiMatch(m)); })
+      .catch(() => { if (!cancelled) setNotFound(true); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [matchId]);
+
   useEffect(() => { const t = setTimeout(() => setAnimated(true), 400); return () => clearTimeout(t); }, []);
   const condBar = (label: string, val: number, color: string) => (
     <div className="space-y-1.5">
@@ -23,6 +38,18 @@ export function MatchDetailPage() {
       </div>
     </div>
   );
+
+  if (loading) {
+    return <div className="p-5 max-w-screen-xl mx-auto py-16 text-center text-sm text-muted-foreground">Loading match…</div>;
+  }
+  if (notFound || !match) {
+    return (
+      <div className="p-5 max-w-screen-xl mx-auto py-16 text-center">
+        <p className="text-sm text-muted-foreground mb-4">Unknown match.</p>
+        <button onClick={() => navigate("/matches")} className="text-sm text-[#AAFF57] hover:underline">Back to Matches</button>
+      </div>
+    );
+  }
   return (
     <div className="p-5 max-w-screen-xl mx-auto">
       <button onClick={() => navigate("/matches")} className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground mb-5 transition-colors">

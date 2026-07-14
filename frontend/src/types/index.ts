@@ -8,11 +8,18 @@ export type SelectionState = "select" | "reserve" | "exclude" | "undecided";
 
 export type PlayerStatus = "ACTIVE" | "INCONSISTENT" | "INACTIVE" | "UNKNOWN";
 
+export interface AuthUser { id: number; name: string; role: string; }
+
 export interface AppContextValue {
   dark: boolean;
   setDark: (d: boolean) => void;
   selections: Record<string, SelectionState>;
   setSelections: React.Dispatch<React.SetStateAction<Record<string, SelectionState>>>;
+  token: string | null;
+  user: AuthUser | null;
+  login: (email: string, password: string) => Promise<void>;
+  register: (name: string, email: string, password: string) => Promise<void>;
+  logout: () => Promise<void>;
 }
 
 export interface Player {
