@@ -1,0 +1,6 @@
+# CRIIQ backend API
+fastapi>=0.115
+uvicorn[standard]>=0.30
+PyJWT>=2.8
+bcrypt>=4.0
+# (sqlite3 and json are in Python's standard library — nothing to install)
