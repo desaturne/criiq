@@ -22,21 +22,65 @@ python -m criiq_models.cli train                     # fit + persist the two WPA
 python -m criiq_models.cli backtest                  # temporal holdout calibration report
 python -m criiq_models.cli rank-backtest             # learning-to-rank vs regression comparison
 python -m criiq_models.cli teams                     # list known team names
-python -m criiq_models.cli recommend --team India --opponent Australia [--venue <id>] [--explain] [--pretty]
+python -m criiq_models.cli recommend --team India --opponent Australia [--venue "Lord's"] [--explain] [--pretty]
 python -m criiq_models.cli explain --name "H Kaur" --opponent Australia
+python -m criiq_models.cli analyze-xi --team India --opponent Australia --players "S Mandhana,H Kaur,..." [--pretty]
 ```
+
+`--venue` takes a ground **name**, fuzzy-matched against `venues.canonical_name`
+(`venues.py`), not the raw `venue_id` slug it used to require. A name matching
+more than one ground prints every candidate ("did you mean...") instead of
+silently guessing one; a name matching nothing falls back to treating the
+input as an already-resolved `venue_id` (backward-compatible with scripts
+passing the slug directly).
 
 `--pretty` (`recommend/render.py`) renders an actual team sheet instead of
 dumping JSON, in two parts (implies `--explain`; nothing is computed
 differently, only formatted and, for the shortlist, given individual
 reasoning too):
 
-1. **Top `pool_size` (20) recommended players**, ranked by raw score, each
-   with her own plain-language reasoning (no slot/alternative framing —
-   that only makes sense once the XI-constrained pick has actually
-   happened). Tagged `[XI]` where she also made the final side.
+1. **Roster, split into three role pools** (`selection/optimize.role_pools`) —
+   batters / all-rounders / bowlers, each independently ranked by score — the
+   same view a coach actually picks from, rather than one flat ranked list.
+   `select_xi`'s MILP already enforces batting/bowling-capable minimums under
+   the hood (an all-rounder counts toward both); this just makes that
+   division visible instead of implicit. Each player carries her own
+   plain-language reasoning (no slot/alternative framing — that only makes
+   sense once the XI-constrained pick has actually happened). Tagged `[XI]`
+   where she also made the final side. The plain-JSON form (no `--pretty`)
+   carries the identical grouping under a `"pools"` key, alongside the
+   flat `"pool"` list, for a frontend to read directly.
 2. **Playing XI**, in actual batting order, with the existing
    slot-comparison reasoning ("picked ahead of X").
+
+### Analyzing a coach's own hand-picked XI
+
+`analyze-xi` (`selection/optimize.analyze_xi`) is the counterpart to
+`recommend`: instead of finding the algorithm's best XI, it scores and checks
+a **specific, already-chosen** one — the real-world case where a coach picks
+from the roster themselves (form momentum a model can't see, a tactical
+matchup call, team chemistry) rather than taking the AI's suggestion outright.
+Reuses the identical scoring and constraints `select_xi` is held to, so the
+two are directly comparable:
+
+```bash
+python -m criiq_models.cli analyze-xi --team India --opponent Australia \
+    --players "S Mandhana,H Kaur,Shafali Verma,..." --pretty
+# or --player-ids "id1,id2,..." if you already have them (e.g. from `recommend`'s pools)
+```
+
+Reports, per player, the same reasoning `recommend` gives; then a team-level
+scorecard: total/average score, whether the pick satisfies the same
+batting-capable/bowling-capable/keeper/opener minimums (the same soft
+degradation `select_xi` applies when the whole pool can't support a
+requirement — e.g. zero recorded keepers — so the comparison is fair, not a
+stricter bar than the AI's own XI is held to); and a direct diff against the
+provably-optimal XI (`comparison_to_optimal`): the score gap, and exactly
+which players are in one XI but not the other. Verified live: swapping one
+bowler for an extra specialist batter in a real India-vs-Australia XI still
+satisfied every constraint (all-rounders covering the gap) but cost 1.8
+points — the diff correctly named the exact swap (`N Shree Charani` out,
+`AB Sharma` in) rather than just reporting the number.
 
 The two lists are shown separately rather than one being a prefix of the
 other, because the MILP-constrained XI genuinely isn't just the pool's top
@@ -64,6 +108,16 @@ open it directly) after any change to `features/historical.py` or the training
 window — the results are computed, not hardcoded, so a stale notebook is just a
 snapshot of an earlier run, not a guarantee about the current pipeline.
 
+`model_comparison_robust.ipynb` extends this with 3 temporal holdout fractions
+x 5 seeds per stochastic model (not a single lucky split), the real production
+model imported directly from `train.py` (no re-implementation risk), and all
+three metrics (MAE/R2/corr) reported together rather than ranked by MAE alone —
+MAE and correlation can disagree on this data (the mean-predictor baseline has
+the *lowest* MAE for both targets; correlation is the metric that actually
+matters for a ranking task like XI selection). Re-run after any feature
+change, same as the notebook above; confirmed after adding the domestic-form
+feature that the model choice per target is unchanged.
+
 ## How a player is scored
 
 Every score is a transparent sum of parts (mirrors the
@@ -72,7 +126,7 @@ Every score is a transparent sum of parts (mirrors the
 
 | Part | Source | What it rewards |
 |---|---|---|
-| `model_part` (0–45) | learned model predicting Win-Probability-Added (or rule-based fallback below min sample size) | actual match-winning impact for *this* context — not just big-looking stats |
+| `model_part` (0–45) | learned model predicting Win-Probability-Added, now including recent **domestic-league** form (or rule-based fallback below min sample size) | actual match-winning impact for *this* context — not just big-looking stats |
 | `matchup_part` (±21) | batting: aggregate dismissal history vs this opponent's bowlers (±8) + a style-specific edge vs their pace/spin mix (±5); bowling: aggregate wicket-rate vs this opponent's specific batters (±8) | a favourable/unfavourable matchup, for both disciplines a player might have |
 | `phase_fit_part` (0–8) | `player_phase` (in-team percentile/rank) | being a phase specialist (powerplay/middle/death) |
 | `team_need_part` (0–5) | this pool's weakest phase vs a format-wide benchmark | filling *this specific team's* current gap |
@@ -112,6 +166,49 @@ real venue) and was confirmed to send predictions wildly out of distribution.
 Both `features/historical.py` and `features/current.py` now shrink these
 toward the career baseline (`features/common.shrink_series`/`shrink`), so
 `venue_matches=0` degrades smoothly to "assume her career average" instead.
+
+### Domestic form — "quiet internationally, in-form domestically" now counts
+
+`domestic_form_batting_wpa`/`domestic_form_bowling_wpa` are two more
+`MODEL_FEATURES`, sourced from data-collection's `player_domestic_form`
+(recent domestic-league-only WPA, tagged separately from the
+international-only `player_career`/`player_impact`/`player_phase_wpa` — see
+that package's README). Leakage-safety needed a different technique than
+every other feature here: an international training row isn't a member of
+the domestic-only event stream being averaged, so the usual
+`groupby().transform()` pattern doesn't apply — `features/historical.py`
+bridges the two streams with `pd.merge_asof(direction="backward")`, giving
+each international row "the most recent domestic form as of this date,"
+international or not. At live-scoring time there's no leakage concern
+(`features/current.py` just reads the already-current aggregate directly).
+
+Shrunk toward the player's own international career WPA the same way
+vs-opponent/venue records are, but with the *sample size fed to the shrink
+capped* at `SETTINGS.domestic_form_max_effective_matches` (default 10) — so
+no amount of domestic match volume can fully override the international
+prior. The cap itself was picked from a real grid search (5/10/15/20 effective
+matches, same temporal-holdout methodology as `model_comparison_robust.ipynb`)
+once real domestic data existed, not guessed — honestly, the differences
+across the grid were within noise at the current ~220-domestic-player data
+scale (4th-5th decimal place on MAE/R2/corr), so 10 was kept as a reasonable
+middle value, not because it measurably won. The feature still fixes
+*eligibility* either way (see data-collection's README) — that part is
+unaffected by the exact shrinkage cap.
+
+Real example (`explain --player-id <GA Elwiss> --opponent Australia`): "Recent
+domestic form (10 matches): shifting win probability by -4.6% per match with
+the bat and +1.2% with the ball — factored into the model above, alongside 7
+international career matches." — an honest, not-cherry-picked number (her
+recent domestic batting form is actually negative here).
+
+### Status is now shown, not just used to silently filter
+
+`recommend/explain.py` used to only mention `player_registry.retirement_status`
+inside the negative-risk branch (INCONSISTENT / recalled-INACTIVE) — an
+ACTIVE player got no status sentence at all. Every explanation now ends with
+an unconditional "Current status: ACTIVE — appeared inside active window."
+(or whatever the registry's own `status_reason` says), reusing data already
+flowing through `score.py`'s `ExtraContext` — no new computation.
 
 ### Per-target model selection — picked from real numbers, not assumed
 

@@ -13,7 +13,7 @@ import pytest
 SCHEMA = """
 CREATE TABLE matches (
     match_id TEXT PRIMARY KEY, format TEXT, gender TEXT, date TEXT,
-    team1 TEXT, team2 TEXT, venue_id TEXT
+    team1 TEXT, team2 TEXT, venue_id TEXT, team_type TEXT
 );
 CREATE TABLE match_players (
     match_id TEXT, team TEXT, player_name TEXT
@@ -26,7 +26,8 @@ CREATE TABLE players (
 );
 CREATE TABLE player_registry (
     player_id TEXT, format TEXT, role TEXT, retirement_status TEXT, recall_flag INTEGER,
-    age_advisory INTEGER, selection_rate REAL, icc_rank INTEGER
+    age_advisory INTEGER, selection_rate REAL, icc_rank INTEGER, status_reason TEXT,
+    recent_domestic_activity INTEGER DEFAULT 0
 );
 CREATE TABLE player_match_impact (
     player_id TEXT, match_id TEXT, format TEXT, date TEXT, team TEXT, opponent TEXT,
@@ -37,6 +38,15 @@ CREATE TABLE player_match_impact (
 CREATE TABLE dismissal_matchup (
     format TEXT, batter_id TEXT, bowler_id TEXT, bowler_team TEXT,
     balls INTEGER, runs INTEGER, dismissals INTEGER
+);
+CREATE TABLE venue_dismissal_matchup (
+    format TEXT, venue_id TEXT, batter_id TEXT, bowler_id TEXT, bowler_name TEXT,
+    bowler_team TEXT, balls INTEGER, runs INTEGER, dismissals INTEGER
+);
+CREATE TABLE player_by_venue (
+    player_id TEXT, format TEXT, venue_id TEXT, venue_name TEXT, matches INTEGER,
+    setting_average REAL, setting_strike_rate REAL,
+    chasing_average REAL, chasing_strike_rate REAL
 );
 CREATE TABLE player_phase (
     player_id TEXT, format TEXT, phase TEXT, bat_strike_rate REAL, bat_team_percentile REAL,
@@ -55,15 +65,23 @@ CREATE TABLE player_role_final (
 );
 CREATE TABLE player_match_wpa (
     player_id TEXT, match_id TEXT, format TEXT, date TEXT, team TEXT, opponent TEXT,
+    team_type TEXT DEFAULT 'international',
     batting_wpa REAL, bowling_wpa REAL, phase_breakdown_json TEXT
 );
 CREATE TABLE player_phase_wpa (
     player_id TEXT, format TEXT, phase TEXT, matches INTEGER,
     batting_wpa_per_match REAL, bowling_wpa_per_match REAL
 );
+CREATE TABLE player_domestic_form (
+    player_id TEXT, format TEXT, matches INTEGER,
+    batting_wpa_per_match REAL, bowling_wpa_per_match REAL, last_match_date TEXT
+);
 CREATE TABLE player_styles (
     player_id TEXT PRIMARY KEY, bowling_style TEXT, batting_hand TEXT,
     playing_role TEXT, source TEXT
+);
+CREATE TABLE venues (
+    venue_raw TEXT PRIMARY KEY, venue_id TEXT, canonical_name TEXT
 );
 CREATE TABLE player_advanced (
     player_id TEXT, format TEXT, archetype TEXT, profile_json TEXT
@@ -99,9 +117,11 @@ def set_final_role(conn: sqlite3.Connection, player_id: str, primary_role: str,
 
 
 def add_match(conn: sqlite3.Connection, match_id: str, date: str, team1: str, team2: str,
-              venue_id: str = "test-ground", gender: str = "female") -> None:
-    conn.execute("INSERT INTO matches(match_id, format, gender, date, team1, team2, venue_id) "
-                 "VALUES(?,'T20',?,?,?,?,?)", (match_id, gender, date, team1, team2, venue_id))
+              venue_id: str = "test-ground", gender: str = "female",
+              team_type: str = "international") -> None:
+    conn.execute("INSERT INTO matches(match_id, format, gender, date, team1, team2, venue_id, "
+                 "team_type) VALUES(?,'T20',?,?,?,?,?,?)",
+                 (match_id, gender, date, team1, team2, venue_id, team_type))
 
 
 def add_appearance(conn: sqlite3.Connection, match_id: str, team: str, name: str) -> None:
@@ -124,10 +144,23 @@ def add_match_impact(conn: sqlite3.Connection, player_id: str, match_id: str, da
 
 
 def add_match_wpa(conn: sqlite3.Connection, player_id: str, match_id: str,
-                   batting_wpa: float | None = None, bowling_wpa: float | None = None) -> None:
+                   batting_wpa: float | None = None, bowling_wpa: float | None = None,
+                   date: str | None = None, team_type: str = "international") -> None:
     conn.execute(
-        "INSERT INTO player_match_wpa(player_id, match_id, format, batting_wpa, bowling_wpa) "
-        "VALUES(?,?,'T20',?,?)", (player_id, match_id, batting_wpa, bowling_wpa))
+        "INSERT INTO player_match_wpa(player_id, match_id, format, date, team_type, "
+        "batting_wpa, bowling_wpa) VALUES(?,?,'T20',?,?,?,?)",
+        (player_id, match_id, date, team_type, batting_wpa, bowling_wpa))
+
+
+def add_domestic_form(conn: sqlite3.Connection, player_id: str, matches: int,
+                       batting_wpa_per_match: float | None = None,
+                       bowling_wpa_per_match: float | None = None,
+                       last_match_date: str | None = None) -> None:
+    conn.execute(
+        "INSERT INTO player_domestic_form(player_id, format, matches, "
+        "batting_wpa_per_match, bowling_wpa_per_match, last_match_date) "
+        "VALUES(?,'T20',?,?,?,?)",
+        (player_id, matches, batting_wpa_per_match, bowling_wpa_per_match, last_match_date))
 
 
 def set_career_bowling(conn: sqlite3.Connection, player_id: str, wickets: int, balls_bowled: int) -> None:
@@ -136,11 +169,38 @@ def set_career_bowling(conn: sqlite3.Connection, player_id: str, wickets: int, b
         (player_id, wickets, balls_bowled))
 
 
+def add_venue(conn: sqlite3.Connection, venue_id: str, canonical_name: str,
+              venue_raw: str | None = None) -> None:
+    conn.execute("INSERT INTO venues(venue_raw, venue_id, canonical_name) VALUES(?,?,?)",
+                 (venue_raw or canonical_name, venue_id, canonical_name))
+
+
 def add_bowler_matchup(conn: sqlite3.Connection, bowler_id: str, batter_id: str,
                         balls: int, runs: int, dismissals: int) -> None:
     conn.execute(
         "INSERT INTO dismissal_matchup(format, batter_id, bowler_id, balls, runs, dismissals) "
         "VALUES('T20',?,?,?,?,?)", (batter_id, bowler_id, balls, runs, dismissals))
+
+
+def add_venue_matchup(conn: sqlite3.Connection, batter_id: str, bowler_id: str, venue_id: str,
+                       bowler_name: str, bowler_team: str, balls: int, runs: int, dismissals: int) -> None:
+    conn.execute(
+        "INSERT INTO venue_dismissal_matchup(format, venue_id, batter_id, bowler_id, "
+        "bowler_name, bowler_team, balls, runs, dismissals) VALUES('T20',?,?,?,?,?,?,?,?)",
+        (venue_id, batter_id, bowler_id, bowler_name, bowler_team, balls, runs, dismissals))
+
+
+def add_venue_record(conn: sqlite3.Connection, player_id: str, venue_id: str, venue_name: str,
+                      matches: int = 1, setting_average: float | None = None,
+                      setting_strike_rate: float | None = None,
+                      chasing_average: float | None = None,
+                      chasing_strike_rate: float | None = None) -> None:
+    conn.execute(
+        "INSERT INTO player_by_venue(player_id, format, venue_id, venue_name, matches, "
+        "setting_average, setting_strike_rate, chasing_average, chasing_strike_rate) "
+        "VALUES(?,'T20',?,?,?,?,?,?,?)",
+        (player_id, venue_id, venue_name, matches, setting_average, setting_strike_rate,
+         chasing_average, chasing_strike_rate))
 
 
 def set_bowling_style(conn: sqlite3.Connection, player_id: str, bowling_style: str) -> None:

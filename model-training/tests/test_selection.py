@@ -3,7 +3,7 @@ from __future__ import annotations
 import dataclasses
 
 from criiq_models.config import SETTINGS
-from criiq_models.selection.optimize import select_xi
+from criiq_models.selection.optimize import analyze_xi, role_pools, select_xi
 
 
 def _player(pid, score, bucket, is_keeper=False, batting_position_median=None):
@@ -152,3 +152,69 @@ def test_select_xi_overflow_opener_competes_on_score_not_locked_to_slot_three():
     # the overflow opener (55) ranks below core_high (80) on pure merit
     assert order.index("core_high") < order.index("opener3")
     assert order.index("opener3") < order.index("core_low")
+
+
+def test_role_pools_splits_by_bucket_ranked_independently():
+    players = [
+        _player("bat1", 50, "batter"), _player("bat2", 90, "batter"),
+        _player("bowl1", 70, "bowler"),
+        _player("ar1", 60, "all-rounder"), _player("ar2", 80, "all-rounder"),
+        _player("mystery", 10, "unknown"),
+    ]
+    pools = role_pools(players)
+    assert [p["player_id"] for p in pools["batters"]] == ["bat2", "bat1"]
+    assert [p["player_id"] for p in pools["bowlers"]] == ["bowl1"]
+    assert [p["player_id"] for p in pools["all_rounders"]] == ["ar2", "ar1"]
+    assert [p["player_id"] for p in pools["unknown"]] == ["mystery"]
+
+
+def test_analyze_xi_matches_optimal_reports_zero_gap():
+    players = [
+        _player("bat1", 90, "batter"), _player("bat2", 80, "batter"),
+        _player("bat3", 70, "batter"),
+        _player("bowl1", 85, "bowler"), _player("bowl2", 75, "bowler"),
+        _player("bowl3", 65, "bowler"),
+    ]
+    settings = dataclasses.replace(SETTINGS, xi_size=6, min_batting_capable=2,
+                                    min_bowling_capable=2, min_keepers=0, min_openers=0)
+    optimal_ids = [p["player_id"] for p in select_xi(players, settings)["xi"]]
+
+    analysis = analyze_xi(players, optimal_ids, settings)
+    assert analysis["missing_player_ids"] == []
+    assert analysis["violations"] == []
+    assert analysis["comparison_to_optimal"]["score_gap"] == 0.0
+    assert analysis["comparison_to_optimal"]["in_optimal_not_chosen"] == []
+    assert analysis["comparison_to_optimal"]["in_chosen_not_optimal"] == []
+
+
+def test_analyze_xi_flags_violations_and_scores_gap_against_optimal():
+    # A coach picks 4 batters and only 2 bowlers when 3 bowling-capable are
+    # required -- a real, common override (e.g. favouring an extra batter
+    # for a flat pitch) that should be scored honestly, not silently allowed.
+    players = [
+        _player("bat1", 90, "batter"), _player("bat2", 80, "batter"),
+        _player("bat3", 70, "batter"), _player("bat4", 60, "batter"),
+        _player("bowl1", 85, "bowler"), _player("bowl2", 75, "bowler"),
+        _player("bowl3", 65, "bowler"),
+    ]
+    settings = dataclasses.replace(SETTINGS, xi_size=6, min_batting_capable=2,
+                                    min_bowling_capable=3, min_keepers=0, min_openers=0)
+    coach_pick = ["bat1", "bat2", "bat3", "bat4", "bowl1", "bowl2"]
+
+    analysis = analyze_xi(players, coach_pick, settings)
+    assert analysis["counts"]["bowling_capable"] == 2
+    assert any("bowling-capable" in v for v in analysis["violations"])
+    # bowl3 (65) is real value left on the bench; the coach's total must be
+    # lower than the optimal XI that would have included her.
+    assert analysis["comparison_to_optimal"]["score_gap"] > 0
+    assert "bowl3" in {p["player_id"] for p in analysis["comparison_to_optimal"]["in_optimal_not_chosen"]}
+
+
+def test_analyze_xi_reports_missing_player_ids_without_crashing():
+    players = [_player("bat1", 90, "batter"), _player("bowl1", 85, "bowler")]
+    settings = dataclasses.replace(SETTINGS, xi_size=2, min_batting_capable=0,
+                                    min_bowling_capable=0, min_keepers=0, min_openers=0)
+
+    analysis = analyze_xi(players, ["bat1", "does-not-exist"], settings)
+    assert analysis["missing_player_ids"] == ["does-not-exist"]
+    assert analysis["counts"]["size"] == 1

@@ -84,3 +84,36 @@ def test_wpa_target_and_career_wpa_feature_are_strictly_pre_match(conn):
     assert table.loc[2, "career_batting_wpa"] == pytest.approx(0.075)  # mean(0.05, 0.10)
     # the row's own (same-match) WPA must never leak into its own feature
     assert table.loc[2, "career_batting_wpa"] != -0.02
+
+
+def test_domestic_form_attaches_by_date_not_by_row_alignment(conn):
+    # Two international rows (m0, m1) and one domestic-only match (d0) dated
+    # between them. An international row isn't a member of the domestic
+    # subgroup, so this specifically exercises the merge_asof bridge in
+    # `_attach_domestic_form` rather than a plain groupby/transform.
+    register_player(conn, "p1", "A Player")
+    add_match(conn, "m0", "2023-01-01", "India", "Australia")
+    add_match_impact(conn, "p1", "m0", "2023-01-01", "India", "Australia", won=1)
+    add_match_wpa(conn, "p1", "m0", batting_wpa=0.05, date="2023-01-01")
+
+    add_match_wpa(conn, "p1", "d0", batting_wpa=0.20, date="2023-02-01", team_type="club")
+
+    add_match(conn, "m1", "2023-03-01", "India", "Australia")
+    add_match_impact(conn, "p1", "m1", "2023-03-01", "India", "Australia", won=1)
+    add_match_wpa(conn, "p1", "m1", batting_wpa=0.10, date="2023-03-01")
+    conn.commit()
+
+    table = build_training_table(conn, "T20", "female").sort_values("date").reset_index(drop=True)
+    assert len(table) == 2   # d0 has no player_match_impact row -- domestic
+                              # matches never become training rows themselves
+
+    m0 = table.loc[0]
+    assert m0["domestic_form_matches"] == 0   # d0 (Feb) is after m0 (Jan) -- not yet known
+    assert pd.isna(m0["domestic_form_batting_wpa"])
+
+    m1 = table.loc[1]
+    assert m1["domestic_form_matches"] == 1   # d0 (Feb) is before m1 (Mar) -- now known
+    # shrink_series((1*0.20 + 8*0.05) / (1+8)) toward m1's own prior
+    # career_batting_wpa (0.05, from m0 alone) -- capped_n=min(1,10)=1,
+    # k=shrinkage_prior_matches=8.
+    assert m1["domestic_form_batting_wpa"] == pytest.approx((1 * 0.20 + 8 * 0.05) / 9)
