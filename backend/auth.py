@@ -16,7 +16,8 @@ from datetime import datetime, timedelta, timezone
 
 import bcrypt
 import jwt
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 from database import app_db
@@ -64,14 +65,19 @@ def login(body: LoginBody):
     }
 
 
-def require_user(request: Request) -> dict:
+# HTTPBearer tells FastAPI (and its /docs page) that we use Bearer tokens —
+# this is what makes the "Authorize" button appear in the docs.
+bearer_scheme = HTTPBearer(auto_error=False)
+
+
+def require_user(
+    creds: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+) -> dict:
     """FastAPI dependency: returns the logged-in user, or raises 401."""
-    header = request.headers.get("authorization", "")
-    token = header[7:] if header.startswith("Bearer ") else None
-    if not token:
+    if creds is None:
         raise HTTPException(401, "Log in first (missing token)")
     try:
-        return jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+        return jwt.decode(creds.credentials, JWT_SECRET, algorithms=["HS256"])
     except jwt.PyJWTError:
         raise HTTPException(401, "Invalid or expired token")
 
