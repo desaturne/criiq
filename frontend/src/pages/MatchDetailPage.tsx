@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { motion } from "motion/react";
 import { useNavigate, useParams } from "react-router";
-import { Zap, ChevronLeft, MapPin, Cloud, AlertTriangle, Shield, Wind } from "lucide-react";
+import { Zap, ChevronLeft, MapPin, Shield } from "lucide-react";
 import { RadialGauge } from "../components/common/RadialGauge";
 import { MATCHES } from "../data/matches";
 
@@ -73,38 +73,20 @@ export function MatchDetailPage() {
           </div>
         </div>
 
-        {/* Weather */}
+        {/* Match context */}
         <div className="bg-card border border-border rounded-xl p-5">
-          <h3 className="font-display text-base font-semibold text-foreground mb-4">Weather Conditions</h3>
-          <div className="flex items-center gap-6 mb-4">
-            <div className="flex items-center gap-2">
-              <Cloud size={20} className="text-blue-400" />
-              <div>
-                <div className="text-[11px] text-muted-foreground">Conditions</div>
-                <div className="text-sm font-medium text-foreground">{match.weatherDesc.split(",")[0]}</div>
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <Wind size={18} className="text-muted-foreground" />
-              <div>
-                <div className="text-[11px] text-muted-foreground">Wind</div>
-                <div className="text-sm font-medium text-foreground">{match.windSpeed} km/h</div>
-              </div>
-            </div>
-            <div className="text-center">
-              <div className="text-[11px] text-muted-foreground mb-1">Temp</div>
-              <div className="font-mono text-lg font-bold text-foreground">{match.temp}°C</div>
+          <h3 className="font-display text-base font-semibold text-foreground mb-4">Match Context</h3>
+          <div className="flex items-center gap-4 mb-4">
+            <RadialGauge value={match.paceSupport} size={64} strokeWidth={4} color="#5B6B7A" label="Pace" />
+            <RadialGauge value={match.spinSupport} size={64} strokeWidth={4} color="#7C6C52" label="Spin" />
+            <div className="flex-1 text-sm text-muted-foreground leading-relaxed">
+              Conditions are summarized through pitch and opponent data only.
             </div>
           </div>
-          <div className="flex items-center gap-4">
-            <RadialGauge value={match.rainProb} size={64} strokeWidth={4} color="#60A5FA" label="Rain %" />
-            <p className="text-[13px] text-muted-foreground leading-relaxed flex-1">{match.weatherDesc}</p>
+          <div className="text-[13px] text-foreground leading-relaxed">
+            <span className="font-medium">Pitch note: </span>
+            {match.paceSupport > 70 ? "Pitch heavily favors pace — back 3 seamers and restrict leg-spinners." : match.spinSupport > 70 ? "Spin-friendly surface — prioritize your best leg-spinner and left-arm orthodox pairing." : "Balanced surface suits an attack mix of 3 seamers and 2 spinners."}
           </div>
-          {match.windSpeed > 18 && (
-            <div className="mt-3 flex items-center gap-2 text-[12px] bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2 text-amber-400">
-              <AlertTriangle size={12} /> Wind may assist swing bowling — consider extra seam options
-            </div>
-          )}
         </div>
       </div>
 
@@ -121,10 +103,10 @@ export function MatchDetailPage() {
             {condBar("Finisher Suitability", match.finishersFit, "#FB923C")}
           </div>
         </div>
-        <div className="mt-5 p-4 bg-[#AAFF57]/5 border border-[#AAFF57]/20 rounded-lg">
+        <div className="mt-5 p-4 bg-secondary/40 border border-border rounded-lg">
           <div className="flex items-center gap-2 mb-1">
-            <Shield size={13} className="text-[#AAFF57]" />
-            <span className="text-[11px] font-semibold text-[#AAFF57] uppercase tracking-wider">Pro Tip</span>
+            <Shield size={13} className="text-[#5F7F24]" />
+            <span className="text-[11px] font-semibold text-[#5F7F24] uppercase tracking-wider">Pro Tip</span>
           </div>
           <p className="text-[13px] text-foreground leading-relaxed">
             {match.paceSupport > 70 ? "Pitch heavily favors pace — back 3 seamers and restrict leg-spinners. Consider an extra fast-bowling all-rounder." : match.spinSupport > 70 ? "Spin-friendly surface — prioritize your best leg-spinner and left-arm orthodox pairing." : "Balanced surface suits an attack mix of 3 seamers and 2 spinners."}

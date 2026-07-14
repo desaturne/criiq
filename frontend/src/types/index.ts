@@ -32,7 +32,6 @@ export interface Match {
   date: string; time: string; format: string;
   status: "Upcoming" | "Live" | "Completed";
   result?: string; paceSupport: number; spinSupport: number; battingAnchors: number; finishersFit: number;
-  weatherDesc: string; rainProb: number; windSpeed: number; temp: number;
   opponentForm: ("W" | "L")[];
 }
 

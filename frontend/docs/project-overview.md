@@ -135,13 +135,13 @@ Clicking a match goes to Match Details.
 
 
 Redesign of the second reference screenshot with a distinct visual language.
-Hero panel: match title, venue, date/time, live weather widget, opponent
+Hero panel: match title, venue, date/time, opponent
 profile card with recent form (W/L pill sequence) and a "Detailed Scouting
 Report" link.
 Pitch Report panel: condition description + animated horizontal bars for
 Pace Support / Spin Support / Batting Anchors / Finishers suitability, plus
 a "Pro Tip" callout.
-Weather panel: rain probability as an animated radial gauge, short forecast
+Pitch panel: pace/spin support as animated radial gauges, short pitch note
 note, and a conditional "Impact Alert" banner (e.g. wind assisting swing).
 Maps to: GET /venues/{id}/analysis, GET /opponents/{id}/analysis,
 GET /reports/pre-match.
@@ -176,7 +176,7 @@ POST /prediction/win-probability, POST /strategy/game-plan.
 List of generated pre-match scouting reports (cards with match, date,
 status: Draft/Final).
 Report detail view: a clean, print-friendly document layout combining
-match details, recommended XI, key matchups, pitch/weather notes, and
+match details, recommended XI, key matchups, pitch notes, and
 strategy recommendations — designed so it could be exported as PDF.
 Maps to: GET /reports/pre-match, POST /strategy/game-plan.
 

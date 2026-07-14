@@ -26,7 +26,7 @@ Deep lime/signal green (#5FA800 or similar — saturated enough to
 stay legible on white, not the pale electric lime that only works on
 dark) for primary actions & "in-form/selected" states
 Signal coral (#E5484D) for risk/excluded/alerts
-Deep cyan/teal (#0891B2) for secondary data (venue/weather/pitch)
+Deep cyan/teal (#0891B2) for secondary data (venue/pitch)
 
 
 
@@ -98,7 +98,7 @@ Dashboard (Overview) — top banner + team snapshot, upcoming match
 countdown, squad availability, quick recommendation CTA (see Section 5.2)
 Player Form (Analytics) — the full filterable player-card grid with
 recent form, career stats, and vs-opposition analysis (see Section 5.3)
-Match Details — venue/pitch/weather/opponent breakdown for a match
+Match Details — venue/pitch/opponent breakdown for a match
 Squads — CRUD for players & coaches
 Recommendation — the core AI feature: input context → get ranked Top 20
 → build Playing XI
@@ -247,9 +247,8 @@ UI: Hero banner card (light gradient, match title, venue pin + date/time,
 instead of static text. Three-column grid below: Opponent Profile (crest,
 recent form W/L strip as animated dots, link to full scouting report),
 Pitch Report (radial meters for Pace/Spin/Batting/Finishers instead of flat
-bars, pro-tip in a highlighted quote card), Weather (animated weather icon,
-rain probability as a radial dial, impact alert banner with icon).
-Fields: match: {id, teams, venue, datetime, status}, opponent: {name, crest_url, recent_form[], scouting_report_url}, pitch_report: {wicket_condition_text, pace_support, spin_support, batting_anchors, finishers, pro_tip, updated_at}, weather: {rain_probability, summary_text, wind_speed, impact_alert}.
+bars, pro-tip in a highlighted quote card).
+Fields: match: {id, teams, venue, datetime, status}, opponent: {name, crest_url, recent_form[], scouting_report_url}, pitch_report: {wicket_condition_text, pace_support, spin_support, batting_anchors, finishers, pro_tip, updated_at}.
 Endpoints: GET /venues/{id}/analysis, GET /opponents/{id}/analysis,
 GET /reports/pre-match (for "Detailed Scouting Report" link).
 
@@ -272,7 +271,7 @@ GET/POST/PATCH/DELETE /coaches (see Section 6).
 
 
 Step 1 — Context Input panel: Card with dropdowns/searchable selects for
-opponent, venue, pitch_type, format (T20/ODI/Test), weather_conditions, plus
+opponent, venue, pitch_type, format (T20/ODI/Test), plus
 a prominent "Generate Recommendation" button with a loading state that
 morphs into a progress animation (e.g., "Analyzing 285 matches... Scoring 22
 players... Ranking...") — makes the AI computation feel tangible, 2–3s
@@ -291,7 +290,7 @@ triggers report generation.
 Bonus panel: Win probability meter (POST /prediction/win-probability)
 updates live as the coach swaps players in/out of the XI — dragging a player
 in/out should visibly move a probability needle.
-Fields: recommendation_request: {opponent_id, venue_id, pitch_type, format, weather}, recommendation_result: [{player_id, score, rank, factor_breakdown[]}], selection_state: {playing_xi[11], reserves[4]},
+Fields: recommendation_request: {opponent_id, venue_id, pitch_type, format}, recommendation_result: [{player_id, score, rank, factor_breakdown[]}], selection_state: {playing_xi[11], reserves[4]},
 win_probability: {value, delta_on_change}.
 Endpoints: POST /selection/recommend, POST /selection/explain,
 POST /strategy/game-plan, POST /prediction/win-probability.
@@ -417,7 +416,7 @@ Recommendation" CTA) plus a row of summary stat tiles; it must NOT show the
 individual player cards grid. "Player Form" is its own nav item containing
 the full filterable player-analytics grid with expandable detail drawers.
 
-Also include: a match-details page with animated pitch/weather gauges, a
+Also include: a match-details page with animated pitch gauges, a
 squad CRUD table with slide-in edit panels, a core "Recommendation" flow —
 context input form → animated scoring/loading state → ranked top-20 list
 with explainable "why" score breakdowns → drag-and-drop Playing XI builder
