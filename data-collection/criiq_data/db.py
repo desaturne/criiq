@@ -19,6 +19,12 @@ CREATE TABLE IF NOT EXISTS matches (
     format          TEXT NOT NULL,
     gender          TEXT NOT NULL,
     match_type      TEXT,
+    -- Cricsheet's own `team_type` info field ('international' | 'club') --
+    -- NOT the cricket format (that's `match_type`, confusingly). Lets
+    -- domestic-league matches share this table with internationals while
+    -- still being filterable by competition scope wherever that distinction
+    -- matters (roster/registry: see registry.py, roster.py).
+    team_type       TEXT DEFAULT 'international',
     season          TEXT,
     date            TEXT,
     event           TEXT,
@@ -35,6 +41,32 @@ CREATE TABLE IF NOT EXISTS matches (
     ingested_at     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_matches_fmt ON matches(format, gender, date);
+
+-- Anything dated after SETTINGS.data_cutoff_date lands here instead of the
+-- production tables above -- a genuine, untouched forward-test set, not a
+-- WHERE-clause convention every future reader has to remember. Same shape
+-- as their production counterparts; ingest.py is the only writer of either.
+CREATE TABLE IF NOT EXISTS matches_holdout (
+    match_id        TEXT PRIMARY KEY,
+    format          TEXT NOT NULL,
+    gender          TEXT NOT NULL,
+    match_type      TEXT,
+    team_type       TEXT DEFAULT 'international',
+    season          TEXT,
+    date            TEXT,
+    event           TEXT,
+    venue_raw       TEXT,
+    venue_id        TEXT,
+    city            TEXT,
+    team1           TEXT,
+    team2           TEXT,
+    toss_winner     TEXT,
+    toss_decision   TEXT,
+    winner          TEXT,
+    win_margin      TEXT,
+    player_of_match TEXT,
+    ingested_at     TEXT
+);
 
 CREATE TABLE IF NOT EXISTS deliveries (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -59,6 +91,26 @@ CREATE INDEX IF NOT EXISTS idx_deliv_match  ON deliveries(match_id);
 CREATE INDEX IF NOT EXISTS idx_deliv_strike ON deliveries(striker);
 CREATE INDEX IF NOT EXISTS idx_deliv_bowler ON deliveries(bowler);
 
+CREATE TABLE IF NOT EXISTS deliveries_holdout (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    match_id        TEXT NOT NULL,
+    innings         INTEGER,
+    over            INTEGER,
+    ball_in_over    INTEGER,
+    batting_team    TEXT,
+    bowling_team    TEXT,
+    striker         TEXT,
+    non_striker     TEXT,
+    bowler          TEXT,
+    runs_off_bat    INTEGER,
+    extras          INTEGER,
+    wides           INTEGER,
+    noballs         INTEGER,
+    runs_total      INTEGER,
+    wicket_type     TEXT,
+    player_dismissed TEXT
+);
+
 CREATE TABLE IF NOT EXISTS match_players (
     match_id    TEXT NOT NULL,
     team        TEXT,
@@ -66,6 +118,13 @@ CREATE TABLE IF NOT EXISTS match_players (
     UNIQUE(match_id, player_name)
 );
 CREATE INDEX IF NOT EXISTS idx_mp_player ON match_players(player_name);
+
+CREATE TABLE IF NOT EXISTS match_players_holdout (
+    match_id    TEXT NOT NULL,
+    team        TEXT,
+    player_name TEXT,
+    UNIQUE(match_id, player_name)
+);
 
 CREATE TABLE IF NOT EXISTS identifier_map (
     player_name TEXT NOT NULL,
@@ -140,6 +199,14 @@ CREATE TABLE IF NOT EXISTS player_registry (
     selection_rate            REAL,
     window_player_matches     INTEGER,
     window_team_matches       INTEGER,
+    -- True if she's had a domestic-league appearance within
+    -- active_window_days -- an honest eligibility carve-out, distinct from
+    -- retirement_status itself: a player can be genuinely INACTIVE/
+    -- INCONSISTENT internationally (a true, unmodified label) while still
+    -- being worth including in selection because she's recently played
+    -- domestically. `roster.team_pool` checks this separately rather than
+    -- letting it silently flip the status label to ACTIVE.
+    recent_domestic_activity  INTEGER DEFAULT 0,
     registry_last_updated     TEXT,
     PRIMARY KEY (player_id, format)
 );
@@ -204,9 +271,41 @@ CREATE TABLE IF NOT EXISTS player_by_venue (
     runs_conceded    INTEGER,
     economy          REAL,
     best_bowling     TEXT,
+    -- Batting-first (setting) vs chasing splits, at this specific ground --
+    -- mirrors player_impact's career-level setting_*/chasing_* columns
+    -- (impact.py's `_sit` helper), just grouped by venue_id too.
+    setting_balls        INTEGER,
+    setting_runs         INTEGER,
+    setting_average      REAL,
+    setting_strike_rate  REAL,
+    chasing_balls        INTEGER,
+    chasing_runs          INTEGER,
+    chasing_average      REAL,
+    chasing_strike_rate  REAL,
     updated_at       TEXT,
     PRIMARY KEY (player_id, format, venue_id)
 );
+
+-- Per-ground batter-vs-bowler dismissals -- same real sample threshold as
+-- dismissal_matchup (MIN_MATCHUP_BALLS, matchups.py), just scoped to one
+-- venue instead of format-wide. Answers "who's gotten her out most *here*",
+-- a genuinely different (and sometimes different!) question from her
+-- overall bogey bowler.
+CREATE TABLE IF NOT EXISTS venue_dismissal_matchup (
+    format       TEXT NOT NULL,
+    venue_id     TEXT NOT NULL,
+    batter_id    TEXT NOT NULL,
+    bowler_id    TEXT NOT NULL,
+    batter_name  TEXT,
+    bowler_name  TEXT,
+    bowler_team  TEXT,
+    balls        INTEGER,
+    runs         INTEGER,
+    dismissals   INTEGER,
+    updated_at   TEXT,
+    PRIMARY KEY (format, venue_id, batter_id, bowler_id)
+);
+CREATE INDEX IF NOT EXISTS idx_venue_matchup_batter ON venue_dismissal_matchup(format, venue_id, batter_id);
 CREATE INDEX IF NOT EXISTS idx_venue_player ON player_by_venue(player_id, format);
 
 CREATE TABLE IF NOT EXISTS dismissal_matchup (
@@ -438,6 +537,7 @@ CREATE TABLE IF NOT EXISTS player_match_wpa (
     date                 TEXT,
     team                 TEXT,
     opponent             TEXT,
+    team_type            TEXT,
     batting_wpa          REAL,
     bowling_wpa          REAL,
     phase_breakdown_json TEXT,
@@ -456,6 +556,22 @@ CREATE TABLE IF NOT EXISTS player_phase_wpa (
     bowling_wpa_per_match  REAL,
     updated_at             TEXT,
     PRIMARY KEY (player_id, format, phase)
+);
+
+-- Recent domestic-league-only form, deliberately separate from
+-- `player_career`/`player_impact` (which stay international-only, see
+-- data-collection's README) -- lets an internationally-quiet player's real
+-- current domestic form show up as its own signal instead of either
+-- corrupting her international career line or being invisible entirely.
+CREATE TABLE IF NOT EXISTS player_domestic_form (
+    player_id             TEXT NOT NULL,
+    format                TEXT NOT NULL,
+    matches               INTEGER,
+    batting_wpa_per_match REAL,
+    bowling_wpa_per_match REAL,
+    last_match_date       TEXT,
+    updated_at            TEXT,
+    PRIMARY KEY (player_id, format)
 );
 
 CREATE TABLE IF NOT EXISTS status_overrides (
@@ -479,6 +595,7 @@ _MIGRATIONS = [
     "ALTER TABLE player_registry ADD COLUMN selection_rate REAL",
     "ALTER TABLE player_registry ADD COLUMN window_player_matches INTEGER",
     "ALTER TABLE player_registry ADD COLUMN window_team_matches INTEGER",
+    "ALTER TABLE player_registry ADD COLUMN recent_domestic_activity INTEGER DEFAULT 0",
     "ALTER TABLE icc_rankings ADD COLUMN matched INTEGER DEFAULT 1",
     "ALTER TABLE icc_rankings ADD COLUMN source TEXT",
     "ALTER TABLE icc_rankings ADD COLUMN source_url TEXT",
@@ -487,6 +604,16 @@ _MIGRATIONS = [
     "ALTER TABLE player_match_impact ADD COLUMN bowl_dot_pct REAL",
     "ALTER TABLE player_match_impact ADD COLUMN bowl_boundary_pct REAL",
     "ALTER TABLE player_match_impact ADD COLUMN bowl_strike_rate REAL",
+    "ALTER TABLE matches ADD COLUMN team_type TEXT DEFAULT 'international'",
+    "ALTER TABLE player_match_wpa ADD COLUMN team_type TEXT",
+    "ALTER TABLE player_by_venue ADD COLUMN setting_balls INTEGER",
+    "ALTER TABLE player_by_venue ADD COLUMN setting_runs INTEGER",
+    "ALTER TABLE player_by_venue ADD COLUMN setting_average REAL",
+    "ALTER TABLE player_by_venue ADD COLUMN setting_strike_rate REAL",
+    "ALTER TABLE player_by_venue ADD COLUMN chasing_balls INTEGER",
+    "ALTER TABLE player_by_venue ADD COLUMN chasing_runs INTEGER",
+    "ALTER TABLE player_by_venue ADD COLUMN chasing_average REAL",
+    "ALTER TABLE player_by_venue ADD COLUMN chasing_strike_rate REAL",
 ]
 
 
@@ -545,6 +672,20 @@ def _migrate_players_gender_scoped(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _backfill_international_team_type(conn: sqlite3.Connection) -> None:
+    """Every match ingested before domestic leagues existed has `team_type
+    IS NULL`, not `'international'` -- they were all international-only
+    ingestions by construction (see the old `ingest.py` gate this project
+    used to have). Any reader that now filters on `team_type='international'`
+    (roster.py's `player_current_teams`, registry.py's recency split) would
+    otherwise silently exclude every pre-existing match. Idempotent: only
+    touches rows still NULL, so a re-run after new domestic data has its own
+    real `team_type` values is a no-op for those rows.
+    """
+    conn.execute("UPDATE matches SET team_type='international' WHERE team_type IS NULL")
+    conn.commit()
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
     _migrate_players_gender_scoped(conn)
@@ -553,6 +694,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
             conn.execute(stmt)
         except sqlite3.OperationalError:
             pass
+    _backfill_international_team_type(conn)
     conn.commit()
 
 

@@ -8,20 +8,33 @@ from .logging_utils import get_logger
 log = get_logger("stats")
 
 
-def build_innings(conn, fmt: str) -> pd.DataFrame:
+def build_innings(conn, fmt: str, team_type: str | None = "international") -> pd.DataFrame:
+    """One row per (identifier, match_id): batting + bowling for that match.
+
+    `team_type='international'` (the default) is what every existing career/
+    impact/phase/venue/opponent builder expects and has always effectively
+    gotten -- before domestic leagues were ingested, every match *was*
+    international, so this default preserves their behaviour unchanged.
+    Pass `team_type=None` for every match regardless of competition, or
+    `team_type='club'` for domestic-only (used by `wpa.py`'s domestic-form
+    aggregate) -- never silently blend the two under one 'career' number.
+    """
+    tt_clause_aliased = " AND m.team_type = ?" if team_type is not None else ""
+    tt_clause_plain = " AND team_type = ?" if team_type is not None else ""
+    tt_params = (fmt, team_type) if team_type is not None else (fmt,)
     deliv = pd.read_sql_query(
-        """
+        f"""
         SELECT d.match_id, d.striker, d.bowler, d.runs_off_bat, d.wides,
                d.noballs, d.runs_total, d.wicket_type, d.player_dismissed
         FROM deliveries d JOIN matches m ON d.match_id = m.match_id
-        WHERE m.format = ?
-        """, conn, params=(fmt,))
+        WHERE m.format = ?{tt_clause_aliased}
+        """, conn, params=tt_params)
     if deliv.empty:
         return pd.DataFrame()
 
     matches = pd.read_sql_query(
-        "SELECT match_id, date, gender, team1, team2, winner, venue_id "
-        "FROM matches WHERE format = ?", conn, params=(fmt,))
+        f"SELECT match_id, date, gender, team1, team2, winner, venue_id "
+        f"FROM matches WHERE format = ?{tt_clause_plain}", conn, params=tt_params)
     mp = pd.read_sql_query("SELECT match_id, player_name, team FROM match_players", conn)
     idmap = pd.read_sql_query("SELECT player_name, identifier FROM identifier_map", conn)
 

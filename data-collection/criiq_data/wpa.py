@@ -33,7 +33,7 @@ import json
 
 import pandas as pd
 
-from .config import enabled_sources
+from .config import SETTINGS, enabled_sources
 from .db import set_meta
 from .identity import resolve_player_ids
 from .logging_utils import get_logger
@@ -52,6 +52,10 @@ def _phase(over: int) -> str:
 
 
 def _build_ball_state_with_players(conn, fmt: str) -> pd.DataFrame:
+    # Deliberately every team_type: domestic matches are *scored* by the
+    # already-fitted (international-only-trained) win-probability model, the
+    # same way an international match is -- see build_wpa_for_format's
+    # docstring on why that's a reasonable reuse, not a new assumption.
     d = pd.read_sql_query(
         "SELECT d.match_id, d.innings, d.over, d.ball_in_over, d.striker, "
         "d.non_striker, d.bowler, d.runs_total, d.wides, d.noballs, "
@@ -158,9 +162,12 @@ def build_wpa_for_format(conn, fmt: str) -> dict:
 
     events = pd.concat([bat_events, bowl_events], ignore_index=True)
 
-    # match_id -> team/opponent/date, for player_match_wpa's context columns
+    # match_id -> team/opponent/date/team_type, for player_match_wpa's context
+    # columns -- team_type is what lets player_domestic_form (below) separate
+    # domestic matches back out again without a second ball-by-ball pass.
     match_info = pd.read_sql_query(
-        "SELECT match_id, date, team1, team2 FROM matches WHERE format=?", conn, params=(fmt,))
+        "SELECT match_id, date, team1, team2, team_type FROM matches WHERE format=?",
+        conn, params=(fmt,))
     mp = pd.read_sql_query(
         "SELECT mp.match_id, mp.player_name, mp.team, m.gender FROM match_players mp "
         "JOIN matches m ON m.match_id = mp.match_id WHERE m.format=?", conn, params=(fmt,))
@@ -194,24 +201,31 @@ def build_wpa_for_format(conn, fmt: str) -> dict:
     for r in match_rows.itertuples(index=False):
         key = (r.match_id, r.player_id)
         match_wpa_rows.append((
-            r.player_id, r.match_id, fmt, r.date, r.team, r.opponent,
+            r.player_id, r.match_id, fmt, r.date, r.team, r.opponent, r.team_type,
             round(float(r.batting), 5), round(float(r.bowling), 5),
             json.dumps(phase_json_by_key.get(key, {})), now,
         ))
 
     conn.executemany(
         "INSERT INTO player_match_wpa(player_id, match_id, format, date, team, opponent, "
-        "batting_wpa, bowling_wpa, phase_breakdown_json, updated_at) "
-        "VALUES(?,?,?,?,?,?,?,?,?,?) "
+        "team_type, batting_wpa, bowling_wpa, phase_breakdown_json, updated_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?) "
         "ON CONFLICT(player_id, match_id) DO UPDATE SET "
-        "team=excluded.team, opponent=excluded.opponent, batting_wpa=excluded.batting_wpa, "
+        "team=excluded.team, opponent=excluded.opponent, team_type=excluded.team_type, "
+        "batting_wpa=excluded.batting_wpa, "
         "bowling_wpa=excluded.bowling_wpa, phase_breakdown_json=excluded.phase_breakdown_json, "
         "updated_at=excluded.updated_at", match_wpa_rows)
 
     # --- player_phase_wpa (career aggregate) -------------------------------
-    phase_matches = (events.groupby(["player_id", "phase"])["match_id"]
+    # International-only, like player_career/player_impact -- this is the
+    # "career phase value" signal model-training reads; blending in domestic
+    # matches here would corrupt it the same way it would corrupt a career
+    # batting average. Domestic gets its own aggregate below instead.
+    match_team_type = dict(zip(match_info["match_id"], match_info["team_type"]))
+    events_intl = events[events["match_id"].map(match_team_type) == "international"]
+    phase_matches = (events_intl.groupby(["player_id", "phase"])["match_id"]
                      .nunique().rename("matches").reset_index())
-    phase_totals = (events.groupby(["player_id", "phase", "axis"])["wpa"]
+    phase_totals = (events_intl.groupby(["player_id", "phase", "axis"])["wpa"]
                     .sum().unstack(fill_value=0.0).reset_index())
     for col in ("batting", "bowling"):
         if col not in phase_totals.columns:
@@ -238,10 +252,53 @@ def build_wpa_for_format(conn, fmt: str) -> dict:
     return {"format": fmt, "player_matches": len(match_wpa_rows), "player_phases": len(phase_rows)}
 
 
+def build_domestic_form_for_format(conn, fmt: str) -> int:
+    """Recent-N domestic-only matches' average WPA per player -- the signal
+    that lets someone quiet internationally but genuinely in-form
+    domestically show it, without touching the international-only
+    player_career/player_impact/player_phase_wpa tables at all. Reads
+    `player_match_wpa` (already tagged by team_type in build_wpa_for_format),
+    not raw deliveries -- no second ball-by-ball pass needed.
+    """
+    rows = pd.read_sql_query(
+        "SELECT player_id, date, batting_wpa, bowling_wpa FROM player_match_wpa "
+        "WHERE format=? AND team_type='club' ORDER BY player_id, date",
+        conn, params=(fmt,))
+    if rows.empty:
+        log.info("domestic_form %s: no domestic matches", fmt)
+        return 0
+
+    n = SETTINGS.impact_recent_matches
+    recent = rows.groupby("player_id").tail(n)
+    now = dt.datetime.now().isoformat(timespec="seconds")
+    out_rows = []
+    for pid, g in recent.groupby("player_id"):
+        matches = len(g)
+        out_rows.append((
+            pid, fmt, matches,
+            round(float(g["batting_wpa"].mean()), 5),
+            round(float(g["bowling_wpa"].mean()), 5),
+            g["date"].max(), now,
+        ))
+    conn.executemany(
+        "INSERT INTO player_domestic_form(player_id, format, matches, "
+        "batting_wpa_per_match, bowling_wpa_per_match, last_match_date, updated_at) "
+        "VALUES(?,?,?,?,?,?,?) "
+        "ON CONFLICT(player_id, format) DO UPDATE SET "
+        "matches=excluded.matches, batting_wpa_per_match=excluded.batting_wpa_per_match, "
+        "bowling_wpa_per_match=excluded.bowling_wpa_per_match, "
+        "last_match_date=excluded.last_match_date, updated_at=excluded.updated_at",
+        out_rows)
+    conn.commit()
+    log.info("domestic_form %s: %d players", fmt, len(out_rows))
+    return len(out_rows)
+
+
 def build_wpa(conn) -> dict:
     out = {}
     for fmt in sorted({s.fmt for s in enabled_sources()}):
         out[fmt] = build_wpa_for_format(conn, fmt)
+        build_domestic_form_for_format(conn, fmt)
     set_meta(conn, "wpa_built_at", dt.datetime.now().isoformat(timespec="seconds"))
     conn.commit()
     return out

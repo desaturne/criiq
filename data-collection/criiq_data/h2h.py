@@ -36,7 +36,7 @@ def batter_vs_bowler(conn, fmt: str, batter_names: list[str],
                       AND d.wicket_type IN ({_BW_PLACEHOLDERS})
                      THEN 1 ELSE 0 END)                           AS dismissals
         FROM deliveries d JOIN matches m ON d.match_id=m.match_id
-        WHERE m.format=? AND d.striker IN ({_in(batter_names)})
+        WHERE m.format=? AND m.team_type='international' AND d.striker IN ({_in(batter_names)})
           AND d.bowler IN ({_in(bowler_names)})
     """
     params = (list(batter_names) + list(BOWLER_WICKETS) + [fmt]
@@ -63,7 +63,8 @@ def player_vs_team(conn, fmt: str, player_id: str, opponent_team: str) -> dict:
             SUM(d.runs_off_bat)                          AS runs,
             SUM(CASE WHEN d.player_dismissed IN ({_in(names)}) THEN 1 ELSE 0 END) AS outs
         FROM deliveries d JOIN matches m ON d.match_id=m.match_id
-        WHERE m.format=? AND d.striker IN ({_in(names)}) AND d.bowling_team=?
+        WHERE m.format=? AND m.team_type='international'
+          AND d.striker IN ({_in(names)}) AND d.bowling_team=?
     """
     b = conn.execute(bat_sql, list(names) + [fmt] + list(names) + [opponent_team]).fetchone()
 
@@ -74,7 +75,8 @@ def player_vs_team(conn, fmt: str, player_id: str, opponent_team: str) -> dict:
             SUM(CASE WHEN d.wicket_type IN ({_BW_PLACEHOLDERS})
                           AND d.player_dismissed IS NOT NULL THEN 1 ELSE 0 END) AS wkts
         FROM deliveries d JOIN matches m ON d.match_id=m.match_id
-        WHERE m.format=? AND d.bowler IN ({_in(names)}) AND d.batting_team=?
+        WHERE m.format=? AND m.team_type='international'
+          AND d.bowler IN ({_in(names)}) AND d.batting_team=?
     """
     w = conn.execute(bowl_sql, list(BOWLER_WICKETS) + [fmt] + list(names) + [opponent_team]).fetchone()
 

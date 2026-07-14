@@ -21,7 +21,8 @@ def build_for_format(conn, fmt: str) -> int:
     d = pd.read_sql_query(
         "SELECT d.striker, d.bowler, d.bowling_team, d.runs_off_bat, d.wides, "
         "d.wicket_type, d.player_dismissed, m.gender "
-        "FROM deliveries d JOIN matches m ON d.match_id=m.match_id WHERE m.format=?",
+        "FROM deliveries d JOIN matches m ON d.match_id=m.match_id "
+        "WHERE m.format=? AND m.team_type='international'",
         conn, params=(fmt,))
     if d.empty:
         return 0
@@ -81,10 +82,79 @@ def build_for_format(conn, fmt: str) -> int:
     return len(rows)
 
 
+def build_venue_matchups_for_format(conn, fmt: str) -> int:
+    """Same dismissal-count logic as `build_for_format`, with `venue_id`
+    added to the group key -- "who's gotten her out most *at this ground*"
+    is a genuinely different (and sometimes different) question from her
+    overall bogey bowler, the same way a career average differs from a
+    home/away split.
+    """
+    d = pd.read_sql_query(
+        "SELECT d.striker, d.bowler, d.bowling_team, d.runs_off_bat, d.wides, "
+        "d.wicket_type, d.player_dismissed, m.gender, m.venue_id "
+        "FROM deliveries d JOIN matches m ON d.match_id=m.match_id "
+        "WHERE m.format=? AND m.team_type='international' AND m.venue_id IS NOT NULL",
+        conn, params=(fmt,))
+    if d.empty:
+        return 0
+    n2i = {r["player_name"]: r["identifier"]
+           for r in conn.execute("SELECT player_name, identifier FROM identifier_map")}
+    unambiguous, split = player_id_map(conn)
+    pid2name = {r["player_id"]: r["canonical_name"]
+                for r in conn.execute("SELECT player_id, canonical_name FROM players")}
+
+    d["legal"] = (d["wides"].fillna(0) == 0).astype(int)
+    d["sid"] = d["striker"].map(n2i)
+    d["bid"] = d["bowler"].map(n2i)
+    d = d.dropna(subset=["sid", "bid"])
+    d["dismissed"] = ((d["player_dismissed"] == d["striker"]) &
+                      d["wicket_type"].isin(BOWLER_WICKETS)).astype(int)
+
+    grp = d.groupby(["sid", "bid", "gender", "venue_id"]).agg(
+        balls=("legal", "sum"), runs=("runs_off_bat", "sum"),
+        dismissals=("dismissed", "sum")).reset_index()
+    grp = grp[grp["balls"] >= MIN_MATCHUP_BALLS]
+    if grp.empty:
+        return 0
+    bteam = d.groupby(["bid", "gender"])["bowling_team"].agg(
+        lambda s: s.mode().iloc[0] if not s.mode().empty else None).to_dict()
+
+    now = dt.datetime.now().isoformat(timespec="seconds")
+    rows = []
+    for r in grp.itertuples(index=False):
+        batter_pid = unambiguous.get(r.sid) or split.get((r.sid, r.gender))
+        bowler_pid = unambiguous.get(r.bid) or split.get((r.bid, r.gender))
+        if not batter_pid or not bowler_pid:
+            continue
+        rows.append((
+            fmt, r.venue_id, batter_pid, bowler_pid, pid2name.get(batter_pid),
+            pid2name.get(bowler_pid), bteam.get((r.bid, r.gender)),
+            int(r.balls), int(r.runs), int(r.dismissals), now,
+        ))
+    conn.executemany(
+        "INSERT INTO venue_dismissal_matchup(format, venue_id, batter_id, bowler_id, "
+        "batter_name, bowler_name, bowler_team, balls, runs, dismissals, updated_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?) "
+        "ON CONFLICT(format, venue_id, batter_id, bowler_id) DO UPDATE SET "
+        "bowler_team=excluded.bowler_team, balls=excluded.balls, runs=excluded.runs, "
+        "dismissals=excluded.dismissals, updated_at=excluded.updated_at", rows)
+    conn.commit()
+    log.info("venue_matchups %s: %d dismissal pairs", fmt, len(rows))
+    return len(rows)
+
+
+def top_dismissers_at_venue(conn, player_id: str, fmt: str, venue_id: str, limit: int = 5) -> list[dict]:
+    return [dict(r) for r in conn.execute(
+        "SELECT bowler_name, bowler_team, dismissals, balls, runs "
+        "FROM venue_dismissal_matchup WHERE batter_id=? AND format=? AND venue_id=? "
+        "ORDER BY dismissals DESC, balls DESC LIMIT ?", (player_id, fmt, venue_id, limit))]
+
+
 def build_matchups(conn) -> dict:
     out = {}
     for fmt in sorted({s.fmt for s in enabled_sources()}):
         out[fmt] = build_for_format(conn, fmt)
+        build_venue_matchups_for_format(conn, fmt)
     set_meta(conn, "matchups_built_at", dt.datetime.now().isoformat(timespec="seconds"))
     conn.commit()
     return out

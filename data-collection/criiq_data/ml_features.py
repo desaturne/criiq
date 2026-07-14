@@ -23,7 +23,8 @@ def _team_totals(conn, fmt: str) -> dict:
     tot = pd.read_sql_query(
         "SELECT d.match_id, d.batting_team AS team, SUM(d.runs_total) AS runs "
         "FROM deliveries d JOIN matches m ON d.match_id=m.match_id "
-        "WHERE m.format=? GROUP BY d.match_id, d.batting_team", conn, params=(fmt,))
+        "WHERE m.format=? AND m.team_type='international' "
+        "GROUP BY d.match_id, d.batting_team", conn, params=(fmt,))
     return {(r.match_id, r.team): int(r.runs) for r in tot.itertuples()}
 
 
@@ -32,20 +33,26 @@ def _team_wickets(conn, fmt: str) -> dict:
         "SELECT d.match_id, d.bowling_team AS team, "
         "SUM(CASE WHEN d.player_dismissed IS NOT NULL THEN 1 ELSE 0 END) AS w "
         "FROM deliveries d JOIN matches m ON d.match_id=m.match_id "
-        "WHERE m.format=? GROUP BY d.match_id, d.bowling_team", conn, params=(fmt,))
+        "WHERE m.format=? AND m.team_type='international' "
+        "GROUP BY d.match_id, d.bowling_team", conn, params=(fmt,))
     return {(r.match_id, r.team): int(r.w) for r in tw.itertuples()}
 
 
 def build_match_features_for_format(conn, fmt: str) -> int:
+    # International-only: team1/team2 here are meant to be countries (the
+    # win/loss predictor's whole premise), which a domestic fixture's
+    # franchise names would break.
     matches = pd.read_sql_query(
         "SELECT match_id, date, gender, team1, team2, winner, toss_winner, "
-        "toss_decision, venue_id FROM matches WHERE format=?", conn, params=(fmt,))
+        "toss_decision, venue_id FROM matches WHERE format=? AND team_type='international'",
+        conn, params=(fmt,))
     if matches.empty:
         return 0
     totals = _team_totals(conn, fmt)
     inn1 = pd.read_sql_query(
         "SELECT d.match_id, MIN(d.batting_team) AS bat_first FROM deliveries d "
-        "JOIN matches m ON d.match_id=m.match_id WHERE m.format=? AND d.innings=1 "
+        "JOIN matches m ON d.match_id=m.match_id "
+        "WHERE m.format=? AND m.team_type='international' AND d.innings=1 "
         "GROUP BY d.match_id", conn, params=(fmt,))
     bat_first = dict(zip(inn1["match_id"], inn1["bat_first"]))
 
@@ -118,11 +125,14 @@ def build_match_features_for_format(conn, fmt: str) -> int:
 
 
 def build_ball_state_for_format(conn, fmt: str) -> int:
+    # Win-probability model training data stays international-only (see
+    # winprob.py) -- domestic matches are *scored* by this same fitted model
+    # (wpa.py), never used to train it.
     d = pd.read_sql_query(
         "SELECT d.match_id, d.innings, d.over, d.ball_in_over, d.batting_team, "
         "d.bowling_team, d.runs_total, d.wides, d.noballs, d.player_dismissed, "
         "m.gender, m.winner FROM deliveries d JOIN matches m ON d.match_id=m.match_id "
-        "WHERE m.format=?", conn, params=(fmt,))
+        "WHERE m.format=? AND m.team_type='international'", conn, params=(fmt,))
     if d.empty:
         return 0
     d = d.sort_values(["match_id", "innings", "over", "ball_in_over"]).reset_index(drop=True)

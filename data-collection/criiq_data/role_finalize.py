@@ -46,7 +46,8 @@ def compute_batting_positions(conn, fmt: str) -> pd.DataFrame:
     """
     deliv = pd.read_sql_query(
         "SELECT d.match_id, d.innings, d.over, d.ball_in_over, d.striker, d.non_striker, "
-        "m.gender FROM deliveries d JOIN matches m ON d.match_id = m.match_id WHERE m.format = ?",
+        "m.gender FROM deliveries d JOIN matches m ON d.match_id = m.match_id "
+        "WHERE m.format = ? AND m.team_type = 'international'",
         conn, params=(fmt,))
     if deliv.empty:
         return pd.DataFrame(columns=["identifier", "gender", "batting_position_median", "innings_batted"])
@@ -223,7 +224,8 @@ def team_candidates(conn, team: str, gender: str = "female") -> pd.DataFrame:
         "JOIN identifier_map im ON im.player_name = mp.player_name "
         "JOIN players p ON p.cricsheet_identifier = im.identifier "
         "AND (p.gender IS NULL OR p.gender = m.gender) "
-        "WHERE mp.team = ? AND m.gender = ?", conn, params=(team, gender))
+        "WHERE mp.team = ? AND m.gender = ? AND m.team_type = 'international'",
+        conn, params=(team, gender))
 
 
 def _surname(name: str) -> str:

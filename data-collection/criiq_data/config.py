@@ -52,7 +52,12 @@ class CricsheetSource:
 
     @property
     def label(self) -> str:
-        return f"{self.gender}_{self.fmt}"
+        # Derived from the filename, not gender+fmt: several domestic
+        # competitions now share the same (gender, fmt) pair (e.g. every
+        # women's T20 source below), and `label` is used as a meta-key/status
+        # key elsewhere (ingest.py's `ingested_at::{label}`) -- it must stay
+        # one-to-one with a real source, not collide across competitions.
+        return self.filename.removesuffix(".zip")
 
 
 CRICSHEET_SOURCES: list[CricsheetSource] = [
@@ -60,6 +65,24 @@ CRICSHEET_SOURCES: list[CricsheetSource] = [
     CricsheetSource("T20", "male", "t20s_male_csv2.zip", enabled=True),
     CricsheetSource("ODI", "female", "odis_female_csv2.zip", enabled=False),
     CricsheetSource("ODI", "male", "odis_male_csv2.zip", enabled=False),
+    # Domestic T20 leagues -- same Cricsheet site, same license/access basis as
+    # the internationals above, just `team_type='club'` (see ingest.py). Real
+    # download URLs verified (HEAD 200) before adding, not guessed. Women's
+    # leagues enabled per this project's current scope (women's primary);
+    # men's scaffolded the same way ODI already is above -- present, disabled,
+    # trivial to flip on later.
+    CricsheetSource("T20", "female", "wbb_female_csv2.zip", enabled=True),   # Women's Big Bash League
+    CricsheetSource("T20", "female", "wpl_female_csv2.zip", enabled=True),   # Women's Premier League
+    CricsheetSource("T20", "female", "hnd_female_csv2.zip", enabled=True),   # The Hundred (Women)
+    CricsheetSource("T20", "female", "wtb_female_csv2.zip", enabled=True),   # Women's T20 Blast
+    CricsheetSource("T20", "female", "wtc_female_csv2.zip", enabled=True),   # Women's T20 Challenge
+    CricsheetSource("T20", "female", "wsl_female_csv2.zip", enabled=True),   # Women's Cricket Super League
+    CricsheetSource("T20", "female", "blz_female_csv2.zip", enabled=True),   # T20 Blaze
+    CricsheetSource("T20", "male", "ipl_male_csv2.zip", enabled=False),     # Indian Premier League
+    CricsheetSource("T20", "male", "bbl_male_csv2.zip", enabled=False),     # Big Bash League
+    CricsheetSource("T20", "male", "psl_male_csv2.zip", enabled=False),     # Pakistan Super League
+    CricsheetSource("T20", "male", "cpl_male_csv2.zip", enabled=False),     # Caribbean Premier League
+    CricsheetSource("T20", "male", "ntb_male_csv2.zip", enabled=False),     # (NatWest) T20 Blast
 ]
 
 
@@ -124,6 +147,14 @@ class Settings:
     # (by match, never by ball) to report honest calibration.
     winprob_shrinkage: float = 12.0
     winprob_test_fraction: float = 0.2
+
+    # Hard wall between "the data the pipeline trains/scores on" and "whatever
+    # shows up in a later refresh" -- anything with date > this goes to the
+    # `*_holdout` tables (see db.py) instead of the production ones, so it's
+    # available for genuine forward-testing but can never silently leak into
+    # training or live scoring. Not a present-day trim (the live DB currently
+    # ends exactly here already) -- a forward safeguard for future refreshes.
+    data_cutoff_date: str = "2026-06-15"
 
 
 SETTINGS = Settings()

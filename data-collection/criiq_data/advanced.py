@@ -37,7 +37,8 @@ def build_for_format(conn, fmt: str) -> int:
     deliv = pd.read_sql_query(
         "SELECT d.match_id, d.innings, d.over, d.ball_in_over, d.striker, d.bowler, "
         "d.runs_off_bat, d.wides, d.noballs, d.wicket_type, d.player_dismissed, m.gender "
-        "FROM deliveries d JOIN matches m ON d.match_id=m.match_id WHERE m.format=?",
+        "FROM deliveries d JOIN matches m ON d.match_id=m.match_id "
+        "WHERE m.format=? AND m.team_type='international'",
         conn, params=(fmt,))
     if deliv.empty:
         log.info("advanced %s: no deliveries", fmt)

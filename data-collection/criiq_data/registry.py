@@ -101,7 +101,8 @@ def _players_meta(conn) -> dict[tuple[str, str | None], dict]:
 
 def build_registry_for_format(conn, fmt: str) -> int:
     apps = pd.read_sql_query(
-        "SELECT mp.match_id, mp.player_name, mp.team, m.date, m.team1, m.team2, m.gender "
+        "SELECT mp.match_id, mp.player_name, mp.team, m.date, m.team1, m.team2, "
+        "m.gender, m.team_type "
         "FROM match_players mp JOIN matches m ON mp.match_id = m.match_id "
         "WHERE m.format = ?", conn, params=(fmt,)
     )
@@ -128,13 +129,23 @@ def build_registry_for_format(conn, fmt: str) -> int:
     as_of_date = as_of.date()
     now = dt.datetime.now().isoformat(timespec="seconds")
 
+    # Two different questions now share this one appearance table and must
+    # not be conflated: "is she still playing competitive cricket" (recency
+    # -- `last_idx` below) is intentionally broad, international *or*
+    # domestic. "Which national team does she play for, and how regularly
+    # was she picked" (this window) is international-only -- `team1`/`team2`
+    # for a domestic fixture is a franchise, not a country, and would
+    # corrupt both the selection-rate denominator and the team resolution a
+    # few lines down.
+    apps_intl = apps[apps["team_type"] == "international"]
+
     # Selection-consistency window. For each player we compare how many matches
     # they were picked for against how many their team played *since the player's
     # first appearance in the window* — so a mid-window debutant who then played
     # every game reads as a regular, not as in-and-out. Only appearances within
     # selection_window_days before as_of are considered.
     window_start = as_of - pd.Timedelta(days=SETTINGS.selection_window_days)
-    win = apps[apps["date"] >= window_start]
+    win = apps_intl[apps_intl["date"] >= window_start]
     # gender kept alongside identifier in every group key below -- see
     # _players_meta's docstring on why a plain identifier isn't always
     # enough to identify one real person.
@@ -143,13 +154,35 @@ def build_registry_for_format(conn, fmt: str) -> int:
     first_win = grp["date"].min().to_dict()
     recent_team = (grp["team"].agg(lambda s: s.value_counts().idxmax()).to_dict()
                    if not win.empty else {})
-    match_meta = apps.drop_duplicates("match_id")
+    match_meta = apps_intl.drop_duplicates("match_id")
     match_meta = match_meta[match_meta["date"] >= window_start]
     _td = pd.concat([
         match_meta[["team1", "date"]].rename(columns={"team1": "team"}),
         match_meta[["team2", "date"]].rename(columns={"team2": "team"}),
     ])
     team_dates = {t: sorted(g["date"].tolist()) for t, g in _td.groupby("team")}
+    # Fallback for "which country" when the player has no international
+    # appearance inside the recent window at all (e.g. she's been playing
+    # domestically only lately) -- her most recent international appearance
+    # *ever*, however long ago, not her most recent appearance of any kind.
+    last_intl_team = apps_intl.sort_values("date").groupby(
+        ["identifier", "gender"])["team"].last().to_dict()
+
+    # A THIRD thing this appearance table must not conflate with the two
+    # above: "is her ACTIVE/INCONSISTENT/INACTIVE *status label* true" has to
+    # stay international-only, or it lies -- a player who hasn't played
+    # internationally in years but has recent domestic form would otherwise
+    # get labelled "ACTIVE — appeared inside active window", which reads as
+    # "she's a currently-picked international", not "she's playing
+    # domestically" (a real bug caught by inspection: E Bisht, INCONSISTENT/
+    # INACTIVE internationally, was showing ACTIVE). `last_idx` (broad,
+    # union) still feeds the *informational* `last_appearance_date`/
+    # `days_since_last_appearance` columns below -- "when did she last play
+    # anything" is a fair, separate question to answer honestly too.
+    last_idx_intl = apps_intl.sort_values("date").groupby(["identifier", "gender"]).tail(1).set_index(
+        ["identifier", "gender"])
+    last_idx_domestic = apps[apps["team_type"] == "club"].sort_values("date").groupby(
+        ["identifier", "gender"]).tail(1).set_index(["identifier", "gender"])
 
     last_idx = apps.sort_values("date").groupby(["identifier", "gender"]).tail(1).set_index(
         ["identifier", "gender"])
@@ -168,7 +201,27 @@ def build_registry_for_format(conn, fmt: str) -> int:
         days_since = max(0, (as_of_date - last_date).days)
 
         key = (ident, gender)
-        team = recent_team.get(key) or last["team"]
+        # International-only recency drives the *status label* (ACTIVE/
+        # INCONSISTENT/INACTIVE/UNKNOWN) -- `days_since` above (domestic-
+        # inclusive) stays purely informational (`last_appearance_date`
+        # below). No international appearance at all (a domestic-only
+        # player who now gets a registry row) sentinels past
+        # inactive_window_days, so she reads as INACTIVE rather than crash
+        # or default to a false ACTIVE.
+        if key in last_idx_intl.index:
+            days_since_intl = max(0, (as_of_date - last_idx_intl.loc[key, "date"].date()).days)
+        else:
+            days_since_intl = SETTINGS.inactive_window_days + 1
+        # The eligibility carve-out this whole feature exists for: an
+        # otherwise-INACTIVE-internationally player who's recently played
+        # domestically shouldn't be silently excluded from selection — but
+        # that's a distinct fact from her international status being true,
+        # tracked here rather than folded into `days_since_intl` above.
+        recent_domestic_activity = 0
+        if key in last_idx_domestic.index:
+            days_since_domestic = max(0, (as_of_date - last_idx_domestic.loc[key, "date"].date()).days)
+            recent_domestic_activity = int(days_since_domestic <= SETTINGS.active_window_days)
+        team = recent_team.get(key) or last_intl_team.get(key)
         window_player_matches = int(player_win.get(key, 0))
         fw = first_win.get(key)
         dates = team_dates.get(team, [])
@@ -189,7 +242,7 @@ def build_registry_for_format(conn, fmt: str) -> int:
         phase = _career_phase(age, cat)
         advisory = _age_advisory(age, cat)
         is_ranked = pid in ranked
-        status, activity_signal, status_reason = _classify(is_ranked, days_since, selection_rate)
+        status, activity_signal, status_reason = _classify(is_ranked, days_since_intl, selection_rate)
         # `recall_flag` is meant to flag a borderline-stale player worth a
         # selector's second look, NOT to override a genuinely long-absent
         # (INACTIVE, >inactive_window_days) player back into eligibility --
@@ -203,8 +256,12 @@ def build_registry_for_format(conn, fmt: str) -> int:
         # single-most-recent-appearance loop can't see (a fresh appearance
         # after a long-past gap) -- that belongs in `overrides.py`'s manual
         # status override, not an automatic days-since-last-appearance guess.
-        recall = 0 if is_ranked or days_since > SETTINGS.inactive_window_days else (
-            1 if days_since > SETTINGS.recall_flag_days else 0)
+        # Uses days_since_intl (not the domestic-inclusive days_since) for
+        # the same reason `status`/`activity_signal` above do -- recall_flag
+        # feeds directly into risk_part's "recalled after an inactive spell"
+        # framing, which is specifically about an *international* recall.
+        recall = 0 if is_ranked or days_since_intl > SETTINGS.inactive_window_days else (
+            1 if days_since_intl > SETTINGS.recall_flag_days else 0)
         rk = current_rank(conn, pid, fmt) if is_ranked else None
         discipline = rk["discipline"] if rk else None
 
@@ -233,7 +290,8 @@ def build_registry_for_format(conn, fmt: str) -> int:
             pm.get("bowling_style"), pm.get("batting_hand"), pm.get("nationality"),
             recall, advisory, rk["rank"] if rk else None, rk["rating"] if rk else None,
             activity_signal, status_reason, discipline,
-            selection_rate, window_player_matches, window_team_matches, now,
+            selection_rate, window_player_matches, window_team_matches,
+            recent_domestic_activity, now,
         ))
 
     conn.executemany(
@@ -244,8 +302,8 @@ def build_registry_for_format(conn, fmt: str) -> int:
         "nationality, recall_flag, age_advisory, icc_rank, icc_rating, "
         "activity_signal, status_reason, icc_discipline, "
         "selection_rate, window_player_matches, window_team_matches, "
-        "registry_last_updated) "
-        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+        "recent_domestic_activity, registry_last_updated) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
         "ON CONFLICT(player_id, format) DO UPDATE SET "
         "retirement_status=excluded.retirement_status, "
         "retired_formats=excluded.retired_formats, "
@@ -261,6 +319,7 @@ def build_registry_for_format(conn, fmt: str) -> int:
         "selection_rate=excluded.selection_rate, "
         "window_player_matches=excluded.window_player_matches, "
         "window_team_matches=excluded.window_team_matches, "
+        "recent_domestic_activity=excluded.recent_domestic_activity, "
         "registry_last_updated=excluded.registry_last_updated",
         rows,
     )

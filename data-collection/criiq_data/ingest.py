@@ -8,14 +8,19 @@ import zipfile
 
 import pandas as pd
 
-from .config import RAW_DIR, CricsheetSource, enabled_sources
+from .config import RAW_DIR, SETTINGS, CricsheetSource, enabled_sources
 from .db import set_meta
 from .logging_utils import get_logger
 from .validate import quarantine, validate_deliveries
 
 log = get_logger("ingest")
 
-_MATCH_RE = re.compile(r"^(\d+)\.csv$")
+# International zips use purely numeric match ids ("1043989.csv"); some
+# domestic competitions don't (Blaze: "wi_201706.csv") -- match anything
+# ending in .csv that isn't the per-zip `all_matches.csv` summary file or an
+# `_info.csv` companion (excluded separately, in `ingest_source`).
+_MATCH_RE = re.compile(r"^(.+)\.csv$")
+_NON_MATCH_FILES = {"all_matches.csv", "README.txt"}
 
 _DELIV_COLS = [
     "match_id", "innings", "over", "ball_in_over", "batting_team", "bowling_team",
@@ -71,7 +76,12 @@ def _win_margin(info: dict) -> str | None:
 
 
 def _existing_match_ids(conn) -> set[str]:
-    return {r["match_id"] for r in conn.execute("SELECT match_id FROM matches")}
+    # Union of production and holdout: a match already routed to the holdout
+    # tables (see `ingest_source`) must not be re-fetched and re-inserted on
+    # every subsequent refresh, the same as an already-ingested production one.
+    ids = {r["match_id"] for r in conn.execute("SELECT match_id FROM matches")}
+    ids.update(r["match_id"] for r in conn.execute("SELECT match_id FROM matches_holdout"))
+    return ids
 
 
 def ingest_source(conn, src: CricsheetSource) -> dict:
@@ -82,11 +92,12 @@ def ingest_source(conn, src: CricsheetSource) -> dict:
 
     existing = _existing_match_ids(conn)
     new_matches = skipped = deliveries_in = rejected_total = 0
-    non_t20_skipped = 0
+    non_t20_skipped = holdout_matches = 0
 
     with zipfile.ZipFile(path) as z:
         names = z.namelist()
-        match_files = [n for n in names if _MATCH_RE.match(n)]
+        match_files = [n for n in names if _MATCH_RE.match(n)
+                       and n not in _NON_MATCH_FILES and not n.endswith("_info.csv")]
         log.info("%s: %d match files in zip", src.filename, len(match_files))
 
         for name in match_files:
@@ -102,16 +113,26 @@ def ingest_source(conn, src: CricsheetSource) -> dict:
             info = _parse_info(z.read(info_name).decode("utf-8", errors="replace"))
 
             mtype = info["extra"].get("match_type", "")
+            # Cricsheet's own 'international' vs 'club' distinction -- stored,
+            # not used to drop the row (that was the old behaviour; domestic
+            # matches are now real, first-class data -- see config.py).
             ttype = info["extra"].get("team_type", "international")
             if src.fmt == "T20" and mtype and mtype.upper() not in ("T20", "IT20"):
-                non_t20_skipped += 1
-                continue
-            if ttype and ttype != "international":
                 non_t20_skipped += 1
                 continue
 
             teams = info["teams"]
             date = _norm_date(info["dates"][0] if info["dates"] else None)
+            # Forward-safeguard, not a present-day trim (see config.py's
+            # data_cutoff_date docstring): anything newer goes to the
+            # `_holdout` tables so it's available for genuine testing but can
+            # never leak into training/live scoring.
+            is_holdout = bool(date) and date > SETTINGS.data_cutoff_date
+            matches_tbl = "matches_holdout" if is_holdout else "matches"
+            match_players_tbl = "match_players_holdout" if is_holdout else "match_players"
+            deliveries_tbl = "deliveries_holdout" if is_holdout else "deliveries"
+            if is_holdout:
+                holdout_matches += 1
 
             try:
                 ddf = pd.read_csv(io.BytesIO(z.read(name)), dtype=str,
@@ -130,14 +151,14 @@ def ingest_source(conn, src: CricsheetSource) -> dict:
             clean = _shape_deliveries(clean, match_id)
 
             conn.execute(
-                "INSERT OR IGNORE INTO matches("
-                "match_id, format, gender, match_type, season, date, event, "
+                f"INSERT OR IGNORE INTO {matches_tbl}("
+                "match_id, format, gender, match_type, team_type, season, date, event, "
                 "venue_raw, city, team1, team2, toss_winner, toss_decision, "
                 "winner, win_margin, player_of_match, ingested_at) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     match_id, src.fmt, info["extra"].get("gender", src.gender),
-                    mtype or src.fmt, info["extra"].get("season"), date,
+                    mtype or src.fmt, ttype, info["extra"].get("season"), date,
                     info["extra"].get("event"), info["extra"].get("venue"),
                     info["extra"].get("city") or None,
                     teams[0] if len(teams) > 0 else None,
@@ -150,7 +171,7 @@ def ingest_source(conn, src: CricsheetSource) -> dict:
                 ),
             )
             conn.executemany(
-                "INSERT OR IGNORE INTO match_players(match_id, team, player_name) "
+                f"INSERT OR IGNORE INTO {match_players_tbl}(match_id, team, player_name) "
                 "VALUES(?,?,?)",
                 [(match_id, t, n) for (t, n) in info["players"]],
             )
@@ -160,7 +181,7 @@ def ingest_source(conn, src: CricsheetSource) -> dict:
                 info["registry"],
             )
             conn.executemany(
-                f"INSERT INTO deliveries({','.join(_DELIV_COLS)}) "
+                f"INSERT INTO {deliveries_tbl}({','.join(_DELIV_COLS)}) "
                 f"VALUES({','.join('?' for _ in _DELIV_COLS)})",
                 list(clean[_DELIV_COLS].itertuples(index=False, name=None)),
             )
@@ -171,10 +192,11 @@ def ingest_source(conn, src: CricsheetSource) -> dict:
     set_meta(conn, f"ingested_at::{src.label}",
              dt.datetime.now().isoformat(timespec="seconds"))
     conn.commit()
-    log.info("%s: +%d matches, %d deliveries (skipped %d existing, %d off-scope, "
-             "%d rejected rows)", src.label, new_matches, deliveries_in, skipped,
-             non_t20_skipped, rejected_total)
+    log.info("%s: +%d matches (%d to holdout), %d deliveries (skipped %d existing, "
+             "%d off-scope, %d rejected rows)", src.label, new_matches, holdout_matches,
+             deliveries_in, skipped, non_t20_skipped, rejected_total)
     return {"source": src.label, "new_matches": new_matches,
+            "holdout_matches": holdout_matches,
             "deliveries": deliveries_in, "skipped_existing": skipped,
             "rejected": rejected_total}
 

@@ -51,20 +51,23 @@ def _support_tables(conn, fmt: str):
     team_runs = pd.read_sql_query(
         "SELECT d.match_id, d.batting_team AS team, SUM(d.runs_total) AS runs "
         "FROM deliveries d JOIN matches m ON d.match_id=m.match_id "
-        "WHERE m.format=? GROUP BY d.match_id, d.batting_team", conn, params=(fmt,))
+        "WHERE m.format=? AND m.team_type='international' "
+        "GROUP BY d.match_id, d.batting_team", conn, params=(fmt,))
     tr = {(r.match_id, r.team): r.runs for r in team_runs.itertuples()}
 
     team_wkts = pd.read_sql_query(
         "SELECT d.match_id, d.bowling_team AS team, "
         "SUM(CASE WHEN d.player_dismissed IS NOT NULL THEN 1 ELSE 0 END) AS wkts "
         "FROM deliveries d JOIN matches m ON d.match_id=m.match_id "
-        "WHERE m.format=? GROUP BY d.match_id, d.bowling_team", conn, params=(fmt,))
+        "WHERE m.format=? AND m.team_type='international' "
+        "GROUP BY d.match_id, d.bowling_team", conn, params=(fmt,))
     tw = {(r.match_id, r.team): r.wkts for r in team_wkts.itertuples()}
 
     death = pd.read_sql_query(
         "SELECT d.striker AS player_name, SUM(d.runs_off_bat) AS death_runs "
         "FROM deliveries d JOIN matches m ON d.match_id=m.match_id "
-        "WHERE m.format=? AND d.over>=15 GROUP BY d.striker", conn, params=(fmt,))
+        "WHERE m.format=? AND m.team_type='international' AND d.over>=15 "
+        "GROUP BY d.striker", conn, params=(fmt,))
     idmap = pd.read_sql_query("SELECT player_name, identifier FROM identifier_map", conn)
     death = death.merge(idmap, on="player_name", how="left").dropna(subset=["identifier"])
     dr = death.groupby("identifier")["death_runs"].sum().to_dict()
@@ -100,7 +103,7 @@ def build_cards_for_format(conn, fmt: str) -> int:
     team_runs, team_wkts, death_runs = _support_tables(conn, fmt)
     matches_meta = {r["match_id"]: dict(r) for r in conn.execute(
         "SELECT match_id, date, event, venue_raw, team1, team2, winner, win_margin "
-        "FROM matches WHERE format=?", (fmt,))}
+        "FROM matches WHERE format=? AND team_type='international'", (fmt,))}
     now = dt.datetime.now().isoformat(timespec="seconds")
     n_recent = SETTINGS.impact_recent_matches
 

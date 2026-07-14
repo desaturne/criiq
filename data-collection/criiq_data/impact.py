@@ -57,7 +57,8 @@ def build_impact_for_format(conn, fmt: str) -> int:
         "SELECT d.match_id, d.innings, d.over, d.ball_in_over, d.batting_team, "
         "d.bowling_team, d.striker, d.non_striker, d.bowler, d.runs_off_bat, "
         "d.wides, d.runs_total, d.wicket_type, d.player_dismissed, m.gender "
-        "FROM deliveries d JOIN matches m ON d.match_id=m.match_id WHERE m.format=?",
+        "FROM deliveries d JOIN matches m ON d.match_id=m.match_id "
+        "WHERE m.format=? AND m.team_type='international'",
         conn, params=(fmt,))
     name2id = {r["player_name"]: r["identifier"]
                for r in conn.execute("SELECT player_name, identifier FROM identifier_map")}
@@ -137,20 +138,39 @@ def build_impact_for_format(conn, fmt: str) -> int:
         set_sr, set_avg = _sit(1)
         chase_sr, chase_avg = _sit(2)
 
+        # "A wicket worth having" (top_order_scalps, credited toward dangerous
+        # top-order batters) needs a batting-side equivalent: "an innings worth
+        # having". >=30 runs was picked, not guessed -- checked against the live
+        # DB, (innings>=30)/matches has mean 0.135/median 0.100/75th-pctile 0.222,
+        # and a multiplier of 70 lines its mean and 75th-percentile up with
+        # top_order_scalps/matches's own mean 0.313/75th-pctile 0.538 under the
+        # existing *30 multiplier -- both bonuses hit their 15.0 cap at a
+        # comparably-rare percentile of real players, not an arbitrary round
+        # number on one side only.
+        big_innings = int((batted["runs"] >= 30).sum())
+
         overall_contrib = (bat_contrib or 0) + (bowl_contrib or 0)
         contribution_part = min(35.0, overall_contrib * 0.9)
         winning_part = 25.0 * (win_pct or 0) / 100
         standout_part = 25.0 * min(1.0, (potm_awards / matches) / 0.12) if matches else 0
         bowling_part = min(15.0, (top_scalps / matches) * 30) if matches else 0
-        importance = round(contribution_part + winning_part + standout_part + bowling_part, 1)
+        batting_impact_part = min(15.0, (big_innings / matches) * 70) if matches else 0
+        # A genuine dual-threat all-rounder can now earn both 15pt bonuses at
+        # once (impossible before this fix) -- clamp the total back to the
+        # intended 0-100 scale; pure specialists are unaffected, they only ever
+        # earn one of the two bonuses so their ceiling was already <=100.
+        importance = round(min(100.0, contribution_part + winning_part + standout_part
+                                + bowling_part + batting_impact_part), 1)
         components = {
             "contribution_part": round(contribution_part, 1),
             "winning_part": round(winning_part, 1),
             "standout_part": round(standout_part, 1),
             "bowling_impact_part": round(bowling_part, 1),
+            "batting_impact_part": round(batting_impact_part, 1),
             "inputs": {"bat_contribution_pct": bat_contrib, "bowl_contribution_pct": bowl_contrib,
                        "win_pct": win_pct, "potm_rate": round(potm_awards / matches, 3) if matches else None,
-                       "top_order_scalps_per_match": round(top_scalps / matches, 3) if matches else None},
+                       "top_order_scalps_per_match": round(top_scalps / matches, 3) if matches else None,
+                       "big_innings_per_match": round(big_innings / matches, 3) if matches else None},
         }
 
         rows.append((

@@ -38,7 +38,8 @@ def build_for_format(conn, fmt: str) -> int:
     d = pd.read_sql_query(
         "SELECT d.over, d.striker, d.bowler, d.runs_off_bat, d.wides, d.noballs, "
         "d.wicket_type, d.player_dismissed, m.gender "
-        "FROM deliveries d JOIN matches m ON d.match_id=m.match_id WHERE m.format=?",
+        "FROM deliveries d JOIN matches m ON d.match_id=m.match_id "
+        "WHERE m.format=? AND m.team_type='international'",
         conn, params=(fmt,))
     if d.empty:
         return 0
@@ -173,7 +174,8 @@ def phase_vs_opponent(conn, player_id: str, fmt: str) -> dict:
         f"SELECT d.bowling_team AS opponent, d.over, d.runs_off_bat, d.wides, "
         f"d.player_dismissed, d.striker "
         f"FROM deliveries d JOIN matches m ON d.match_id=m.match_id "
-        f"WHERE m.format=? AND d.striker IN ({ph})", [fmt] + list(names)).fetchall()
+        f"WHERE m.format=? AND m.team_type='international' AND d.striker IN ({ph})",
+        [fmt] + list(names)).fetchall()
     agg: dict = {}
     for r in rows:
         if (r["wides"] or 0) != 0:
