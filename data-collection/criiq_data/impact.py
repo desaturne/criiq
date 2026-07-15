@@ -126,6 +126,19 @@ def build_impact_for_format(conn, fmt: str) -> int:
         total_wk = int(bi["wkts"]) if bi is not None else 0
         top_pct = round(100 * top_scalps / total_wk, 1) if total_wk else None
 
+        # An "economical spell worth having" -- >=12 legal balls (2 overs, so
+        # a single tidy over doesn't count) at economy<=6.0/over. Threshold
+        # picked from the real distribution (`bowled` innings DB-wide,
+        # balls_bowled>=12): rate of qualifying innings per match has
+        # mean 0.402/median 0.389/75th-pctile 0.538 at this exact cutoff --
+        # its 75th-percentile (0.538) lines up almost exactly with
+        # top_order_scalps/matches's own 75th-percentile (0.538), so the two
+        # bonuses hit their (now-equal, see below) caps at a comparably-rare
+        # percentile of real bowlers, the same calibration discipline used
+        # for `big_innings` below.
+        spells = bowled[bowled["balls_bowled"] >= 12]
+        economical_spells = int((spells["runs_conceded"] / spells["balls_bowled"] * 6 <= 6.0).sum())
+
         def _sit(innum):
             key = (ident, gender, innum)
             if key not in sit_runs.index:
@@ -153,7 +166,20 @@ def build_impact_for_format(conn, fmt: str) -> int:
         contribution_part = min(35.0, overall_contrib * 0.9)
         winning_part = 25.0 * (win_pct or 0) / 100
         standout_part = 25.0 * min(1.0, (potm_awards / matches) / 0.12) if matches else 0
-        bowling_part = min(15.0, (top_scalps / matches) * 30) if matches else 0
+        # Wicket-taking and economy now split the same 15pt bowling bonus
+        # equally (7.5 each) rather than economy counting for nothing --
+        # previously a bowler's *entire* bowling bonus came from top-order
+        # wicket-taking rate alone, so two bowlers with identical wicket-rates
+        # scored identically here even if one leaked boundaries every over and
+        # the other built pressure with dot balls. Both halves use the same
+        # halved multiplier (*15, not *30) so each still hits its own 7.5 cap
+        # at the same rate-percentile the original *30/cap-15 bowling bonus
+        # did -- the total 15pt ceiling for a bowler who's genuinely elite at
+        # *both* is unchanged from before this split, it's just no longer
+        # 100% wicket-driven.
+        wicket_rate_part = min(7.5, (top_scalps / matches) * 15) if matches else 0
+        economy_part = min(7.5, (economical_spells / matches) * 15) if matches else 0
+        bowling_part = wicket_rate_part + economy_part
         batting_impact_part = min(15.0, (big_innings / matches) * 70) if matches else 0
         # A genuine dual-threat all-rounder can now earn both 15pt bonuses at
         # once (impossible before this fix) -- clamp the total back to the
@@ -166,10 +192,13 @@ def build_impact_for_format(conn, fmt: str) -> int:
             "winning_part": round(winning_part, 1),
             "standout_part": round(standout_part, 1),
             "bowling_impact_part": round(bowling_part, 1),
+            "wicket_rate_part": round(wicket_rate_part, 1),
+            "economy_part": round(economy_part, 1),
             "batting_impact_part": round(batting_impact_part, 1),
             "inputs": {"bat_contribution_pct": bat_contrib, "bowl_contribution_pct": bowl_contrib,
                        "win_pct": win_pct, "potm_rate": round(potm_awards / matches, 3) if matches else None,
                        "top_order_scalps_per_match": round(top_scalps / matches, 3) if matches else None,
+                       "economical_spells_per_match": round(economical_spells / matches, 3) if matches else None,
                        "big_innings_per_match": round(big_innings / matches, 3) if matches else None},
         }
 

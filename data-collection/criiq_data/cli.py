@@ -157,8 +157,8 @@ def cmd_winprob(args):
         missing = required - kv.keys()
         if missing:
             raise SystemExit(f"--state: missing required key(s): {sorted(missing)}")
-        wp = winprob.probability_for_state(args.format, **kv)
-        _pp({"format": args.format, "state": kv,
+        wp = winprob.probability_for_state(args.format, args.gender, **kv)
+        _pp({"format": args.format, "gender": args.gender, "state": kv,
              "win_prob_batting": wp, "win_prob_bowling": round(1 - wp, 4)})
     elif args.match:
         tl = winprob.match_timeline(args.format, args.match)
@@ -291,11 +291,12 @@ def cmd_h2h(args):
     bowl = _find_player(conn, args.bowler)
     if not bat or not bowl:
         print("player not found"); conn.close(); return
-    bat_names = names_for_player(conn, bat[0]["player_id"])
-    bowl_names = names_for_player(conn, bowl[0]["player_id"])
+    bat_names, bat_gender = names_for_player(conn, bat[0]["player_id"])
+    bowl_names, bowl_gender = names_for_player(conn, bowl[0]["player_id"])
     _pp({"batter": bat[0]["canonical_name"], "bowler": bowl[0]["canonical_name"],
          "format": args.format,
-         "h2h": batter_vs_bowler(conn, args.format, bat_names, bowl_names)})
+         "h2h": batter_vs_bowler(conn, args.format, bat_names, bowl_names,
+                                  bat_gender, bowl_gender)})
     conn.close()
 
 
@@ -372,6 +373,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     wp = sub.add_parser("winprob", help="build/query ball-by-ball win probability")
     wp.add_argument("--format", default="T20")
+    wp.add_argument("--gender", default="female", help="which gender's fitted model to query (--state only; "
+                                                         "build/--match are gender-agnostic, both are built/read together)")
     wp.add_argument("--match", help="print the per-over WP timeline for a match id")
     wp.add_argument("--state", help='ad-hoc WP, e.g. "innings=2,balls_remaining=30,wickets=4,runs_required=40"')
     wp.set_defaults(func=cmd_winprob)

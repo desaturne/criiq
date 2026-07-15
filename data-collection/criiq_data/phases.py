@@ -166,16 +166,17 @@ def get_phases(conn, player_id: str, fmt: str) -> list[dict]:
 
 def phase_vs_opponent(conn, player_id: str, fmt: str) -> dict:
     from .h2h import names_for_player
-    names = names_for_player(conn, player_id)
+    names, gender = names_for_player(conn, player_id)
     if not names:
         return {}
     ph = ",".join("?" for _ in names)
+    gender_clause = " AND m.gender=?" if gender else ""
     rows = conn.execute(
         f"SELECT d.bowling_team AS opponent, d.over, d.runs_off_bat, d.wides, "
         f"d.player_dismissed, d.striker "
         f"FROM deliveries d JOIN matches m ON d.match_id=m.match_id "
-        f"WHERE m.format=? AND m.team_type='international' AND d.striker IN ({ph})",
-        [fmt] + list(names)).fetchall()
+        f"WHERE m.format=? AND m.team_type='international' AND d.striker IN ({ph}){gender_clause}",
+        [fmt] + list(names) + ([gender] if gender else [])).fetchall()
     agg: dict = {}
     for r in rows:
         if (r["wides"] or 0) != 0:

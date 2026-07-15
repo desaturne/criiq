@@ -141,9 +141,9 @@ def test_derived_role(conn):
 
 
 def test_h2h_batter_vs_bowler(conn):
-    bat = names_for_player(conn, identity.player_id_for("id_bat"))
-    bowl = names_for_player(conn, identity.player_id_for("id_bowl"))
-    h = batter_vs_bowler(conn, "T20", bat, bowl)
+    bat, bat_gender = names_for_player(conn, identity.player_id_for("id_bat"))
+    bowl, bowl_gender = names_for_player(conn, identity.player_id_for("id_bowl"))
+    h = batter_vs_bowler(conn, "T20", bat, bowl, bat_gender, bowl_gender)
     assert h["balls"] == 10
     assert h["runs"] == 20
     assert h["dismissals"] == 1
@@ -281,8 +281,8 @@ def test_winprob_save_load_roundtrip(tmp_path, monkeypatch):
          "balls_bowled": 30, "score": 45, "label_batting_team_won": 0},
     ] * 20)
     m = winprob.EmpiricalWinProb().fit(balls)
-    m.save("T20")
-    loaded = winprob.EmpiricalWinProb.load("T20")
+    m.save("T20", "female")
+    loaded = winprob.EmpiricalWinProb.load("T20", "female")
     q = pd.DataFrame([{"innings": 2, "balls_remaining": 30, "wickets": 3,
                        "runs_required": 20, "balls_bowled": 90, "score": 0}])
     assert loaded.predict(q)[0] == pytest.approx(m.predict(q)[0])
@@ -307,7 +307,7 @@ def test_wpa_credits_striker_and_debits_bowler(conn, tmp_path, monkeypatch):
         "chase_full": pd.DataFrame(columns=["k_rem", "k_wk", "k_rr", "wp"]),
         "chase_coarse": pd.DataFrame(columns=["k_rem", "k_wk", "wp"]),
     }
-    model.save("T20")
+    model.save("T20", "female")
 
     wpa.build_wpa_for_format(conn, "T20")
 
@@ -347,7 +347,7 @@ def test_domestic_matches_tagged_and_kept_out_of_international_phase_wpa(conn, t
         "chase_full": pd.DataFrame(columns=["k_rem", "k_wk", "k_rr", "wp"]),
         "chase_coarse": pd.DataFrame(columns=["k_rem", "k_wk", "wp"]),
     }
-    model.save("T20")
+    model.save("T20", "female")
 
     # AA Batter already has an international match (M1, from the shared
     # fixture); add a domestic one for her too, same shape as M1's over.
@@ -485,10 +485,21 @@ def test_importance_score_batting_bonus_symmetric_with_bowling(tmp_path):
         # so bat_contribution_pct comes out at exactly 100%.
         for b, runs in enumerate([4, 4, 4, 4, 4, 10], start=1):
             _ball(c, mid, 1, 0, b, "Team A", "Team B", "CC AllRounder", "ZZ Partner", "YY Bowler", runs)
-        # Innings 2: Team B bats, CC bowls and removes the opening (top-order)
-        # batter -- the team's only wicket, so bowl_contribution_pct is 100% too.
+        # Innings 2: Team B bats, CC bowls a full 2-over spell (12 legal
+        # balls, 0 runs conceded off any of them -- economy 0.0, well under
+        # the economical-spell threshold) and removes the opening (top-order)
+        # batter on the first ball -- the team's only wicket, so
+        # bowl_contribution_pct is 100% too. A full spell (not just one ball)
+        # is needed so this fixture qualifies for *both* new bowling-bonus
+        # sub-parts (wicket-rate and economy), not just the wicket one.
         _ball(c, mid, 2, 0, 1, "Team B", "Team A", "XX Victim", "WW Partner", "CC AllRounder",
               0, wkt="bowled", dismissed="XX Victim")
+        for over in range(2):
+            for b in range(1, 7):
+                if over == 0 and b == 1:
+                    continue  # the wicket ball, already added above
+                _ball(c, mid, 2, over, b, "Team B", "Team A", "WW Partner", "VV Partner",
+                      "CC AllRounder", 0)
     c.commit()
     identity.resolve_players(c)
     impact.build_impact_for_format(c, "T20")
@@ -496,9 +507,15 @@ def test_importance_score_batting_bonus_symmetric_with_bowling(tmp_path):
     row = c.execute("SELECT * FROM player_impact WHERE player_id=?",
                      (identity.player_id_for("id_ar"),)).fetchone()
     comps = json.loads(row["importance_components"])
-    # A 30+ run innings every match (rate 1.0) and a top-order wicket every
-    # match (rate 1.0) hit the same 15.0 cap on both sides -- the fix under
-    # test: before it, batting_impact_part didn't exist at all.
+    # A 30+ run innings every match (rate 1.0), a top-order wicket every
+    # match (rate 1.0), and an economical (0.0/over) spell every match
+    # (rate 1.0) all hit their respective caps -- wicket-rate and economy
+    # split the bowling bonus 7.5/7.5 (see impact.py), matching batting's
+    # 15.0 combined: before the batting bonus fix, batting_impact_part
+    # didn't exist at all; before the economy split, economy counted for
+    # nothing and bowling_impact_part was 100% wicket-driven.
+    assert comps["wicket_rate_part"] == 7.5
+    assert comps["economy_part"] == 7.5
     assert comps["bowling_impact_part"] == 15.0
     assert comps["batting_impact_part"] == 15.0
     # 35 (contribution, capped) + 25 (100% win rate) + 25 (100% PotM rate,

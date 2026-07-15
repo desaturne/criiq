@@ -63,22 +63,34 @@ def _support_tables(conn, fmt: str):
         "GROUP BY d.match_id, d.bowling_team", conn, params=(fmt,))
     tw = {(r.match_id, r.team): r.wkts for r in team_wkts.itertuples()}
 
+    # gender kept alongside identifier in the group key -- without it, a
+    # colliding identifier's death-overs runs would sum both real people's
+    # innings into one number (see identity.py's collision docs).
     death = pd.read_sql_query(
-        "SELECT d.striker AS player_name, SUM(d.runs_off_bat) AS death_runs "
+        "SELECT d.striker AS player_name, m.gender AS gender, "
+        "SUM(d.runs_off_bat) AS death_runs "
         "FROM deliveries d JOIN matches m ON d.match_id=m.match_id "
         "WHERE m.format=? AND m.team_type='international' AND d.over>=15 "
-        "GROUP BY d.striker", conn, params=(fmt,))
+        "GROUP BY d.striker, m.gender", conn, params=(fmt,))
     idmap = pd.read_sql_query("SELECT player_name, identifier FROM identifier_map", conn)
     death = death.merge(idmap, on="player_name", how="left").dropna(subset=["identifier"])
-    dr = death.groupby("identifier")["death_runs"].sum().to_dict()
+    dr = death.groupby(["identifier", "gender"])["death_runs"].sum().to_dict()
     return tr, tw, dr
 
 
-def _ident_to_player(conn) -> dict[str, dict]:
+def _ident_to_player(conn) -> dict[tuple, dict]:
+    """(cricsheet_identifier, gender) -> player row, gender-scoped for the
+    same reason every other builder in this codebase is (see e.g. impact.py):
+    a handful of Cricsheet identifiers are reused across two genuinely
+    different real people of different genders. Unsplit (the overwhelming
+    majority) players are stored with `gender=NULL` on the `players` row --
+    callers look up `(ident, real_gender)` first, falling back to
+    `(ident, None)` for those.
+    """
     rows = conn.execute(
-        "SELECT player_id, cricsheet_identifier, canonical_name, nationality, "
+        "SELECT player_id, cricsheet_identifier, gender, canonical_name, nationality, "
         "role, derived_role, date_of_birth, batting_hand, bowling_style FROM players").fetchall()
-    return {r["cricsheet_identifier"]: dict(r) for r in rows if r["cricsheet_identifier"]}
+    return {(r["cricsheet_identifier"], r["gender"]): dict(r) for r in rows if r["cricsheet_identifier"]}
 
 
 def _registry_status(conn, fmt: str) -> dict[str, dict]:
@@ -109,8 +121,8 @@ def build_cards_for_format(conn, fmt: str) -> int:
 
     innings = innings.sort_values("date")
     rows = []
-    for ident, g in innings.groupby("identifier"):
-        pm = players.get(ident)
+    for (ident, gender), g in innings.groupby(["identifier", "gender"]):
+        pm = players.get((ident, gender)) or players.get((ident, None))
         if pm is None:
             continue
         g = g.sort_values("date")
@@ -170,7 +182,7 @@ def build_cards_for_format(conn, fmt: str) -> int:
             "wickets_share": round(pw / tw, 3) if tw else None,
             "wicket_contribution_rate": round(g["wickets"].sum() / bowled_matches, 2)
                 if bowled_matches else None,
-            "pressure_index": round(death_runs.get(ident, 0) / total_runs, 3)
+            "pressure_index": round(death_runs.get((ident, gender), 0) / total_runs, 3)
                 if total_runs else None,
             "win_contribution": round(g["won"].mean(), 3),
             "window_matches": int(len(recent)),

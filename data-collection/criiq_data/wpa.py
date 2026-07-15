@@ -101,14 +101,8 @@ def _starting_state_wp(model: EmpiricalWinProb, d: pd.DataFrame) -> pd.DataFrame
     return start[["match_id", "innings", "wp"]]
 
 
-def compute_ball_wpa(conn, fmt: str) -> pd.DataFrame:
-    """One row per delivery, with `delta_wp`, `striker`, `bowler`, `phase` —
-    the building block both aggregate tables are computed from.
-    """
-    d = _build_ball_state_with_players(conn, fmt)
-    if d.empty:
-        return d
-    model = EmpiricalWinProb.load(fmt)
+def _score_one_gender_ball_wpa(d: pd.DataFrame, model: EmpiricalWinProb) -> pd.DataFrame:
+    d = d.copy()
     d["win_prob_batting"] = model.predict(_win_prob_inputs(d))
 
     g = d.groupby(["match_id", "innings"])
@@ -120,6 +114,24 @@ def compute_ball_wpa(conn, fmt: str) -> pd.DataFrame:
     d.loc[missing, "prev_wp"] = filled.to_numpy()
     d["delta_wp"] = d["win_prob_batting"] - d["prev_wp"]
     return d
+
+
+def compute_ball_wpa(conn, fmt: str) -> pd.DataFrame:
+    """One row per delivery, with `delta_wp`, `striker`, `bowler`, `phase` —
+    the building block both aggregate tables are computed from.
+
+    Scored per gender, never blended: `EmpiricalWinProb` is fit and persisted
+    per (format, gender) (see winprob.py) precisely because men's and
+    women's T20 have genuinely different scoring/required-run-rate
+    distributions, so each gender's deliveries must be scored by its own
+    model, never a shared one.
+    """
+    d = _build_ball_state_with_players(conn, fmt)
+    if d.empty:
+        return d
+    scored = [_score_one_gender_ball_wpa(gender_d, EmpiricalWinProb.load(fmt, gender))
+              for gender, gender_d in d.groupby("gender")]
+    return pd.concat(scored, ignore_index=True)
 
 
 def _name_to_ident(conn) -> dict[str, str]:

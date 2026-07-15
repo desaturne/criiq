@@ -95,17 +95,103 @@ career stats, phase splits, WPA, and matchup history simultaneously —
 correctness debt that would only have gotten worse (more players, more
 short-name collisions) the more men's data got used, not less.
 
-**Known residual gap**: `h2h.py`'s `names_for_player` (used by
-`batter_vs_bowler`/`player_vs_team`, and transitively by `sheet`/`profile`'s
-drill-down views) still resolves by raw display name without a gender
-filter, so a specific head-to-head lookup involving one of the 32 split
-identifiers can still pull deliveries from both real people. This doesn't
-affect anything the recommendation engine actually reads (`player_career`,
-`player_impact`, `player_phase`, `dismissal_matchup`, `player_advanced`,
-`player_match_impact`, `player_match_wpa` are all fixed) — it's scoped to
-data-collection's own standalone reporting commands for those specific 32
-identifiers. `player_card.py` has the same residual gap for the same reason
-(a display/dashboard table, not read by model-training).
+**~~Known residual gap: `h2h.py`/`player_card.py` still resolved by raw
+display name~~ — fixed**, along with two more real cross-gender/cross-venue
+bugs a full re-audit (prompted directly by a user request to re-verify that
+men's and women's data — and venue-specific analysis — are genuinely never
+mixed, "for all country") found and confirmed on live data:
+
+- **`player_card.py` was the most severe of the four**: `build_cards_for_format`
+  grouped by raw `identifier` alone (no gender in the key at all, unlike
+  every other builder in this file), so for all 32 colliding identifiers the
+  female player's `player_cards` row was **silently absent entirely**, and
+  the male row's `matches_played`/career/form/impact JSON was the straight
+  **sum of both real people's careers**. Confirmed on live data: "SR Taylor"'s
+  card showed `matches_played=103` (22 true male + 81 true female, blended);
+  after the fix both genders get their own correct, separate card (22 and 81).
+  Fixed by threading `gender` through `_ident_to_player`/`_support_tables` and
+  the main groupby, same `(identifier, gender)` pattern every other builder
+  already used.
+- **`h2h.py`'s `names_for_player`** resolved a `player_id` to display names via
+  `identifier_map` (which has no gender column) with no gender filter, so
+  `batter_vs_bowler`/`player_vs_team` — and `phases.py`'s `phase_vs_opponent`,
+  and `player_card.py`'s own `h2h_vs_latest_opponent` field, and the CLI's
+  `h2h` command, all downstream of it — silently summed both real people's
+  deliveries for any of the 32 collision names. Confirmed on live data: real
+  "A Sharma" (India women's vs. an unrelated UAE men's player) vs New Zealand
+  returned an identical blended 101 balls/108 runs for *either* player_id
+  queried, instead of the true 27/24 (female) and 74/84 (male) splits. Fixed
+  by having `names_for_player` also return the player's own `gender` (`None`
+  for the ~99.5% of unsplit, unambiguous names — no filter needed for them at
+  all), and threading an `AND m.gender=?` clause through every affected query.
+- **The ball-by-ball win-probability model itself (`winprob.py`) was fit on
+  both genders' balls blended together**, with gender never used as a
+  conditioning variable — the single most foundational fix in this list,
+  since `player_match_wpa`/`player_phase_wpa`/`player_domestic_form` (and
+  therefore every WPA-based feature and training target model-training uses)
+  all derive from it. Men's and women's T20 have genuinely different typical
+  scores and required-run-rate distributions, so a shared model was
+  miscalibrated for both. Fixed by fitting, evaluating, and persisting a
+  separate `EmpiricalWinProb` per `(format, gender)` (`winprob_{fmt}_{gender}_*`,
+  mirroring model-training's own `_artifacts_dir(fmt, gender)` fix) and
+  scoring each gender's deliveries with its own model in both `winprob.py`
+  and `wpa.py`'s `compute_ball_wpa`. Real post-fix calibration, confirmed
+  distinct per gender: female Brier 0.1557 vs. baseline 0.2447 (93,714 test
+  balls); male Brier 0.1727 vs. baseline 0.25 (145,372 test balls). Both
+  gender's model-training artifacts were retrained afterward since the WPA
+  labels/features themselves changed.
+- **`styles.py`'s `bowler_buckets()`/`batter_hands()`** (feeding `advanced.py`'s
+  vs-pace/vs-spin and vs-batting-hand splits) resolved by raw player name with
+  no gender in the key either — dormant (zero of the 32 collision identifiers
+  currently have *both* genders' style data populated at once, confirmed by
+  direct query), but unsafe the moment ongoing Wikipedia enrichment fills in
+  both sides for one of them. Fixed the same way, pre-emptively: both
+  functions now key by `(player_name, gender)`, with a
+  split-then-unsplit-fallback lookup in `advanced.py`.
+
+None of the four affect anything the recommendation engine's actual scoring
+path reads except through the (now-fixed) shared `winprob`/`wpa` chain —
+`player_career`, `player_impact`, `player_phase`, `dismissal_matchup`,
+`player_advanced`, `player_by_venue`, `player_registry` were all independently
+re-verified clean across all 32 colliding identifiers as part of this same
+audit (zero cross-gender join mismatches via `player_match_wpa`/`matches.gender`,
+plausible/distinct real numbers on direct inspection).
+
+### A related, separately-confirmed venue bug: genuinely different grounds sharing one venue_id
+
+`identity.py`'s `normalise_venues()` falls back to `raw.split(",")[0]` for any
+raw venue string not in the curated `_VENUE_ALIASES` dict — fine for a
+specific ground recorded with varying city detail (e.g. "Kensington Oval,
+Barbados" / "Kensington Oval, Bridgetown"), but for a *generic* ground name
+this silently merges genuinely different real stadiums that happen to share
+a bare prefix. Confirmed on live data (checked all 117 canonical names built
+from more than one raw string; these were the only two genuine conflations):
+
+- `venue_id='county-ground'` merged 6 raw strings spanning **5 different**
+  real English county grounds (Bristol, Chelmsford, Derby, Hove, Northampton,
+  New Road/Worcester) — 54 matches sharing one venue_id, `player_by_venue`
+  showing implausible combined match counts, `venue_dismissal_matchup` listing
+  bowlers from three different countries as top dismissers "at" one ground.
+- `venue_id='national-stadium'` merged New Zealand's National Stadium
+  (Hamilton) with Pakistan's National Stadium (Karachi) — 29 matches across
+  two continents under one venue_id.
+
+Fixed by adding explicit `_VENUE_ALIASES` entries disambiguating each
+specifically-qualified raw string (keeping the city, not stripping it), and
+giving the *unqualified* "County Ground"/"National Stadium" raw strings
+(which genuinely don't say which real ground — Cricsheet's own data
+ambiguity, not guessable) their own honestly-labelled "(ground unspecified)"
+canonical name/venue_id rather than merging them with any specific one — the
+same "don't fake what isn't there" principle as the rest of this README.
+"County Ground, Taunton" (2 matches) was confirmed to be the *same* real
+ground as "The Cooper Associates County Ground[, Taunton]" (Somerset's
+sponsored name) and aliased to join that pair correctly, rather than being
+left to collide with the other cities. Rebuilt on live data:
+`venues`/`venue_stats`/`matchups` all re-run; `resolve_venue("County
+Ground, Bristol")` now correctly resolves to its own distinct venue_id, and
+`resolve_venue("County Ground")` now surfaces the full honest "did you
+mean" list (all 6 named grounds plus the unspecified bucket) instead of
+silently picking the wrong one.
 
 ## Domestic leagues, a hard data cutoff, and the national-team-vs-recency split
 
@@ -284,7 +370,8 @@ local cron, or APScheduler — orchestration-agnostic).
 - **Batting** — phase strengths (powerplay/middle/death SR, boundary%, dot%,
   dismissals), overall boundary%/dot%/scoring%/rotation% (control & aggression
   proxies), acceleration (first-10 vs after-10 SR), and an **archetype**
-  (anchor / aggressor / finisher / balanced).
+  (anchor / power hitter / finisher / balanced — renamed from "aggressor" to
+  match common usage; same thresholds, label only).
 - **Bowling** — economy/wickets/dot% by phase, new-ball vs death **usage share**,
   bowling strike rate (balls/wicket) and average.
 - **vs-pace / vs-spin** (batting) and **vs-RHB / vs-LHB** (bowling) splits — these

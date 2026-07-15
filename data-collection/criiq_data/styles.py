@@ -308,28 +308,40 @@ def load_manual_csv(conn, path=None) -> dict:
     return {"loaded": loaded}
 
 
-def bowler_buckets(conn, *, detail: bool = False) -> dict[str, str]:
+def bowler_buckets(conn, *, detail: bool = False) -> dict[tuple[str, str | None], str]:
+    """(player_name, gender) -> bucket, not just player_name -- a handful of
+    Cricsheet identifiers are reused across two genuinely different real
+    people of different genders (see identity.py), and `identifier_map` has
+    no gender column, so a plain name-keyed dict would silently apply
+    whichever of the two happened to be enumerated last to *both* real
+    people's deliveries the moment both genders' style data is populated for
+    one of those names (dormant today only because that hasn't happened yet
+    for any of them -- not something to rely on staying true).
+    """
     fn = classify_bowling_detail if detail else classify_bowling
     out = {}
     for r in conn.execute(
-            "SELECT im.player_name, p.bowling_style FROM players p "
+            "SELECT im.player_name, p.gender, p.bowling_style FROM players p "
             "JOIN identifier_map im ON im.identifier = p.cricsheet_identifier "
             "WHERE p.bowling_style IS NOT NULL"):
         bucket = fn(r["bowling_style"])
         if bucket:
-            out[r["player_name"]] = bucket
+            out[(r["player_name"], r["gender"])] = bucket
     return out
 
 
-def batter_hands(conn) -> dict[str, str]:
+def batter_hands(conn) -> dict[tuple[str, str | None], str]:
+    """(player_name, gender) -> hand -- see `bowler_buckets`'s docstring for
+    why gender must be part of the key, not just the player name.
+    """
     out = {}
     for r in conn.execute(
-            "SELECT im.player_name, p.batting_hand FROM players p "
+            "SELECT im.player_name, p.gender, p.batting_hand FROM players p "
             "JOIN identifier_map im ON im.identifier = p.cricsheet_identifier "
             "WHERE p.batting_hand IS NOT NULL"):
         hand = classify_hand(r["batting_hand"])
         if hand:
-            out[r["player_name"]] = hand
+            out[(r["player_name"], r["gender"])] = hand
     return out
 
 

@@ -19,6 +19,36 @@ _VENUE_ALIASES = {
     "m.chinnaswamy stadium": "M Chinnaswamy Stadium",
     "punjab cricket association stadium, mohali": "PCA Stadium, Mohali",
     "punjab cricket association is bindra stadium, mohali": "PCA Stadium, Mohali",
+    # Confirmed real venue conflation (found while auditing gender/venue
+    # isolation): the default fallback below canonicalizes on `raw.split(",")[0]`,
+    # which for a generic English ground name merges genuinely different real
+    # grounds that all happen to share a bare "County Ground"/"National
+    # Stadium" prefix -- e.g. Bristol, Chelmsford, Derby, Hove, Northampton,
+    # and Worcester's county grounds all collapsed into one `venue_id`
+    # (54 matches wrongly sharing one ground), and Hamilton NZ's National
+    # Stadium collapsed with Karachi's (29 matches, two different countries).
+    # Each specifically-qualified raw string below gets its own correct,
+    # distinct canonical name instead of losing the city on the general path.
+    "county ground, bristol": "County Ground, Bristol",
+    "county ground, chelmsford": "County Ground, Chelmsford",
+    "county ground, derby": "County Ground, Derby",
+    "county ground, hove": "County Ground, Hove",
+    "county ground, new road, worcester": "County Ground, New Road, Worcester",
+    "county ground, northampton": "County Ground, Northampton",
+    # Same real ground as "The Cooper Associates County Ground[, Taunton]"
+    # (Somerset's sponsored name) -- both already independently canonicalize
+    # to "The Cooper Associates County Ground" via the general fallback
+    # below, so this one needs to be pointed at that name explicitly to join
+    # them rather than being left to collide with the *other* cities' grounds.
+    "county ground, taunton": "The Cooper Associates County Ground",
+    # The raw venue string itself doesn't say which English county ground --
+    # honestly labelled as unresolved rather than guessed or merged with any
+    # of the specific ones above (see data-collection's "not obtainable, not
+    # faked" principle).
+    "county ground": "County Ground (ground unspecified)",
+    "national stadium, hamilton": "National Stadium, Hamilton",
+    "national stadium, karachi": "National Stadium, Karachi",
+    "national stadium": "National Stadium (ground unspecified)",
 }
 
 

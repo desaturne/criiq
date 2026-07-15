@@ -62,6 +62,18 @@ def build_for_format(conn, fmt: str) -> int:
     def _style_meta(ident, gender):
         return style_meta.get((ident, None)) or style_meta.get((ident, gender)) or (None, None)
 
+    def _lookup_by_name_gender(names: pd.Series, genders: pd.Series, mapping: dict) -> pd.Series:
+        """`bowler_buckets`/`batter_hands` are keyed (name, gender) -- `None`
+        for the overwhelming majority of unsplit names, a real gender for the
+        handful split by the cross-gender-collision fix (see styles.py). Try
+        the split-specific key first, falling back to the unsplit `None` key
+        -- same precedence every other split/unambiguous lookup in this
+        codebase uses.
+        """
+        exact = pd.Series(list(zip(names, genders)), index=names.index).map(mapping)
+        fallback = pd.Series(list(zip(names, [None] * len(names))), index=names.index).map(mapping)
+        return exact.fillna(fallback)
+
     deliv["striker_id"] = deliv["striker"].map(n2i)
     deliv["bowler_id"] = deliv["bowler"].map(n2i)
     deliv["over"] = deliv["over"].fillna(0).astype(int)
@@ -106,7 +118,7 @@ def build_for_format(conn, fmt: str) -> int:
     bat_phase = _nest_phase(bat, "striker_id")
 
     def _vs_type(col_map, colname):
-        bat[colname] = bat["bowler"].map(col_map)
+        bat[colname] = _lookup_by_name_gender(bat["bowler"], bat["gender"], col_map)
         v = bat.dropna(subset=[colname]).groupby(["striker_id", "gender", colname]).agg(
             runs=("rob", "sum"), balls=("lb", "sum"), bdry=("bdry", "sum"),
             dots=("dot", "sum"), outs=("out_self", "sum"))
@@ -141,7 +153,7 @@ def build_for_format(conn, fmt: str) -> int:
     for (pid, gender, ph), row in bp.iterrows():
         bowl_phase.setdefault((pid, gender), {})[ph] = row.to_dict()
 
-    bw["bat_hand"] = bw["striker"].map(bat_hand)
+    bw["bat_hand"] = _lookup_by_name_gender(bw["striker"], bw["gender"], bat_hand)
     vh = bw.dropna(subset=["bat_hand"]).groupby(["bowler_id", "gender", "bat_hand"]).agg(
         balls=("lbb", "sum"), runs=("rc", "sum"), wkts=("wktb", "sum"))
     bowl_vs_hand: dict = {}
@@ -253,7 +265,7 @@ def _archetype(b: dict) -> str:
     if death_share > 0.30 and (by.get("death", {}).get("strike_rate") or 0) > 130:
         return "finisher"
     if sr >= 135:
-        return "aggressor"
+        return "power hitter"
     if pp_share > 0.45 and sr < 115:
         return "anchor"
     return "balanced"
