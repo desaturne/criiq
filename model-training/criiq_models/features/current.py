@@ -207,6 +207,9 @@ class ExtraContext:
     venue_chasing_average: float | None = None
     venue_chasing_strike_rate: float | None = None
     venue_bogey_bowler: dict | None = None  # this opponent's top dismisser of her, at this ground
+    archetype: str | None = None  # data-collection's player_advanced.archetype (anchor/power hitter/finisher/balanced)
+    bowling_style: str | None = None
+    batting_hand: str | None = None
 
 
 def build_extra_context(conn: sqlite3.Connection, player_id: str, opponent: str,
@@ -308,5 +311,18 @@ def build_extra_context(conn: sqlite3.Connection, player_id: str, opponent: str,
         ctx.icc_rank = registry["icc_rank"]
         ctx.status_reason = registry["status_reason"]
         ctx.recent_domestic_activity = bool(registry["recent_domestic_activity"])
+
+    style_row = conn.execute(
+        "SELECT bowling_style, batting_hand FROM players WHERE player_id=?",
+        (player_id,)).fetchone()
+    if style_row:
+        ctx.bowling_style = style_row["bowling_style"]
+        ctx.batting_hand = style_row["batting_hand"]
+
+    advanced = conn.execute(
+        "SELECT archetype FROM player_advanced WHERE player_id=? AND format=?",
+        (player_id, fmt)).fetchone()
+    if advanced:
+        ctx.archetype = advanced["archetype"]
 
     return ctx

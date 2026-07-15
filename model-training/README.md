@@ -4,9 +4,15 @@ The AI module: scores every eligible player for a given (team, opponent, venue)
 context and proposes a balanced playing XI, with plain-language reasoning for
 every pick. Reads `data-collection`'s SQLite DB
 (`../data-collection/data/criiq.db`) **read-only** — this package owns no data
-of its own beyond its trained model artifacts. Scope for now: **women's T20I**
-(`format=T20, gender=female`), kept as config rather than hardcoded so
-extending to other format/gender scopes later is a settings change.
+of its own beyond its trained model artifacts. Supports both **women's and
+men's T20I** (`format=T20`, `gender=female`/`male`) as first-class, equally-
+scored scopes — `gender` is a `--gender` flag/config setting throughout, never
+hardcoded, and model artifacts are persisted per `(format, gender)` under
+`artifacts/player_recommendation/{gender}_{format}/` so training one scope can
+never overwrite another's models. `gender=female` is only the *default* when
+`--gender` is omitted. Run `criiq_models.cli train --gender male` (and
+`--gender female`) once each after any feature/data change — each scope's
+models are trained and persisted independently.
 
 ## Setup
 
@@ -25,6 +31,9 @@ python -m criiq_models.cli teams                     # list known team names
 python -m criiq_models.cli recommend --team India --opponent Australia [--venue "Lord's"] [--explain] [--pretty]
 python -m criiq_models.cli explain --name "H Kaur" --opponent Australia
 python -m criiq_models.cli analyze-xi --team India --opponent Australia --players "S Mandhana,H Kaur,..." [--pretty]
+
+# every command above takes --gender male|female (default female) and --format T20
+python -m criiq_models.cli recommend --team India --opponent Australia --gender male --pretty
 ```
 
 `--venue` takes a ground **name**, fuzzy-matched against `venues.canonical_name`
@@ -44,10 +53,10 @@ reasoning too):
    same view a coach actually picks from, rather than one flat ranked list.
    `select_xi`'s MILP already enforces batting/bowling-capable minimums under
    the hood (an all-rounder counts toward both); this just makes that
-   division visible instead of implicit. Each player carries her own
+   division visible instead of implicit. Each player carries their own
    plain-language reasoning (no slot/alternative framing — that only makes
    sense once the XI-constrained pick has actually happened). Tagged `[XI]`
-   where she also made the final side. The plain-JSON form (no `--pretty`)
+   where they also made the final side. The plain-JSON form (no `--pretty`)
    carries the identical grouping under a `"pools"` key, alongside the
    flat `"pool"` list, for a frontend to read directly.
 2. **Playing XI**, in actual batting order, with the existing
@@ -86,7 +95,7 @@ The two lists are shown separately rather than one being a prefix of the
 other, because the MILP-constrained XI genuinely isn't just the pool's top
 11 by score — a keeper or opener the constraints require can rank well
 outside the top 20 (see "Constrained XI" above) and still make the side,
-while a higher-scoring specialist can miss out if her slot is needed
+while a higher-scoring specialist can miss out if their slot is needed
 elsewhere; the shortlist honestly shows when that happens rather than
 hiding it. Useful for demoing the engine directly rather than reading raw
 JSON. The CLI also force-reconfigures stdout/stderr to UTF-8 on startup —
@@ -143,15 +152,15 @@ to a real computed value.
 The engine originally regressed on `bat_contribution_pct`/`bowl_contribution_pct`
 (team-run-share / wicket-share) — a real case this session had it ranking a
 part-time all-rounder **above** a long-proven opener, because contribution-share
-measures how big a player's numbers were, not whether they moved her team
+measures how big a player's numbers were, not whether they moved their team
 toward winning. `data-collection/criiq_data/wpa.py` fixes this: every ball is
 scored by the already-fitted win-probability model, and the swing is credited
 to whoever was on strike/bowling — win-probability-*added*. Sanity check that
 motivated the whole switch: Smriti Mandhana averages **+0.077** batting WPA
 per match across 144 matches; the player who'd wrongly outranked her averaged
 **-0.002** across 23. Two independent `HistGradientBoostingRegressor`s (batting
-WPA, bowling WPA — not one blended label, so a specialist's zero on her other
-discipline doesn't drag down the one she's good at) are trained on
+WPA, bowling WPA — not one blended label, so a specialist's zero on their other
+discipline doesn't drag down the one they're good at) are trained on
 `features/historical.py`'s point-in-time reconstruction (rolling form +
 expanding career + opponent/venue-to-date, computed strictly *before* each
 match's date). Below `min_matches_for_model` (default 10) career matches, the
@@ -165,7 +174,7 @@ mean — a combination that never occurs in training (every played match has a
 real venue) and was confirmed to send predictions wildly out of distribution.
 Both `features/historical.py` and `features/current.py` now shrink these
 toward the career baseline (`features/common.shrink_series`/`shrink`), so
-`venue_matches=0` degrades smoothly to "assume her career average" instead.
+`venue_matches=0` degrades smoothly to "assume their career average" instead.
 
 ### Domestic form — "quiet internationally, in-form domestically" now counts
 
@@ -209,6 +218,36 @@ ACTIVE player got no status sentence at all. Every explanation now ends with
 an unconditional "Current status: ACTIVE — appeared inside active window."
 (or whatever the registry's own `status_reason` says), reusing data already
 flowing through `score.py`'s `ExtraContext` — no new computation.
+
+### Batting archetype, bowling style, and batting hand now surface in explain
+
+data-collection already computed a batting archetype (`player_advanced.archetype`
+— anchor / power hitter / finisher / balanced, see that package's README) and
+resolved `bowling_style`/`batting_hand` for a real chunk of the player pool
+(Wikipedia infobox enrichment, see "External research" above), but neither
+ever reached `recommend --explain`'s output — the data existed, it just wasn't
+wired into this package's narrative. `features/current.py`'s `ExtraContext`
+now reads all three (`players.bowling_style`/`batting_hand`,
+`player_advanced.archetype`), and `explain.py` renders them as two short
+sentences right after the opening rate line, when available: "Right-handed
+power hitter." / "Bowls right-arm off break." (real output, `GJ Maxwell` vs
+India) — normalizing the source data's inconsistent real-world casing/spacing
+("Right handed" / "right-handed" / "Right-handed" all appear in the live DB)
+rather than passing it through raw. Silently omitted, not shown as "unknown",
+for the real fraction of the ~7000-player pool this enrichment hasn't reached.
+(`aggressor` was also renamed to **power hitter** — the same threshold/logic,
+just a label matching common usage more directly; not asserted anywhere else
+in the codebase, confirmed by grep before renaming.)
+
+**What's genuinely not available, and why it isn't faked**: "best shot" /
+"worst shot" (or any shot-type breakdown) needs shot-coded ball-by-ball logs —
+Cricsheet's deliveries have no shot-type, line/length, or foot-movement
+columns at all, and ESPNcricinfo (the one source that has this, CricViz-coded)
+blocks scraping (verified HTTP 403) — see data-collection's README, "What is
+NOT obtainable (and is therefore not faked)". The genuine, defensible
+substitutes already shipped are exactly what this section surfaces plus the
+existing vs-pace/vs-spin and vs-RHB/vs-LHB splits (`style_matchup.py`) — *who*
+a player is effective against, not *which shot* or *where on the pitch*.
 
 ### Per-target model selection — picked from real numbers, not assumed
 
@@ -266,7 +305,7 @@ per-match WPA inherently is.
 
 `career_bowl_wickets_per_match`/`form_bowl_wickets_per_match`
 (`features/historical.py`/`features/current.py`) reconstruct, point-in-time,
-how often a player has actually taken wickets *on the matches she bowled in*
+how often a player has actually taken wickets *on the matches they bowled in*
 — masked by `balls_bowled > 0` first, because `player_match_impact.wickets`
 is `0` (not `NULL`) for matches a specialist batter didn't bowl at all, and
 without the mask the feature would just dilute toward zero for anyone who
@@ -295,7 +334,7 @@ combined), confirmed by an ablation that isolated each feature one at a time.
 They were removed from `MODEL_FEATURES` rather than kept "just in case" —
 consistent with this project's rule of deciding by real backtest numbers, not
 plausible-sounding feature engineering. The extraction itself was kept: `career_bowl_dot_pct`/`career_bowl_boundary_pct`
-now surface as plain-language color in `/recommend --explain` ("her bowling
+now surface as plain-language color in `/recommend --explain` ("their bowling
 has a control-focused, pressure-building profile: 47% dot balls, 6% boundary
 balls conceded") via `recommend/score.py`'s `inputs.bowl_dot_pct`/
 `inputs.bowl_boundary_pct` — genuinely useful to a human reader, with none of
@@ -327,7 +366,7 @@ Tried, checked, **not adopted** as a direct model feature: a coarse
 other change here (3 holdout fractions × 5 seeds) — it made **no measurable
 difference** (0.1074 vs 0.1072, 0.1166 vs 0.1167, 0.1068 vs 0.1068 — all
 within noise). Once the model already has a bowler's own historical
-economy/wicket-rate, knowing she's "pace" or "spin" in the abstract adds
+economy/wicket-rate, knowing they're "pace" or "spin" in the abstract adds
 nothing further. Not shipped as a model feature.
 
 **What the expanded coverage did genuinely enable** (both already-existing,
@@ -345,9 +384,9 @@ Investigating what the new coverage could unlock surfaced a structural gap:
 `matchup_part`'s aggregate signal (`dismissal_matchup` scoped by
 `batter_id`+`bowler_team`) is fundamentally a *batting* signal — how well
 *this player bats* against the opponent's bowlers. A specialist bowler, who
-rarely faces enough balls herself to generate a meaningful reading there,
+rarely faces enough balls themself to generate a meaningful reading there,
 got essentially **no matchup-specific credit at all**, no matter how well
-she's actually bowled against this specific opponent's specific batters.
+they've actually bowled against this specific opponent's specific batters.
 
 `dismissal_matchup` has no `batting_team` column, but the same real, rich
 per-pair history already exists on the *bowling* side (`bowler_id`) — it
@@ -358,14 +397,14 @@ column. `features/current.py`'s `build_extra_context` now also aggregates
 the opponent's *current* roster, and `recommend/score.py` turns that into a
 `bowl_matchup_part` (±8, same cap as the batting aggregate) — a bowler's
 wicket-rate against this opponent's actual batters, shrunk toward and
-compared against her career wicket-rate-per-ball, with the opposite polarity
+compared against their career wicket-rate-per-ball, with the opposite polarity
 from the batting side (higher-than-career is *good* for a bowler). The scale
 constant (175, vs. the batting side's 120) was calibrated against the real
 distribution of career bowling wicket-rate (std ≈0.019) vs. batting
 dismissal-rate (std ≈0.028) — proportionally matched, not copied blindly.
 Confirmed on the real DB: a specialist bowler who's taken wickets at nearly
-3x her career rate against an opponent's specific batters now shows
-`+8.0 pts` and a real explain sentence, where before she'd have shown
+3x their career rate against an opponent's specific batters now shows
+`+8.0 pts` and a real explain sentence, where before they'd have shown
 nothing on this axis at all.
 
 **A real performance bug found while verifying this**: profiling a full
@@ -442,7 +481,7 @@ score: the two best-scoring openers lock slots 1-2 (a third strong opener
 competes on pure merit for the rest of the order, exactly like a real team
 bats a surplus opener further down), the rest of the batting order ranks by
 score, and specialist bowlers trail at the tail. `--explain` also names who
-each XI member was picked over for her specific slot.
+each XI member was picked over for their specific slot.
 
 ### A found-and-fixed eligibility bug: decade-old players in current squads
 
@@ -479,26 +518,40 @@ exclusion logic was always correct, it was just being fed a broken input.
   (pitch/conditions data, true delivery type instead of coarse pace/spin, a
   bowler's specific plan for a specific batter) or accepting that a chunk of
   per-match bowling variance is genuinely unpredictable from history (a
-  dropped catch off her bowling isn't *her* signal at all). Run
+  dropped catch off their bowling isn't *their* signal at all). Run
   `criiq_models.cli backtest` after any change to see current numbers.
-- **Wicket-keeper detection covers 18 women's T20I nations' current squads**
-  (Wikipedia squad-page role text, merged by `key_cricinfo` — see
-  data-collection's `role_finalize.py`): the original 13 major nations plus
-  the United Arab Emirates, Namibia, Nepal, Netherlands, and Hong Kong, added
-  by real match-volume ranking among previously-uncovered teams (110, 99, 95,
-  94, and 93 matches respectively in the current DB). Still not the full
-  ~7000-player pool — recommending for a team outside this coverage falls
-  back to no keeper constraint (rather than guessing) until its squad is
-  researched and merged the same way. A handful of names didn't confidently
-  resolve even within these 18 (e.g. two Hong Kong players surnamed "Chan"
-  with no matching initial, a Nepal squad name spelled differently in
+- **Wicket-keeper detection covers 18 women's T20I nations' current squads —
+  zero men's nations yet.** (Wikipedia squad-page role text, merged by
+  `key_cricinfo` — see data-collection's `role_finalize.py`): the original 13
+  major women's nations plus the United Arab Emirates, Namibia, Nepal,
+  Netherlands, and Hong Kong, added by real match-volume ranking among
+  previously-uncovered teams (110, 99, 95, 94, and 93 matches respectively in
+  the current DB). This research was only ever done for women's squads —
+  `player_role_final.is_keeper` is `0`/unset for every men's player in the
+  live DB (confirmed by direct query), so `recommend`/`analyze-xi` for any
+  men's team currently fall back to no keeper constraint entirely (the same
+  graceful degradation — `min(settings.min_keepers, available_keepers)` in
+  `selection/optimize.py` — already used for uncovered women's teams, not a
+  crash or a wrong pick, just no keeper preference enforced). Closing this
+  for men's squads needs the same one-time research-and-merge pass
+  (`role_finalize --load-external`) this bullet describes for women's, not
+  any code change. Still not the full ~7000-player pool either way —
+  recommending for a team outside whatever coverage exists falls back to no
+  keeper constraint (rather than guessing) until its squad is researched and
+  merged the same way. A handful of names didn't confidently resolve even
+  within the 18 covered women's nations (e.g. two Hong Kong players surnamed
+  "Chan" with no matching initial, a Nepal squad name spelled differently in
   Wikipedia vs. the DB) — surname+initial matching correctly declined to
   guess rather than risk a wrong identity link. **Bowling-style detection is
   broader** — unlike wicket-keeper status, it comes from each player's own
-  Wikipedia infobox (not a squad-page lookup scoped to 18 nations), so
+  Wikipedia infobox (not a squad-page lookup scoped to specific nations), so
   running it unrestricted covers any player with an English Wikipedia
   article: 568 of 1,739 real female T20 bowlers (32.7%, up from 127/7.3%
-  before this was run at scale) — see "External research" above.
+  before this was run at scale) — see "External research" above. Confirmed
+  this isn't a women's-only side effect: a live-DB check of men's T20 bowlers
+  (≥60 career balls bowled) shows comparable real coverage, 868/2,038 (42.6%)
+  — bowling-style enrichment was never gender-restricted, only wicket-keeper
+  detection (a squad-page lookup, above) was.
 - **`player_registry.nationality` is entirely empty** for T20 in the live DB.
   `roster.py` derives "current team" from actual match appearances
   (`match_players` + `matches`) instead — the team of a player's most recent
@@ -520,18 +573,64 @@ exclusion logic was always correct, it was just being fed a broken input.
   code, only reads its DB). Confirmed on the real DB: e.g. "K Joshi", a
   currently-active Nepal player previously invisible to every recommend
   call, now correctly appears with her own real record.
-- **This is also what makes adding men's T20I later a config change, not a
-  rewrite.** data-collection already ingests full men's T20I match data
-  alongside women's (3,393 vs 2,035 matches) — every table in this pipeline
-  is already scoped by `gender=SETTINGS.gender`, a setting, not a hardcoded
-  literal. The one thing that would have made extending to men's genuinely
-  unsafe — player identity silently colliding across genders — is now fixed
-  at the source, so scoring men's T20I later needs no identity-layer work,
-  just pointing `SETTINGS.gender` at `"male"` (and, before doing that,
-  re-running `criiq_models.cli backtest`/`train` against that scope's own
-  data — the model artifacts here are trained on and tuned for women's T20I
-  specifically, not automatically valid for men's).
-- **Team-need benchmarks mix genders** (computed across the whole format,
-  like several other data-collection derived tables already do) even though
-  the candidate pool itself is correctly gender-scoped — affects only the
-  reference point strength is compared against, not who's eligible.
+- **Men's T20I is now a fully trained, verified second scope, not just a
+  theoretical config change.** data-collection already ingested full men's
+  T20I match data alongside women's, and by the time this was actually
+  turned on, every table in the pipeline (`player_career`, `player_impact`,
+  `player_by_venue`, `player_match_wpa`, `player_registry`, ...) already had
+  real men's rows sitting in it — 4,449 distinct men's T20 players vs 2,549
+  women's, confirmed by direct query. Two real bugs were found and fixed
+  while wiring this up, both worth knowing about if you're extending to a
+  third scope later:
+  - **Model artifacts weren't actually scoped by `(format, gender)`.**
+    `train.py` wrote every scope's models to the same flat filenames
+    (`model_batting_wpa.joblib`, ...); training a second gender would have
+    silently overwritten the first's models with no error, and
+    `RecommendationScorer.__init__` was calling the no-argument
+    `load_models()`/`load_metadata()` even though it already carried its own
+    `self.fmt`/`self.gender` — so a scorer built for one scope could
+    silently score real players against a model trained on the other scope.
+    Fixed by routing every persist/load path through a
+    `_artifacts_dir(fmt, gender)` helper
+    (`artifacts/player_recommendation/{gender}_{format}/`), and by actually
+    passing `fmt`/`gender` through in `score.py`, `cli.py`, and
+    `evaluate/rank_backtest.py`. Both scopes' models are now trained and
+    verified independently present on disk.
+  - **`recommend/explain.py`'s narrative sentences hardcoded "she"/"her"**
+    throughout ("she's expected to shift her team's win probability...").
+    Harmless while the pool was women's-only; a real bug the moment men's
+    players flow through the identical code path. No per-player personal
+    pronoun is ever stored (only the cricket-format `gender` field, a
+    different thing), so the fix is neutral phrasing for every player
+    ("they're expected to shift their team's...") rather than a second
+    he/him branch keyed off that field — see `test_explain_uses_no_gendered_pronouns`.
+  Verified end-to-end on real data post-fix: `recommend --team India
+  --opponent Australia --gender male --pretty` correctly scores and explains
+  real current players (Ishan Kishan, SA Yadav, JJ Bumrah, ...) with neutral
+  narrative text and a correct status line for each (e.g. V Kohli correctly
+  resolves to `RETIRED_FORMAT` via a manual override and is correctly
+  excluded from the eligible pool, the same eligibility boundary already
+  verified for women's). Registry classification itself needed **no** code
+  change for men — `player_registry`'s ACTIVE/INCONSISTENT/INACTIVE logic
+  (see "A found-and-fixed eligibility bug" above) already processes every
+  `(identifier, gender)` pair in one pass; spot-checked on real men's data
+  (long-retired legends like SR Tendulkar and GD McGrath correctly
+  `INACTIVE`, current top-ranked players correctly `ACTIVE` via
+  `icc_ranked`) with no gender-specific special-casing needed. The one
+  still-open gap is wicket-keeper coverage (see above) — a data-research
+  gap, not a code one.
+- **~~Team-need benchmarks mix genders~~ — fixed.** `recommend/team_need.py`'s
+  format-wide phase benchmark used to average `player_phase_wpa` across every
+  player regardless of gender — a men's pool's "is this team weak at death
+  bowling" question was being answered against a benchmark blended with
+  women's data (and vice versa), even though the candidate pool itself was
+  already correctly gender-scoped via `roster.team_pool`. Real playing styles
+  and typical phase-WPA magnitudes differ enough between genders that this
+  was a genuine bug, not just an imprecise reference point: real benchmarks
+  now measurably differ by gender (e.g. death-overs benchmark -0.002 for men
+  vs +0.003 for women, confirmed on live data). Fixed by scoping the
+  benchmark query to the pool's own gender via each player's real match
+  participation (`player_match_wpa` join `matches.gender` — `player_phase_wpa`
+  has no gender column of its own, and `players.gender` is only ever set for
+  the ~32 identifiers split by the cross-gender-collision fix below, NULL for
+  everyone else, so it can't be used directly here).

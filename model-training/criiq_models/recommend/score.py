@@ -59,8 +59,12 @@ class RecommendationScorer:
         self.conn = conn
         self.fmt = fmt
         self.gender = gender
-        self.models = models if models is not None else load_models()
-        self.metadata = load_metadata()
+        # `load_models`/`load_metadata` are scoped by (fmt, gender) -- without
+        # passing these through, a scorer constructed for gender="male" would
+        # have silently loaded (and scored real male players with) whatever
+        # model happened to be trained for the default gender instead.
+        self.models = models if models is not None else load_models(fmt, gender)
+        self.metadata = load_metadata(fmt, gender)
         self._priors = self._compute_priors()
         # keyed by opponent -- doesn't depend on the player being scored, so
         # scoring a whole pool against the same opponent (score_many) would
@@ -288,6 +292,9 @@ class RecommendationScorer:
                 # predicted_batting_wpa/predicted_bowling_wpa already are above.
                 "bowl_dot_pct": None if pd.isna(feats.get("career_bowl_dot_pct")) else feats["career_bowl_dot_pct"],
                 "bowl_boundary_pct": None if pd.isna(feats.get("career_bowl_boundary_pct")) else feats["career_bowl_boundary_pct"],
+                "archetype": ctx.archetype,
+                "bowling_style": ctx.bowling_style,
+                "batting_hand": ctx.batting_hand,
             },
         }
 
@@ -307,7 +314,7 @@ class RecommendationScorer:
         """
         scored = [self.score(pid, opponent, venue_id) for pid in player_ids]
 
-        team_need = compute_team_need(self.conn, player_ids, self.fmt)
+        team_need = compute_team_need(self.conn, player_ids, self.fmt, self.gender)
         for player in scored:
             need = player_team_need_bonus(self.conn, player["player_id"], team_need, self.fmt)
             player["components"]["team_need_part"] = need["bonus"]

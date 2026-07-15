@@ -119,7 +119,7 @@ def rank_backtest(conn: sqlite3.Connection, fmt: str = SETTINGS.format,
         "spearman": _mean_spearman(test_df, "ranker_score", "label"),
     }
 
-    models = load_models()
+    models = load_models(fmt, gender)
     if "batting_wpa" in models and "bowling_wpa" in models:
         test_df["regression_score"] = (
             models["batting_wpa"].predict(test_df[MODEL_FEATURES])

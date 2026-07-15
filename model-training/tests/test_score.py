@@ -3,7 +3,7 @@ from __future__ import annotations
 from criiq_models.recommend.explain import explain
 from criiq_models.recommend.score import RecommendationScorer
 from tests.conftest import (add_appearance, add_bowler_matchup, add_match, add_match_impact,
-                             add_match_wpa, register_player, set_career_bowling)
+                             add_match_wpa, register_player, set_career_bowling, set_player_profile)
 
 
 def _seed_cold_start_player(conn):
@@ -46,6 +46,57 @@ def test_explain_mentions_player_and_opponent(conn):
     assert payload["player_id"] == "p1"
     assert any("A Player" in line for line in payload["summary"])
     assert any("Australia" in line for line in payload["summary"])
+
+
+def test_explain_surfaces_archetype_batting_hand_and_bowling_style(conn):
+    _seed_cold_start_player(conn)
+    set_player_profile(conn, "p1", bowling_style="Right-arm off break",
+                        batting_hand="Right handed", archetype="power hitter")
+    scorer = RecommendationScorer(conn, "T20", "female", models={})
+    scored = scorer.score("p1", "Australia")
+    payload = explain(scored)
+
+    inp = scored["components"]["inputs"]
+    assert inp["archetype"] == "power hitter"
+    assert inp["bowling_style"] == "Right-arm off break"
+    assert inp["batting_hand"] == "Right handed"
+    # Messy real-world casing/spacing ("Right handed" vs "right-handed") is
+    # normalized in the sentence itself, not just passed through raw.
+    assert any("Right-handed power hitter." in line for line in payload["summary"])
+    assert any("Bowls right-arm off break." in line for line in payload["summary"])
+
+
+def test_explain_omits_profile_sentences_when_data_is_missing(conn):
+    # No set_player_profile call -- archetype/bowling_style/batting_hand all
+    # stay unset, same as the overwhelming majority of the ~7000-player pool
+    # that hasn't been through Wikipedia-sourced enrichment.
+    _seed_cold_start_player(conn)
+    scorer = RecommendationScorer(conn, "T20", "female", models={})
+    scored = scorer.score("p1", "Australia")
+    payload = explain(scored)
+
+    assert not any("Bowls " in line for line in payload["summary"])
+    assert not any(line.endswith("power hitter.") or line.endswith("anchor.")
+                   or line.endswith("finisher.") or line.endswith("balanced.")
+                   for line in payload["summary"])
+
+
+def test_explain_uses_no_gendered_pronouns(conn):
+    # Every `explain()` sentence used to hardcode "she"/"her" -- harmless
+    # while the pool was women's-only, but a real bug once men's players
+    # (gender="male") flow through the identical narrative code path: no
+    # per-player pronoun preference is ever stored (only the cricket-format
+    # `gender` field), so the fix is neutral phrasing for everyone, not a
+    # second he/him branch keyed off that field.
+    _seed_cold_start_player(conn)
+    scorer = RecommendationScorer(conn, "T20", "male", models={})
+    scored = scorer.score("p1", "Australia")
+    payload = explain(scored, alternative={"player_id": "p2", "name": "B Bench", "score": 4.2},
+                      slot="opener")
+
+    lowered = " ".join(payload["summary"]).lower()
+    for pronoun in (" she ", " she's ", " her ", " hers ", " he ", " he's ", " him ", " his "):
+        assert pronoun not in f" {lowered} "
 
 
 def test_explain_reports_comparison_against_next_best_alternative(conn):
@@ -157,6 +208,11 @@ def test_score_many_applies_team_need_bonus_across_the_pool(conn):
                  "('benchmark','T20','death',10,0.0,0.0), "
                  "('p1','T20','death',10,-0.10,0.0), "  # pool average (-0.10+0.02)/2 = -0.04,
                  "('p2','T20','death',10,0.02,0.0)")     # still below benchmark despite p2's edge
+    # The format-wide benchmark is scoped to the pool's own gender via real
+    # match participation (see team_need.py) -- "benchmark" needs a matching
+    # gender-tagged match/WPA row to be included at all.
+    add_match(conn, "m_benchmark", "2024-01-01", "Team A", "Team B", gender="female")
+    add_match_wpa(conn, "benchmark", "m_benchmark", batting_wpa=0.0)
     conn.commit()
 
     scorer = RecommendationScorer(conn, "T20", "female", models={})

@@ -163,7 +163,7 @@ def cmd_recommend(args):
 
     if args.pretty:
         print(render_team_sheet(args.team, args.opponent, venue_id, xi_out, pool_out,
-                                 load_metadata(), result.get("constraints")))
+                                 load_metadata(args.format, args.gender), result.get("constraints")))
         conn.close()
         return
 
@@ -175,7 +175,7 @@ def cmd_recommend(args):
 
     _pp({
         "team": args.team, "opponent": args.opponent, "venue_id": venue_id,
-        "model_metadata": load_metadata(),
+        "model_metadata": load_metadata(args.format, args.gender),
         "xi": xi_out,
         "pool": pool_out,
         "pools": pools_out,

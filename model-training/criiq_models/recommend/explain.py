@@ -12,7 +12,7 @@ def explain(scored: dict, alternative: dict | None = None, slot: str | None = No
     """`alternative`/`slot`: the best-scoring player NOT selected for the
     same team-sheet slot (opener / core batting / bowling tail — see
     `selection/optimize.slot_category`), if any — lets the explanation say
-    *why this player over the next-best option*, not just describe her own
+    *why this player over the next-best option*, not just describe their own
     numbers in isolation.
     """
     c = scored["components"]
@@ -33,18 +33,26 @@ def explain(scored: dict, alternative: dict | None = None, slot: str | None = No
     elif slot is not None:
         lines.append(f"No close alternative in the pool for {slot_label} — an uncontested pick.")
 
+    hand = (inp.get("batting_hand") or "").strip().lower().replace(" ", "-")
+    archetype = inp.get("archetype")
+    if hand or archetype:
+        descriptor = f"{hand + ' ' if hand else ''}{archetype or 'batter'}"
+        lines.append(f"{descriptor[0].upper()}{descriptor[1:]}.")
+    if inp.get("bowling_style"):
+        lines.append(f"Bowls {inp['bowling_style'].strip().lower()}.")
+
     def _pct(wpa):
         return f"{wpa * 100:+.1f}%" if wpa is not None else "n/a"
 
     if c["model_applied"]:
         lines.append(
-            f"Based on {inp['career_matches']} career matches, she's expected to shift her team's "
+            f"Based on {inp['career_matches']} career matches, they're expected to shift their team's "
             f"win probability by {_pct(inp['predicted_batting_wpa'])} per match with the bat and "
             f"{_pct(inp['predicted_bowling_wpa'])} with the ball ({c['model_part']:+} pts).")
     else:
         lines.append(
             f"Too little history to trust the model ({c['cold_start_reason']}), so this falls back "
-            f"to her career baseline: {_pct(inp['predicted_batting_wpa'])} batting / "
+            f"to their career baseline: {_pct(inp['predicted_batting_wpa'])} batting / "
             f"{_pct(inp['predicted_bowling_wpa'])} bowling win-probability impact per match "
             f"({c['model_part']:+} pts).")
 
@@ -53,7 +61,7 @@ def explain(scored: dict, alternative: dict | None = None, slot: str | None = No
         style = "control-focused, building pressure with dot balls" if dot_pct >= boundary_pct * 3 \
             else "attacking, prone to conceding boundaries" if boundary_pct >= 15 else "a balanced containment profile"
         lines.append(
-            f"Her bowling has {style}: {dot_pct:.0f}% dot balls, {boundary_pct:.0f}% boundary balls conceded.")
+            f"Their bowling has {style}: {dot_pct:.0f}% dot balls, {boundary_pct:.0f}% boundary balls conceded.")
 
     if inp["matchup_balls_vs_opponent_bowlers"] > 0:
         rate = inp["matchup_dismissal_rate"]
@@ -79,15 +87,15 @@ def explain(scored: dict, alternative: dict | None = None, slot: str | None = No
         lines.append(
             f"Has bowled {inp['bowl_matchup_balls_vs_opponent_batters']} balls at "
             f"{scored['opponent']}'s specific batters (wicket rate {round(rate, 3) if rate is not None else 'n/a'}) "
-            f"— {direction} matchup for her with the ball ({inp['bowl_matchup_part']:+} pts).")
+            f"— {direction} matchup for them with the ball ({inp['bowl_matchup_part']:+} pts).")
 
     if c["phase_fit_part"] > 0:
-        lines.append(f"Stands out among teammates in her strongest phase of the innings "
+        lines.append(f"Stands out among teammates in their strongest phase of the innings "
                      f"({c['phase_fit_part']:+} pts).")
 
     if c.get("team_need_part"):
         phase = c["team_need_phase"]
-        lines.append(f"This pool is currently thin at the {phase}, and she's a genuine strength "
+        lines.append(f"This pool is currently thin at the {phase}, and they're a genuine strength "
                      f"there — a bonus for filling that specific gap ({c['team_need_part']:+} pts).")
 
     if inp["importance_score"] is not None:
@@ -121,7 +129,7 @@ def explain(scored: dict, alternative: dict | None = None, slot: str | None = No
         if bogey:
             lines.append(
                 f"At this ground against {scored['opponent']} specifically, {bogey['bowler_name']} "
-                f"has been her toughest opponent: {bogey['dismissals']} dismissal(s) in "
+                f"has been their toughest opponent: {bogey['dismissals']} dismissal(s) in "
                 f"{bogey['balls']} balls.")
 
     dom_matches = inp.get("domestic_form_matches") or 0

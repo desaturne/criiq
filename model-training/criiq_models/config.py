@@ -14,9 +14,10 @@ DB_PATH = Path(os.environ.get("CRIIQ_DB", DEFAULT_DB))
 ARTIFACTS_DIR = Path(os.environ.get("CRIIQ_MODEL_ARTIFACTS", ROOT_DIR / "artifacts"))
 RECOMMENDATION_ARTIFACTS_DIR = ARTIFACTS_DIR / "player_recommendation"
 
-# This prototype targets women's T20I only; kept as settings (not hardcoded
-# through the codebase) so extending to other format/gender scopes later is
-# a config change, not a rewrite.
+# Format/gender are settings (not hardcoded through the codebase), so both
+# men's and women's T20I are first-class scopes -- model artifacts, registry
+# status, and every CLI command are parametrized by (format, gender) rather
+# than assuming one. Women's T20I is only the *default* scope.
 DEFAULT_FORMAT = "T20"
 DEFAULT_GENDER = "female"
 

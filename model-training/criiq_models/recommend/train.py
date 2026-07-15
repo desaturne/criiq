@@ -61,6 +61,20 @@ from ..features.schema import CATEGORICAL_FEATURES, MODEL_FEATURES, NUMERIC_FEAT
 MODEL_FILENAME = {target: f"model_{target}.joblib" for target in TARGETS}
 METADATA_FILENAME = "training_metadata.json"
 
+
+def _artifacts_dir(fmt: str, gender: str):
+    """Model artifacts live under a `{gender}_{fmt}` subdirectory -- e.g.
+    `artifacts/player_recommendation/female_T20/model_batting_wpa.joblib` --
+    NOT the flat `RECOMMENDATION_ARTIFACTS_DIR` directly. Before this, every
+    (fmt, gender) scope shared the exact same filenames: training a men's
+    model would have silently overwritten the women's one (and vice versa)
+    the moment anyone called `train(conn, gender="male")`, with no error and
+    no way to tell afterward which gender's model was actually loaded.
+    """
+    d = RECOMMENDATION_ARTIFACTS_DIR / f"{gender}_{fmt}"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
 # (lower, upper) quantiles training labels are clipped to before fitting --
 # tuned per-target against the real temporal holdout (see module docstring).
 # Bowling gets the more aggressive clip: its per-match WPA has fatter tails
@@ -144,27 +158,28 @@ def train(conn: sqlite3.Connection, fmt: str = SETTINGS.format,
         "targets": {},
     }
 
+    artifacts_dir = _artifacts_dir(fmt, gender)
     for target, filename in MODEL_FILENAME.items():
         model, metrics = _fit_one(table, target)
-        joblib.dump(model, RECOMMENDATION_ARTIFACTS_DIR / filename)
+        joblib.dump(model, artifacts_dir / filename)
         metadata["targets"][target] = metrics
 
-    (RECOMMENDATION_ARTIFACTS_DIR / METADATA_FILENAME).write_text(
-        json.dumps(metadata, indent=2))
+    (artifacts_dir / METADATA_FILENAME).write_text(json.dumps(metadata, indent=2))
     return metadata
 
 
-def load_models() -> dict[str, object]:
+def load_models(fmt: str = SETTINGS.format, gender: str = SETTINGS.gender) -> dict[str, object]:
+    artifacts_dir = _artifacts_dir(fmt, gender)
     models = {}
     for target, filename in MODEL_FILENAME.items():
-        path = RECOMMENDATION_ARTIFACTS_DIR / filename
+        path = artifacts_dir / filename
         if path.exists():
             models[target] = joblib.load(path)
     return models
 
 
-def load_metadata() -> dict | None:
-    path = RECOMMENDATION_ARTIFACTS_DIR / METADATA_FILENAME
+def load_metadata(fmt: str = SETTINGS.format, gender: str = SETTINGS.gender) -> dict | None:
+    path = _artifacts_dir(fmt, gender) / METADATA_FILENAME
     if not path.exists():
         return None
     return json.loads(path.read_text())
