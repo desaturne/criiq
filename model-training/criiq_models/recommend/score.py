@@ -292,9 +292,19 @@ class RecommendationScorer:
                 # predicted_batting_wpa/predicted_bowling_wpa already are above.
                 "bowl_dot_pct": None if pd.isna(feats.get("career_bowl_dot_pct")) else feats["career_bowl_dot_pct"],
                 "bowl_boundary_pct": None if pd.isna(feats.get("career_bowl_boundary_pct")) else feats["career_bowl_boundary_pct"],
+                "age_years": feats.get("age_years"),
                 "archetype": ctx.archetype,
                 "bowling_style": ctx.bowling_style,
                 "batting_hand": ctx.batting_hand,
+                "bat_balls": ctx.bat_balls,
+                "bat_strike_rate": ctx.bat_strike_rate,
+                "bat_boundary_pct": ctx.bat_boundary_pct,
+                "bat_dot_pct": ctx.bat_dot_pct,
+                "bat_sixes": ctx.bat_sixes,
+                "bat_six_rate": ctx.bat_six_rate,
+                "bat_best_phase": ctx.bat_best_phase,
+                "bat_best_phase_sr": ctx.bat_best_phase_sr,
+                "bat_best_phase_boundary_pct": ctx.bat_best_phase_boundary_pct,
             },
         }
 

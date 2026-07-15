@@ -1,17 +1,28 @@
 """Turn a `score()` result into a plain-language explanation payload.
 
 Mirrors the "strengths" plain-language summary style already used in
-`data-collection/criiq_data/advanced.py` — a list of short, coach-facing
+`data-collection/criiq_data/advanced.py`: a list of short, coach-facing
 sentences generated directly from the `components` breakdown, so nothing
 said here is invented independently of the numbers that produced the score.
+
+House style for these sentences: no em-dash / en-dash connectors ("—"/"–")
+in the prose. Use commas, colons, or parentheses instead. (Ordinary hyphens
+inside words like "all-rounder", "vs-pace", "Right-handed" are fine and
+intentional.)
 """
 from __future__ import annotations
+
+_PHASE_LABEL = {
+    "powerplay": "powerplay (overs 1-6)",
+    "middle": "middle overs (7-15)",
+    "death": "death overs (16-20)",
+}
 
 
 def explain(scored: dict, alternative: dict | None = None, slot: str | None = None) -> dict:
     """`alternative`/`slot`: the best-scoring player NOT selected for the
-    same team-sheet slot (opener / core batting / bowling tail — see
-    `selection/optimize.slot_category`), if any — lets the explanation say
+    same team-sheet slot (opener / core batting / bowling tail, see
+    `selection/optimize.slot_category`), if any, lets the explanation say
     *why this player over the next-best option*, not just describe their own
     numbers in isolation.
     """
@@ -20,7 +31,7 @@ def explain(scored: dict, alternative: dict | None = None, slot: str | None = No
     lines: list[str] = []
 
     name = scored.get("name") or scored["player_id"]
-    role_note = " — a wicket-keeper option" if inp.get("is_keeper") else ""
+    role_note = " (wicket-keeper option)" if inp.get("is_keeper") else ""
     lines.append(f"{name} rates {scored['score']}/100 for this matchup against {scored['opponent']}{role_note}.")
 
     slot_label = {"opener": "the opening slot", "core_batting": "the middle/top order",
@@ -29,17 +40,23 @@ def explain(scored: dict, alternative: dict | None = None, slot: str | None = No
         alt_name = alternative.get("name") or alternative["player_id"]
         lines.append(
             f"Picked for {slot_label} ahead of {alt_name} "
-            f"(score {alternative['score']}) — the next-best available option there.")
+            f"(score {alternative['score']}), the next-best available option there.")
     elif slot is not None:
-        lines.append(f"No close alternative in the pool for {slot_label} — an uncontested pick.")
+        lines.append(f"No close alternative in the pool for {slot_label}: an uncontested pick.")
 
     hand = (inp.get("batting_hand") or "").strip().lower().replace(" ", "-")
     archetype = inp.get("archetype")
+    age = inp.get("age_years")
+    age_suffix = f", {age:.0f} years old" if age is not None else ""
     if hand or archetype:
         descriptor = f"{hand + ' ' if hand else ''}{archetype or 'batter'}"
-        lines.append(f"{descriptor[0].upper()}{descriptor[1:]}.")
+        lines.append(f"{descriptor[0].upper()}{descriptor[1:]}{age_suffix}.")
+    elif age is not None:
+        lines.append(f"{age:.0f} years old.")
     if inp.get("bowling_style"):
         lines.append(f"Bowls {inp['bowling_style'].strip().lower()}.")
+
+    _append_batting_profile(lines, inp, archetype)
 
     def _pct(wpa):
         return f"{wpa * 100:+.1f}%" if wpa is not None else "n/a"
@@ -56,6 +73,17 @@ def explain(scored: dict, alternative: dict | None = None, slot: str | None = No
             f"{_pct(inp['predicted_bowling_wpa'])} bowling win-probability impact per match "
             f"({c['model_part']:+} pts).")
 
+    # A strong hitter (finisher / power hitter) can still rate modestly here,
+    # because the score is win-probability-added, not raw strike rate. Flag
+    # that explicitly so a low rating on a genuine finisher (the recurring
+    # "she's our best finisher but isn't recommended" case) reads as "low
+    # recent win-impact", not "can't hit", and points a coach at a manual call.
+    if archetype in ("finisher", "power hitter") and c["model_part"] <= 0:
+        lines.append(
+            f"The batting profile above is strong, but this rating is driven by win-probability-added "
+            f"(impact on results), not raw hitting, so a {archetype} with modest recent win-impact "
+            f"still rates low here. Worth a manual look for that specific role.")
+
     dot_pct, boundary_pct = inp.get("bowl_dot_pct"), inp.get("bowl_boundary_pct")
     if dot_pct is not None and boundary_pct is not None:
         style = "control-focused, building pressure with dot balls" if dot_pct >= boundary_pct * 3 \
@@ -68,8 +96,8 @@ def explain(scored: dict, alternative: dict | None = None, slot: str | None = No
         direction = "a favourable" if inp["aggregate_matchup_part"] >= 0 else "a tough"
         lines.append(
             f"Has faced {inp['matchup_balls_vs_opponent_bowlers']} balls against "
-            f"{scored['opponent']}'s bowlers (dismissal rate {round(rate, 3) if rate is not None else 'n/a'}) "
-            f"— {direction} matchup ({inp['aggregate_matchup_part']:+} pts).")
+            f"{scored['opponent']}'s bowlers (dismissal rate {round(rate, 3) if rate is not None else 'n/a'}): "
+            f"{direction} matchup ({inp['aggregate_matchup_part']:+} pts).")
     else:
         lines.append(f"No recorded history against {scored['opponent']}'s specific bowlers.")
 
@@ -78,7 +106,7 @@ def explain(scored: dict, alternative: dict | None = None, slot: str | None = No
         mix_desc = " / ".join(f"{style} {round(share * 100)}%" for style, share in mix.items() if share > 0)
         direction = "an edge" if inp["style_matchup_part"] >= 0 else "a weakness"
         lines.append(
-            f"{scored['opponent']}'s attack leans {mix_desc} — {direction} against this player's "
+            f"{scored['opponent']}'s attack leans {mix_desc}: {direction} against this player's "
             f"vs-pace/vs-spin record ({inp['style_matchup_part']:+} pts).")
 
     if inp["bowl_matchup_balls_vs_opponent_batters"] > 0:
@@ -86,8 +114,8 @@ def explain(scored: dict, alternative: dict | None = None, slot: str | None = No
         direction = "a favourable" if inp["bowl_matchup_part"] >= 0 else "a tough"
         lines.append(
             f"Has bowled {inp['bowl_matchup_balls_vs_opponent_batters']} balls at "
-            f"{scored['opponent']}'s specific batters (wicket rate {round(rate, 3) if rate is not None else 'n/a'}) "
-            f"— {direction} matchup for them with the ball ({inp['bowl_matchup_part']:+} pts).")
+            f"{scored['opponent']}'s specific batters (wicket rate {round(rate, 3) if rate is not None else 'n/a'}): "
+            f"{direction} matchup for them with the ball ({inp['bowl_matchup_part']:+} pts).")
 
     if c["phase_fit_part"] > 0:
         lines.append(f"Stands out among teammates in their strongest phase of the innings "
@@ -96,7 +124,7 @@ def explain(scored: dict, alternative: dict | None = None, slot: str | None = No
     if c.get("team_need_part"):
         phase = c["team_need_phase"]
         lines.append(f"This pool is currently thin at the {phase}, and they're a genuine strength "
-                     f"there — a bonus for filling that specific gap ({c['team_need_part']:+} pts).")
+                     f"there, earning a bonus for filling that specific gap ({c['team_need_part']:+} pts).")
 
     if inp["importance_score"] is not None:
         rank_note = " and ICC-ranked" if inp["icc_rank"] is not None else ""
@@ -138,12 +166,14 @@ def explain(scored: dict, alternative: dict | None = None, slot: str | None = No
         lines.append(
             f"Recent domestic form ({dom_matches} match{plural}): shifting win probability by "
             f"{_pct(inp.get('domestic_form_batting_wpa'))} per match with the bat and "
-            f"{_pct(inp.get('domestic_form_bowling_wpa'))} with the ball — factored into the "
+            f"{_pct(inp.get('domestic_form_bowling_wpa'))} with the ball, factored into the "
             f"model above, alongside {inp['career_matches']} international career matches.")
 
     if inp.get("retirement_status"):
         reason = inp.get("status_reason")
-        reason_note = f" — {reason}" if reason else ""
+        # comma, not parens: the reason itself often already ends in a
+        # parenthetical ("... (40% of team matches)"), and nesting parens reads badly.
+        reason_note = f", {reason}" if reason else ""
         lines.append(f"Current status: {inp['retirement_status']}{reason_note}.")
 
     if c["risk_part"] < 0:
@@ -155,13 +185,43 @@ def explain(scored: dict, alternative: dict | None = None, slot: str | None = No
         if inp["retirement_status"] == "INACTIVE" and inp["recall_flag"]:
             flags.append("recalled after an inactive spell")
         if inp["retirement_status"] == "INACTIVE" and inp.get("recent_domestic_activity") and not inp["recall_flag"]:
-            flags.append("internationally inactive — included on recent domestic activity, not an international recall")
+            flags.append("internationally inactive, included on recent domestic activity rather than an international recall")
         lines.append(f"Worth flagging: {', '.join(flags)} ({c['risk_part']} pts).")
 
     return {
         "player_id": scored["player_id"], "name": scored.get("name"),
         "score": scored["score"], "summary": lines, "components": c,
     }
+
+
+def _append_batting_profile(lines: list[str], inp: dict, archetype: str | None) -> None:
+    """The descriptive "what to expect / best overs / where the impact is"
+    block, from data-collection's `player_advanced` batting profile (surfaced
+    via `score.py`'s inputs, never scored). Gated on >= 30 balls faced so a
+    tailender's tiny-sample strike rate doesn't get narrated as if it were a
+    real batting profile.
+    """
+    bat_sr = inp.get("bat_strike_rate")
+    if bat_sr is None or (inp.get("bat_balls") or 0) < 30:
+        return
+
+    profile_bits = [f"strike rate {bat_sr:.0f}"]
+    if inp.get("bat_boundary_pct") is not None:
+        profile_bits.append(f"{inp['bat_boundary_pct']:.0f}% boundary balls")
+    if inp.get("bat_dot_pct") is not None:
+        profile_bits.append(f"{inp['bat_dot_pct']:.0f}% dot balls")
+    sixes, six_rate = inp.get("bat_sixes"), inp.get("bat_six_rate")
+    if sixes is not None and six_rate is not None:
+        profile_bits.append(f"{sixes} career sixes ({six_rate} per 100 balls)")
+    lines.append(f"With the bat, expect {', '.join(profile_bits)}.")
+
+    best_phase = inp.get("bat_best_phase")
+    bp_sr = inp.get("bat_best_phase_sr")
+    if best_phase and bp_sr is not None:
+        label = _PHASE_LABEL.get(best_phase, best_phase)
+        bp_bdry = inp.get("bat_best_phase_boundary_pct")
+        bdry_note = f", {bp_bdry:.0f}% boundaries" if bp_bdry is not None else ""
+        lines.append(f"Highest impact in the {label}: strike rate {bp_sr:.0f}{bdry_note} there.")
 
 
 def explain_many(scored_players: list[dict]) -> list[dict]:

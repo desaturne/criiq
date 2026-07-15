@@ -287,7 +287,7 @@ python -m criiq_models.cli teams --gender male
 #### `recommend --team A --opponent B [--venue V] [--format T20] [--gender female] [--explain] [--pretty]`
 **What it does:** scores every eligible player in team A's pool for a matchup against B (optionally at venue V), splits them into batting/all-rounder/bowling role pools, and selects the constrained-optimal playing XI (MILP: exactly 11, ≥5 batting-capable, ≥5 bowling-capable, ≥1 keeper, ≥2 openers — each minimum gracefully degrades to what the pool can actually support). `--explain` adds per-player plain-language reasoning; `--pretty` renders an actual team sheet instead of JSON (implies `--explain`). `--venue` takes a ground **name** (fuzzy-matched, "did you mean" on ambiguity), not a raw `venue_id`.
 **Accesses:** `roster.team_pool` (eligibility: `player_registry`, `matches` for current-team resolution), the trained model artifacts, everything `RecommendationScorer`/`explain` read (career/impact/phase/venue/matchup tables, registry status).
-**Extracts/produces:** nothing persisted — prints the scored pool, role-grouped pools, and selected XI (JSON or rendered team sheet).
+**Extracts/produces:** nothing persisted — prints the scored pool, role-grouped pools, the selected XI, and a `role_options` block (the best available finisher / power hitter / anchor across the whole pool, ranked by finishing/hitting quality rather than the composite score, so a strong finisher shows up even when outside the auto-XI), each pick with a plain-language profile (archetype, strike rate, boundary%, sixes, best phase). JSON or rendered team sheet.
 ```bash
 python -m criiq_models.cli recommend --team India --opponent Australia --venue "Lord's" --gender male --pretty
 ```

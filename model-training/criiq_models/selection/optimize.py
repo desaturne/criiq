@@ -158,6 +158,50 @@ def role_pools(scored_players: list[dict]) -> dict:
     return pools
 
 
+SPECIALIST_ARCHETYPES = ("finisher", "power hitter", "anchor")
+
+
+def _highlight_metric(arch: str, inp: dict) -> float | None:
+    """The role-*defining* quality to rank an archetype's members by. Finisher
+    = death-overs strike rate; power hitter = six rate. Ranking by the
+    composite score instead would just re-bury the very players this exists to
+    surface (the composite is win-probability-added, which is exactly what
+    undervalues a big-hitting finisher). Anchor has no single defining number
+    here, so it falls back to the composite score.
+    """
+    if arch == "finisher":
+        return inp.get("bat_best_phase_sr")   # best phase for a finisher is the death overs
+    if arch == "power hitter":
+        return inp.get("bat_six_rate")
+    return None
+
+
+def role_highlights(scored_players: list[dict], archetypes=SPECIALIST_ARCHETYPES) -> dict:
+    """Best available player of each specialist batting archetype (finisher /
+    power hitter / anchor, from data-collection's `player_advanced`) across
+    the WHOLE scored pool, ranked by that role's defining metric, not the
+    composite score.
+
+    The point is exactly the case a coach flagged: a genuine finisher (e.g.
+    RM Ghosh, death-overs strike rate ~166) rates low on the composite score,
+    because that score is win-probability-added, not raw hitting, and so falls
+    outside the headline top-N shortlist entirely. This answers "who's our
+    best finisher / power hitter / anchor", by finishing/hitting quality,
+    separately from "who does the model rank highest overall". Reads archetype
+    and the ranking metric from each player's `components.inputs`; players
+    without a profile are skipped.
+    """
+    out = {}
+    for arch in archetypes:
+        members = [p for p in scored_players
+                   if ((p.get("components") or {}).get("inputs") or {}).get("archetype") == arch]
+        if members:
+            out[arch] = max(members, key=lambda p: (
+                _highlight_metric(arch, p["components"]["inputs"]) if _highlight_metric(arch, p["components"]["inputs"]) is not None else -1.0,
+                p["score"]))
+    return out
+
+
 def analyze_xi(scored_players: list[dict], player_ids: list[str],
                settings: object = SETTINGS) -> dict:
     """Scores and checks a SPECIFIC, already-chosen XI -- e.g. a coach's own

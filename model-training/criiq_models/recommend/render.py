@@ -26,7 +26,8 @@ _POOL_SECTIONS = [
 
 def render_team_sheet(team: str, opponent: str, venue_id: str | None,
                        xi_explained: list[dict], pool_explained: list[dict],
-                       model_metadata: dict | None, constraints: dict | None) -> str:
+                       model_metadata: dict | None, constraints: dict | None,
+                       role_options: list[dict] | None = None) -> str:
     """`xi_explained`/`pool_explained`: the same lists `cmd_recommend
     --explain` builds -- each entry is a brief dict (`name`, `role_bucket`,
     `is_keeper`, `batting_position_median`, `score`) plus a `reasoning` list
@@ -50,7 +51,7 @@ def render_team_sheet(team: str, opponent: str, venue_id: str | None,
     bar = "=" * _WIDTH
     venue_note = f" at venue {venue_id}" if venue_id else ""
     lines.append(bar)
-    lines.append(f"  CRIIQ RECOMMENDATION — {team.upper()} vs {opponent.upper()}{venue_note}")
+    lines.append(f"  CRIIQ RECOMMENDATION: {team.upper()} vs {opponent.upper()}{venue_note}")
     lines.append(bar)
     lines.append("")
 
@@ -72,7 +73,7 @@ def render_team_sheet(team: str, opponent: str, venue_id: str | None,
             lines.append(_wrap(f"- {sentence}"))
         lines.append("")
 
-    lines.append(f"  ROSTER — {len(pool_explained)} PLAYERS ACROSS 3 ROLE POOLS (ranked by score)")
+    lines.append(f"  ROSTER: {len(pool_explained)} PLAYERS ACROSS 3 ROLE POOLS (ranked by score)")
     for bucket, heading in _POOL_SECTIONS:
         members = sorted((p for p in pool_explained if p["role_bucket"] == bucket),
                           key=lambda p: -p["score"])
@@ -91,6 +92,17 @@ def render_team_sheet(team: str, opponent: str, venue_id: str | None,
         lines.append("  " + "-" * (_WIDTH - 2))
         for i, p in enumerate(unrecognized, start=1):
             _render_player(i, p)
+
+    if role_options:
+        lines.append("  " + "-" * (_WIDTH - 2))
+        lines.append("  SPECIALIST ROLE OPTIONS (best available per role, regardless of overall rank)")
+        lines.append("  " + "-" * (_WIDTH - 2))
+        for opt in role_options:
+            in_xi = " [XI]" if opt["player_id"] in xi_ids else ""
+            phase_note = f", {opt['detail']}" if opt.get("detail") else ""
+            lines.append(f"  {opt['archetype'].upper():<13s} {opt['name']:<22s} "
+                          f"{opt['score']:>5.1f}/100{in_xi}{phase_note}")
+        lines.append("")
 
     lines.append(bar)
     lines.append("  PLAYING XI (batting order)")
@@ -127,7 +139,7 @@ def render_xi_analysis(team: str, opponent: str, venue_id: str | None,
     bar = "=" * _WIDTH
     venue_note = f" at venue {venue_id}" if venue_id else ""
     lines.append(bar)
-    lines.append(f"  CUSTOM XI ANALYSIS — {team.upper()} vs {opponent.upper()}{venue_note}")
+    lines.append(f"  CUSTOM XI ANALYSIS: {team.upper()} vs {opponent.upper()}{venue_note}")
     lines.append(bar)
     lines.append("")
 

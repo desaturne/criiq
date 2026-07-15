@@ -23,7 +23,7 @@ CREATE TABLE identifier_map (
 );
 CREATE TABLE players (
     player_id TEXT PRIMARY KEY, cricsheet_identifier TEXT, gender TEXT, canonical_name TEXT,
-    bowling_style TEXT, batting_hand TEXT
+    bowling_style TEXT, batting_hand TEXT, date_of_birth TEXT
 );
 CREATE TABLE player_registry (
     player_id TEXT, format TEXT, role TEXT, retirement_status TEXT, recall_flag INTEGER,
@@ -204,6 +204,10 @@ def add_venue_record(conn: sqlite3.Connection, player_id: str, venue_id: str, ve
          chasing_average, chasing_strike_rate))
 
 
+def set_date_of_birth(conn: sqlite3.Connection, player_id: str, date_of_birth: str) -> None:
+    conn.execute("UPDATE players SET date_of_birth=? WHERE player_id=?", (date_of_birth, player_id))
+
+
 def set_bowling_style(conn: sqlite3.Connection, player_id: str, bowling_style: str) -> None:
     conn.execute("INSERT INTO player_styles(player_id, bowling_style, source) VALUES(?,?,'test')",
                  (player_id, bowling_style))
@@ -217,20 +221,28 @@ def set_advanced_profile(conn: sqlite3.Connection, player_id: str, vs_bowling_ty
 
 
 def set_player_profile(conn: sqlite3.Connection, player_id: str, bowling_style: str | None = None,
-                        batting_hand: str | None = None, archetype: str | None = None) -> None:
+                        batting_hand: str | None = None, archetype: str | None = None,
+                        batting: dict | None = None) -> None:
     """`players.bowling_style`/`batting_hand` -- distinct from (and, in the
     real pipeline, backfilled alongside) `player_styles.bowling_style`;
     `features/current.py`'s `ExtraContext` reads the `players` columns
     directly (same table `advanced.py`'s vs-pace/vs-spin computation reads),
     so that's what this sets, not `set_bowling_style`'s table above.
+
+    `batting`: a minimal `player_advanced.profile_json` batting block
+    (strike_rate/boundary_pct/dot_pct/sixes/six_rate/balls/by_phase), so the
+    descriptive "what to expect / best phase" surfacing can be exercised.
     """
     if bowling_style is not None or batting_hand is not None:
         conn.execute("UPDATE players SET bowling_style=COALESCE(?, bowling_style), "
                      "batting_hand=COALESCE(?, batting_hand) WHERE player_id=?",
                      (bowling_style, batting_hand, player_id))
-    if archetype is not None:
-        conn.execute("INSERT INTO player_advanced(player_id, format, archetype) VALUES(?,'T20',?)",
-                     (player_id, archetype))
+    if archetype is not None or batting is not None:
+        import json
+        profile_json = json.dumps({"batting": batting}) if batting is not None else None
+        conn.execute(
+            "INSERT INTO player_advanced(player_id, format, archetype, profile_json) VALUES(?,'T20',?,?)",
+            (player_id, archetype, profile_json))
 
 
 @pytest.fixture()

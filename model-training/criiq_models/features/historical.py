@@ -33,6 +33,18 @@ re-deriving it from raw deliveries — disproportionate effort for what is
 already a very sparse signal per specific pair. That signal is instead
 folded in only at live-scoring time as a separate, transparent "matchup
 edge" component (see `recommend/score.py`) rather than as a model input.
+
+`age_years` (player's age at each match's date, computed from
+`players.date_of_birth`) was tried as a model feature here and rejected: a
+rigorous ablation (3 holdout fractions x 5 seeds, both genders, identical
+production model architecture, real live data) found it made prediction
+correlation *worse* in 3 of the 4 (gender, target) combinations and
+negligibly better in the 4th, all well within run-to-run noise -- the same
+"tried, checked against the real backtest, not adopted" discipline already
+applied to bowling containment features and `bowl_style_bucket` (see
+model-training/README.md). It's still computed at live-scoring time
+(`features/current.py`) as descriptive-only context surfaced in
+`explain.py`, the same way `bowl_dot_pct`/`bowl_boundary_pct` are.
 """
 from __future__ import annotations
 

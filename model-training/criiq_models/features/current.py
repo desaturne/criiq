@@ -15,6 +15,7 @@ matchup data isn't reconstructed for training.
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 import sqlite3
 from dataclasses import dataclass, field
@@ -86,6 +87,21 @@ def build_model_features(conn: sqlite3.Connection, player_id: str, opponent: str
     row["career_batting_wpa_matches"] = 0
     row["career_bowling_wpa_matches"] = 0
     row["domestic_form_matches"] = 0
+
+    # Age today -- no leakage concern (an objective fact, not derived from any
+    # outcome); computed regardless of career history (even a debutant has an
+    # age). Real coverage is partial (~36% of players have a known
+    # date_of_birth via opt-in ESPNcricinfo enrichment), NaN otherwise, same
+    # as historical.py's point-in-time version of this feature.
+    dob_row = conn.execute(
+        "SELECT date_of_birth FROM players WHERE player_id=?", (player_id,)).fetchone()
+    if dob_row and dob_row["date_of_birth"]:
+        try:
+            dob = dt.date.fromisoformat(dob_row["date_of_birth"][:10])
+            row["age_years"] = round((dt.date.today() - dob).days / 365.25, 1)
+        except ValueError:
+            pass
+
     if hist.empty:
         row["role_bucket"], _, _ = resolve_role(conn, player_id, fmt)
         return row
@@ -210,6 +226,18 @@ class ExtraContext:
     archetype: str | None = None  # data-collection's player_advanced.archetype (anchor/power hitter/finisher/balanced)
     bowling_style: str | None = None
     batting_hand: str | None = None
+    # Descriptive batting profile (data-collection's player_advanced.profile_json,
+    # batting block) -- "what to expect / where the impact is". Surfaced in
+    # explain.py, never a model feature.
+    bat_balls: int | None = None
+    bat_strike_rate: float | None = None
+    bat_boundary_pct: float | None = None
+    bat_dot_pct: float | None = None
+    bat_sixes: int | None = None
+    bat_six_rate: float | None = None       # sixes per 100 balls
+    bat_best_phase: str | None = None        # phase with this batter's highest strike rate
+    bat_best_phase_sr: float | None = None
+    bat_best_phase_boundary_pct: float | None = None
 
 
 def build_extra_context(conn: sqlite3.Connection, player_id: str, opponent: str,
@@ -320,9 +348,45 @@ def build_extra_context(conn: sqlite3.Connection, player_id: str, opponent: str,
         ctx.batting_hand = style_row["batting_hand"]
 
     advanced = conn.execute(
-        "SELECT archetype FROM player_advanced WHERE player_id=? AND format=?",
+        "SELECT archetype, profile_json FROM player_advanced WHERE player_id=? AND format=?",
         (player_id, fmt)).fetchone()
     if advanced:
         ctx.archetype = advanced["archetype"]
+        _attach_batting_profile(ctx, advanced["profile_json"])
 
     return ctx
+
+
+def _attach_batting_profile(ctx: "ExtraContext", profile_json: str | None) -> None:
+    """Pull the descriptive batting block (strike rate / boundary% / dot% /
+    sixes / per-phase splits) out of `player_advanced.profile_json` and onto
+    the context, plus derive the batter's single strongest phase (highest
+    strike rate among phases they've faced >= 30 balls in) -- the "best overs
+    to play / where the impact is" signal. All descriptive: none of this
+    feeds the score, only `explain.py`'s narrative.
+    """
+    if not profile_json:
+        return
+    try:
+        bat = json.loads(profile_json).get("batting")
+    except (ValueError, TypeError):
+        return
+    if not bat:
+        return
+    ctx.bat_balls = bat.get("balls")
+    ctx.bat_strike_rate = bat.get("strike_rate")
+    ctx.bat_boundary_pct = bat.get("boundary_pct")
+    ctx.bat_dot_pct = bat.get("dot_pct")
+    ctx.bat_sixes = bat.get("sixes")
+    ctx.bat_six_rate = bat.get("six_rate")
+
+    phases = bat.get("by_phase") or {}
+    best = max(
+        ((ph, v) for ph, v in phases.items()
+         if (v.get("balls") or 0) >= 30 and v.get("strike_rate") is not None),
+        key=lambda kv: kv[1]["strike_rate"], default=None)
+    if best:
+        ph, v = best
+        ctx.bat_best_phase = ph
+        ctx.bat_best_phase_sr = v.get("strike_rate")
+        ctx.bat_best_phase_boundary_pct = v.get("boundary_pct")

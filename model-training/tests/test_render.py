@@ -38,7 +38,7 @@ def test_render_team_sheet_shows_pool_and_xi_with_reasoning():
     # The roster header + both role-pool sections present (2 batters incl.
     # the keeper, 1 bowler -- no all-rounders in this fixture, so that
     # section is omitted entirely rather than shown empty), before the XI.
-    assert "ROSTER — 3 PLAYERS ACROSS 3 ROLE POOLS" in text
+    assert "ROSTER: 3 PLAYERS ACROSS 3 ROLE POOLS" in text
     assert "BATTING POOL (2)" in text
     assert "BOWLING POOL (1)" in text
     assert "ALL-ROUNDER POOL" not in text

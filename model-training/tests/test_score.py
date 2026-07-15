@@ -3,7 +3,8 @@ from __future__ import annotations
 from criiq_models.recommend.explain import explain
 from criiq_models.recommend.score import RecommendationScorer
 from tests.conftest import (add_appearance, add_bowler_matchup, add_match, add_match_impact,
-                             add_match_wpa, register_player, set_career_bowling, set_player_profile)
+                             add_match_wpa, register_player, set_career_bowling, set_date_of_birth,
+                             set_player_profile)
 
 
 def _seed_cold_start_player(conn):
@@ -66,6 +67,85 @@ def test_explain_surfaces_archetype_batting_hand_and_bowling_style(conn):
     assert any("Bowls right-arm off break." in line for line in payload["summary"])
 
 
+def test_explain_surfaces_batting_profile_best_phase_and_finisher_note(conn):
+    # The "what to expect / best overs / where the impact is" enrichment,
+    # plus the transparency note that a strong finisher can still rate low
+    # because the score is win-probability-added, not raw hitting (the real
+    # "RM Ghosh is our best finisher but isn't recommended" case).
+    _seed_cold_start_player(conn)  # cold-start -> low model_part, like a real low WPA
+    set_player_profile(conn, "p1", batting_hand="Right handed", archetype="finisher",
+                        batting={"balls": 876, "strike_rate": 145.4, "boundary_pct": 21.8,
+                                 "dot_pct": 36.6, "sixes": 45, "six_rate": 5.06,
+                                 "by_phase": {"powerplay": {"balls": 100, "strike_rate": 90.0, "boundary_pct": 8.0},
+                                              "death": {"balls": 510, "strike_rate": 165.9, "boundary_pct": 25.7}}})
+    scorer = RecommendationScorer(conn, "T20", "female", models={})
+    scored = scorer.score("p1", "Australia")
+    payload = explain(scored)
+    inp = scored["components"]["inputs"]
+    summary = " ".join(payload["summary"])
+
+    # raw batting profile numbers the coach asked to see
+    assert inp["bat_strike_rate"] == 145.4 and inp["bat_sixes"] == 45
+    assert "strike rate 145" in summary
+    assert "45 career sixes" in summary
+    assert "37% dot balls" in summary  # 36.6 rounds to 37
+    # best phase / highest impact = the death overs (highest SR among phases)
+    assert inp["bat_best_phase"] == "death"
+    assert "Highest impact in the death overs" in summary
+    assert "strike rate 166" in summary
+    # a genuine finisher with low win-impact is flagged for a manual look,
+    # not silently buried by a low rating.
+    assert "manual look" in summary
+
+
+def test_explain_tiny_batting_sample_does_not_get_a_profile_sentence(conn):
+    # A tailender who faced a handful of balls must not get "expect strike
+    # rate X" narrated from a 12-ball cameo -- gated at 30 balls.
+    _seed_cold_start_player(conn)
+    set_player_profile(conn, "p1", archetype="balanced",
+                        batting={"balls": 12, "strike_rate": 40.0, "boundary_pct": 0.0,
+                                 "dot_pct": 75.0, "sixes": 0, "six_rate": 0.0, "by_phase": {}})
+    scorer = RecommendationScorer(conn, "T20", "female", models={})
+    payload = explain(scorer.score("p1", "Australia"))
+    assert not any("With the bat, expect" in line for line in payload["summary"])
+
+
+def test_explain_reasoning_has_no_dash_connectors(conn):
+    # House style: no em-dash / en-dash connectors in the coach-facing prose
+    # (ordinary hyphens inside words like "Right-handed" are fine).
+    _seed_cold_start_player(conn)
+    set_player_profile(conn, "p1", bowling_style="Right-arm off break",
+                        batting_hand="Right handed", archetype="finisher",
+                        batting={"balls": 400, "strike_rate": 150.0, "boundary_pct": 22.0,
+                                 "dot_pct": 35.0, "sixes": 30, "six_rate": 4.5,
+                                 "by_phase": {"death": {"balls": 300, "strike_rate": 160.0, "boundary_pct": 24.0}}})
+    scorer = RecommendationScorer(conn, "T20", "female", models={})
+    alt = {"player_id": "p2", "name": "B Bench", "score": 4.2}
+    payload = explain(scorer.score("p1", "Australia"), alternative=alt, slot="opener")
+    for line in payload["summary"]:
+        assert "—" not in line and "–" not in line, f"dash connector in: {line!r}"
+
+
+def test_explain_surfaces_age_as_descriptive_context_not_a_model_feature(conn):
+    # age_years was tried as a trained-model feature and rejected (see
+    # features/historical.py's docstring -- a rigorous ablation found no
+    # measurable improvement, and a slight regression in 3 of 4 cases), so
+    # it must never appear in MODEL_FEATURES, only as narrative color here,
+    # the same way bowl_dot_pct/bowl_boundary_pct already work.
+    from criiq_models.features.schema import MODEL_FEATURES
+    assert "age_years" not in MODEL_FEATURES
+
+    _seed_cold_start_player(conn)
+    set_date_of_birth(conn, "p1", "2000-01-01")
+    scorer = RecommendationScorer(conn, "T20", "female", models={})
+    scored = scorer.score("p1", "Australia")
+    payload = explain(scored)
+
+    inp = scored["components"]["inputs"]
+    assert inp["age_years"] is not None
+    assert any("years old" in line for line in payload["summary"])
+
+
 def test_explain_omits_profile_sentences_when_data_is_missing(conn):
     # No set_player_profile call -- archetype/bowling_style/batting_hand all
     # stay unset, same as the overwhelming majority of the ~7000-player pool
@@ -79,6 +159,7 @@ def test_explain_omits_profile_sentences_when_data_is_missing(conn):
     assert not any(line.endswith("power hitter.") or line.endswith("anchor.")
                    or line.endswith("finisher.") or line.endswith("balanced.")
                    for line in payload["summary"])
+    assert not any("years old" in line for line in payload["summary"])
 
 
 def test_explain_uses_no_gendered_pronouns(conn):

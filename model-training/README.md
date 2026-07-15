@@ -219,25 +219,51 @@ an unconditional "Current status: ACTIVE — appeared inside active window."
 (or whatever the registry's own `status_reason` says), reusing data already
 flowing through `score.py`'s `ExtraContext` — no new computation.
 
-### Batting archetype, bowling style, and batting hand now surface in explain
+### Player analysis in explain: archetype, batting profile, best phase, role options
 
-data-collection already computed a batting archetype (`player_advanced.archetype`
-— anchor / power hitter / finisher / balanced, see that package's README) and
-resolved `bowling_style`/`batting_hand` for a real chunk of the player pool
-(Wikipedia infobox enrichment, see "External research" above), but neither
-ever reached `recommend --explain`'s output — the data existed, it just wasn't
-wired into this package's narrative. `features/current.py`'s `ExtraContext`
-now reads all three (`players.bowling_style`/`batting_hand`,
-`player_advanced.archetype`), and `explain.py` renders them as two short
-sentences right after the opening rate line, when available: "Right-handed
-power hitter." / "Bowls right-arm off break." (real output, `GJ Maxwell` vs
-India) — normalizing the source data's inconsistent real-world casing/spacing
-("Right handed" / "right-handed" / "Right-handed" all appear in the live DB)
-rather than passing it through raw. Silently omitted, not shown as "unknown",
-for the real fraction of the ~7000-player pool this enrichment hasn't reached.
-(`aggressor` was also renamed to **power hitter** — the same threshold/logic,
-just a label matching common usage more directly; not asserted anywhere else
-in the codebase, confirmed by grep before renaming.)
+data-collection computes a rich batting profile per player (`player_advanced`)
+that never used to reach `recommend --explain`'s output — the data existed, it
+just wasn't wired into this package's narrative. `features/current.py`'s
+`ExtraContext` now reads the whole batting block (strike rate, boundary%, dot%,
+sixes, six rate, per-phase splits) plus `bowling_style`/`batting_hand`/
+`archetype`, and `explain.py` narrates them as short coach-facing sentences.
+Real output for RM Ghosh (India, a finisher who rates low on the composite
+score) now reads:
+
+```text
+Right-handed finisher, 23 years old.
+Bowls right-arm medium.
+With the bat, expect strike rate 145, 22% boundary balls, 37% dot balls, 45 career sixes (5.06 per 100 balls).
+Highest impact in the death overs (16-20): strike rate 166, 26% boundaries there.
+...
+The batting profile above is strong, but this rating is driven by win-probability-added
+(impact on results), not raw hitting, so a finisher with modest recent win-impact still
+rates low here. Worth a manual look for that specific role.
+```
+
+That covers, directly from real per-player data: **what to expect** (strike
+rate, boundary%, dot%, sixes), **their best overs / where the impact is** (the
+phase with their highest strike rate, with that phase's SR and boundary%), and
+an explicit **transparency note** for the recurring "she's our best finisher
+but isn't recommended" case — the composite score is win-probability-added, not
+raw hitting, so a big-hitting finisher with modest recent win-impact rates low,
+and that's flagged rather than left as a silent contradiction.
+
+**Specialist role options.** `recommend` (JSON `role_options`, and a
+"SPECIALIST ROLE OPTIONS" block in `--pretty`) now also surfaces the best
+available **finisher / power hitter / anchor** across the *whole* scored pool,
+ranked by that role's defining metric (finisher by death-overs strike rate,
+power hitter by six rate) rather than the composite score
+(`selection/optimize.role_highlights`). This is the fix for the flagged case:
+RM Ghosh (death SR 166) now shows as the side's best finisher even at 7.8/100
+and outside the auto-XI, so "who's our best finisher" is always answerable,
+separately from "who does the model rank highest overall".
+
+The `archetype` classifier itself was also reworked (in data-collection): it is
+now gender-relative (per-gender percentile bars, since men's/women's hitting
+distributions differ sharply), six-rate-driven for power hitters, and gated on
+a minimum sample so a 7-ball cameo can't be tagged a "finisher" — see that
+package's README. (`aggressor` was renamed to **power hitter** along the way.)
 
 **What's genuinely not available, and why it isn't faked**: "best shot" /
 "worst shot" (or any shot-type breakdown) needs shot-coded ball-by-ball logs —
@@ -340,6 +366,41 @@ balls conceded") via `recommend/score.py`'s `inputs.bowl_dot_pct`/
 `inputs.bowl_boundary_pct` — genuinely useful to a human reader, with none of
 the overfitting risk of feeding it back into a prediction. `bowl_strike_rate`
 is stored but not currently surfaced anywhere (kept for future analysis).
+
+### Age as a model feature — tried, rejected, kept as narrative color
+
+A fine-tuning pass explicitly asked to consider "age factor, active status,
+ground performance, domestic performance" alongside the existing models.
+Ground (`venue_*`) and domestic (`domestic_form_*`) performance were already
+real model features (see the feature table above); active/retirement status
+is deliberately a rule-based eligibility gate + score component
+(`roster.py`, `score.py`'s `risk_part`), not a raw training feature — folding
+today's registry snapshot into a *historical* training row would leak (it
+isn't the player's status as of that past match), and the recency-weighted
+`form_*`/`career_matches` features likely already carry most of the same
+signal a coarser status flag would add.
+
+Age was genuinely new and testable: `players.date_of_birth` (partial real
+coverage — 55.8%/60.6% of women's/men's *training rows* respectively, since
+enriched players tend to be the more-capped ones) makes a leakage-safe
+`age_years` feature computable (age at each match's own date is an objective
+fact, no leakage-safety design needed, unlike every other feature in
+`historical.py`). Added, tested with the exact same rigor as every other
+model decision here (3 holdout fractions x 5 seeds, both genders, the real
+production architecture) — and rejected on the evidence:
+
+| Gender / target | corr without age | corr with age |
+|---|---|---|
+| female / batting_wpa | 0.12076 | 0.12107 (noise) |
+| female / bowling_wpa | 0.07815 | 0.07810 (noise) |
+| male / batting_wpa | 0.08625 | 0.08496 (**worse**) |
+| male / bowling_wpa | 0.06500 | 0.06413 (**worse**) |
+
+MAE identical to 4 decimals in every case. Not added to `MODEL_FEATURES` —
+same "decide by the real backtest, not a plausible-sounding feature" rule
+the bowling containment features below were rejected under. Still computed
+at live-scoring time and shown as descriptive-only color in `explain`
+output ("Left-handed balanced, 30 years old.").
 
 ### External research: Wikipedia bowling-style/batting-hand at scale
 

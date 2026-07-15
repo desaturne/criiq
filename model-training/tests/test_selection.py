@@ -3,12 +3,37 @@ from __future__ import annotations
 import dataclasses
 
 from criiq_models.config import SETTINGS
-from criiq_models.selection.optimize import analyze_xi, role_pools, select_xi
+from criiq_models.selection.optimize import analyze_xi, role_highlights, role_pools, select_xi
 
 
 def _player(pid, score, bucket, is_keeper=False, batting_position_median=None):
     return {"player_id": pid, "name": pid, "score": score, "role_bucket": bucket,
             "is_keeper": is_keeper, "batting_position_median": batting_position_median}
+
+
+def _scored(pid, score, archetype=None, best_phase_sr=None, six_rate=None):
+    return {"player_id": pid, "name": pid, "score": score,
+            "components": {"inputs": {"archetype": archetype,
+                                      "bat_best_phase_sr": best_phase_sr,
+                                      "bat_six_rate": six_rate}}}
+
+
+def test_role_highlights_ranks_finisher_by_death_sr_not_composite_score():
+    # The RM Ghosh case: the genuine finisher (death SR 166) rates LOW on the
+    # composite score (7.8), while a fringe finisher rates higher overall.
+    # "Best finisher" must go by finishing quality (death SR), not the
+    # win-probability composite that undervalues her.
+    players = [
+        _scored("ghosh", 7.8, archetype="finisher", best_phase_sr=166.0),
+        _scored("fringe", 22.0, archetype="finisher", best_phase_sr=120.0),
+        _scored("hitter", 40.0, archetype="power hitter", six_rate=6.0, best_phase_sr=138.0),
+        _scored("hitter2", 30.0, archetype="power hitter", six_rate=9.0, best_phase_sr=150.0),
+        _scored("plain", 50.0, archetype="balanced"),
+    ]
+    hi = role_highlights(players)
+    assert hi["finisher"]["player_id"] == "ghosh"      # by death SR, despite the lowest score
+    assert hi["power hitter"]["player_id"] == "hitter2"  # by six rate, despite the lower score
+    assert "balanced" not in hi                          # not a specialist role
 
 
 def test_select_xi_respects_role_quotas_and_maximizes_score():

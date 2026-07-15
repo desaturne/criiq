@@ -29,7 +29,7 @@ from .recommend.score import RecommendationScorer
 from .recommend.train import load_metadata, train
 from .roster import known_teams, team_pool
 from .venues import resolve_venue
-from .selection.optimize import analyze_xi, role_pools, select_xi, slot_category
+from .selection.optimize import analyze_xi, role_highlights, role_pools, select_xi, slot_category
 
 
 def _pp(obj) -> None:
@@ -135,6 +135,21 @@ def cmd_recommend(args):
                 "is_keeper": p["is_keeper"], "batting_position_median": p["batting_position_median"],
                 "score": p["score"]}
 
+    # Best available player of each specialist batting role (finisher / power
+    # hitter / anchor) across the WHOLE scored pool -- surfaces e.g. the side's
+    # strongest finisher even when the win-probability rating leaves them
+    # outside the headline shortlist (see selection/optimize.role_highlights).
+    def _role_option(arch, p):
+        inp = p["components"]["inputs"]
+        detail = None
+        if inp.get("bat_best_phase") and inp.get("bat_best_phase_sr") is not None:
+            detail = f"best in the {inp['bat_best_phase']} (SR {inp['bat_best_phase_sr']:.0f})"
+        return {"archetype": arch, "player_id": p["player_id"], "name": p["name"],
+                "score": p["score"], "role_bucket": p["role_bucket"],
+                "is_keeper": p["is_keeper"], "detail": detail}
+
+    role_options = [_role_option(arch, p) for arch, p in role_highlights(scored).items()]
+
     if args.explain or args.pretty:
         xi_ids = {p["player_id"] for p in result["xi"]}
         not_selected = [p for p in scored if p["player_id"] not in xi_ids]
@@ -163,7 +178,8 @@ def cmd_recommend(args):
 
     if args.pretty:
         print(render_team_sheet(args.team, args.opponent, venue_id, xi_out, pool_out,
-                                 load_metadata(args.format, args.gender), result.get("constraints")))
+                                 load_metadata(args.format, args.gender), result.get("constraints"),
+                                 role_options=role_options))
         conn.close()
         return
 
@@ -179,6 +195,7 @@ def cmd_recommend(args):
         "xi": xi_out,
         "pool": pool_out,
         "pools": pools_out,
+        "role_options": role_options,
         "selection_method": result["method"], "constraints": result.get("constraints"),
     })
     conn.close()
@@ -240,6 +257,18 @@ def cmd_analyze_xi(args):
     scorer = RecommendationScorer(conn, args.format, args.gender)
     scored = scorer.score_many(pool_ids, args.opponent, venue_id)
     analysis = analyze_xi(scored, player_ids)
+
+    # A bare player_id in this warning is nearly useless for catching a real
+    # mistake (e.g. a name that fuzzy-matched to the wrong real person, or a
+    # correctly-resolved player who just isn't in *this* team's pool) --
+    # resolve to a name here (analyze_xi has no DB access, so it can't) so
+    # the warning is actually actionable.
+    if analysis["missing_player_ids"]:
+        named = []
+        for pid in analysis["missing_player_ids"]:
+            row = conn.execute("SELECT canonical_name FROM players WHERE player_id=?", (pid,)).fetchone()
+            named.append(f"{row['canonical_name']} ({pid})" if row else pid)
+        analysis["missing_player_ids"] = named
 
     def _brief(p):
         return {"player_id": p["player_id"], "name": p["name"], "role_bucket": p["role_bucket"],
