@@ -1114,3 +1114,67 @@ def test_validate_deliveries_rejects_bad_rows():
     clean, rejected = validate_deliveries(df, "1")
     assert len(clean) == 1
     assert len(rejected) == 1
+
+
+def test_archetype_classifier_is_six_driven_and_role_aware():
+    """`_archetype` classifies against the batter's own gender's population
+    bars (`th`). Uses women's-scale bars here; the same code runs for men's
+    higher-scale bars via `_gender_archetype_thresholds` at build time.
+    """
+    from criiq_data.advanced import _archetype
+
+    th = {"six_rate_high": 1.0, "sr_high": 100.0, "sr_low": 85.0,
+          "boundary_high": 11.5, "rotation_high": 45.0, "death_sr_high": 130.0}
+
+    # Finisher: real death volume + genuinely destructive there (SR + sizes +
+    # boundaries all clear the bar) -- the RM Ghosh shape.
+    finisher = {"balls": 876, "strike_rate": 145.0, "boundary_pct": 21.8, "six_rate": 5.1,
+                "rotation_pct": 41.0, "by_phase": {
+                    "death": {"balls": 510, "strike_rate": 165.9, "boundary_pct": 25.7},
+                    "middle": {"balls": 356, "strike_rate": 121.0, "boundary_pct": 17.0}}}
+    assert _archetype(finisher, th) == "finisher"
+
+    # Power hitter: clears the rope well above the gender norm (six rate >= p75)
+    # at a high strike rate, but doesn't bat a real share at the death.
+    power = {"balls": 500, "strike_rate": 140.0, "boundary_pct": 18.0, "six_rate": 2.5,
+             "rotation_pct": 35.0, "by_phase": {
+                 "powerplay": {"balls": 300, "strike_rate": 140.0, "boundary_pct": 18.0},
+                 "middle": {"balls": 200, "strike_rate": 130.0, "boundary_pct": 15.0}}}
+    assert _archetype(power, th) == "power hitter"
+
+    # Anchor: bats a lot up top, rotates hard, below-median strike rate, few sixes.
+    anchor = {"balls": 500, "strike_rate": 80.0, "boundary_pct": 7.0, "six_rate": 0.2,
+              "rotation_pct": 55.0, "by_phase": {
+                  "powerplay": {"balls": 300, "strike_rate": 78.0, "boundary_pct": 7.0}}}
+    assert _archetype(anchor, th) == "anchor"
+
+    # A big six rate alone is NOT enough without the strike rate to back it.
+    slogger = {"balls": 200, "strike_rate": 90.0, "boundary_pct": 10.0, "six_rate": 2.0,
+               "rotation_pct": 30.0, "by_phase": {"middle": {"balls": 200, "strike_rate": 90.0, "boundary_pct": 10.0}}}
+    assert _archetype(slogger, th) == "balanced"
+
+    # Tiny sample: a bowler who faced 7 balls at the death, decent strike rate,
+    # must NOT be tagged "finisher" off pure noise (a real false positive found
+    # on live data: N Shree Charani, 7 balls -> "finisher" before the gate).
+    tiny = {"balls": 7, "strike_rate": 128.6, "boundary_pct": 14.3, "six_rate": 0.0,
+            "rotation_pct": 20.0, "by_phase": {"death": {"balls": 7, "strike_rate": 128.6, "boundary_pct": 14.3}}}
+    assert _archetype(tiny, th) == "balanced"
+
+
+def test_gender_archetype_thresholds_are_scaled_per_gender():
+    """Men's and women's six-rate/SR distributions differ enough that a shared
+    absolute bar would be wrong; thresholds must come out higher for the
+    higher-hitting population.
+    """
+    from criiq_data.advanced import _gender_archetype_thresholds
+
+    # 30 "female"-scale and 30 "male"-scale synthetic batters (>=120 balls each).
+    bat_overall, bat_phase = {}, {}
+    for i in range(30):
+        bat_overall[(f"f{i}", "female")] = {"runs": 100 + i, "balls": 130,
+                                            "sixes": i % 3, "bdry": 10 + i % 5, "rotate": 60}
+        bat_overall[(f"m{i}", "male")] = {"runs": 180 + i, "balls": 130,
+                                          "sixes": 6 + i % 5, "bdry": 20 + i % 6, "rotate": 60}
+    th = _gender_archetype_thresholds(bat_overall, bat_phase)
+    assert th["male"]["six_rate_high"] > th["female"]["six_rate_high"]
+    assert th["male"]["sr_high"] > th["female"]["sr_high"]

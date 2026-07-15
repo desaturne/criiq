@@ -369,9 +369,29 @@ local cron, or APScheduler — orchestration-agnostic).
 
 - **Batting** — phase strengths (powerplay/middle/death SR, boundary%, dot%,
   dismissals), overall boundary%/dot%/scoring%/rotation% (control & aggression
-  proxies), acceleration (first-10 vs after-10 SR), and an **archetype**
-  (anchor / power hitter / finisher / balanced — renamed from "aggressor" to
-  match common usage; same thresholds, label only).
+  proxies), **six rate** (sixes per 100 balls), acceleration (first-10 vs
+  after-10 SR), and an **archetype** (anchor / power hitter / finisher /
+  balanced).
+  - **Archetype is classified against each gender's own population, not a
+    shared absolute bar.** Men's and women's T20 six-hitting and strike-rate
+    distributions differ sharply (men's six rate p90 ~8.0 per 100 balls vs
+    women's ~1.9, SR p90 ~146 vs ~115 on the live DB), so an absolute SR/six
+    threshold would tag most men "power hitters" and almost no women, for no
+    cricketing reason. `_gender_archetype_thresholds` computes per-gender
+    percentile bars once per build; `_archetype` classifies against them:
+    **finisher** = bats a real share at the death *and* is genuinely
+    destructive there (death SR *and* death boundary% both above the gender
+    high bar — strike rate + sizes + boundaries, what a death finisher needs);
+    **power hitter** = clears the rope well above the gender norm (six rate at
+    or above the gender p75) at a high strike rate (six rate is the primary
+    signal — a raw six *count* just tracks career length); **anchor** =
+    accumulator (bats up top, rotates hard, below-median SR). finisher takes
+    precedence, so a death specialist who also hits sixes (e.g. RM Ghosh)
+    reads as the more specific role.
+  - A **minimum-sample gate** (60 balls faced, 40 of them at the death for a
+    finisher) blocks tiny-sample false positives — a real one found on live
+    data: a bowler who faced 7 balls at the death was being tagged "finisher"
+    before the gate.
 - **Bowling** — economy/wickets/dot% by phase, new-ball vs death **usage share**,
   bowling strike rate (balls/wicket) and average.
 - **vs-pace / vs-spin** (batting) and **vs-RHB / vs-LHB** (bowling) splits — these

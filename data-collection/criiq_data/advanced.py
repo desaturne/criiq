@@ -160,6 +160,8 @@ def build_for_format(conn, fmt: str) -> int:
     for (pid, gender, h), row in vh.iterrows():
         bowl_vs_hand.setdefault((pid, gender), {})[h] = row.to_dict()
 
+    archetype_th = _gender_archetype_thresholds(bat_overall, bat_phase)
+
     now = dt.datetime.now().isoformat(timespec="seconds")
     rows = []
     all_ids = set(bat_overall) | set(bowl_overall)
@@ -185,7 +187,8 @@ def build_for_format(conn, fmt: str) -> int:
                                                 bat_phase.get(key, {}),
                                                 bat_vs_type.get(key, {}),
                                                 accel.get(key, {}),
-                                                bat_vs_type_detail.get(key, {}))
+                                                bat_vs_type_detail.get(key, {}),
+                                                thresholds=archetype_th.get(gender, {}))
             archetype = profile["batting"]["archetype"]
 
         bwo = bowl_overall.get(key)
@@ -229,7 +232,62 @@ def _vs_type_block(vs: dict) -> dict:
         for t, v in vs.items()}
 
 
-def _batting_block(bo, innings, phase, vs_type, accel, vs_type_detail=None) -> dict:
+# Minimum balls faced before a batter's population stats count toward the
+# per-gender archetype thresholds (below) -- ~2 T20 innings, so a one-off
+# cameo can't skew a whole gender's percentile bars.
+_ARCHETYPE_MIN_BALLS = 120
+
+# Minimum balls faced before an *individual* earns a specialist role label at
+# all. Without it a bowler who faced 7 balls (all at the death, decent strike
+# rate) gets tagged "finisher" off pure noise and pollutes the finisher pool;
+# below this a batter is just "balanced". Deliberately lower than the
+# percentile-bar minimum above: this is "enough to describe a role", not
+# "enough to move a population percentile".
+_ARCHETYPE_MIN_CLASSIFY_BALLS = 60
+_ARCHETYPE_MIN_DEATH_BALLS = 40  # death sample a finisher needs, matching the death-SR percentile gate
+
+
+def _gender_archetype_thresholds(bat_overall: dict, bat_phase: dict) -> dict:
+    """Per-gender percentile bars for the archetype classifier. Men's and
+    women's T20 six-hitting/strike-rate distributions are very different
+    (men's six rate p90 ~8.0 per 100 balls vs women's ~1.9, SR p90 ~146 vs
+    ~115 -- confirmed on the live DB), so an absolute SR/six threshold shared
+    across both would label most men "power hitters" and almost no women, for
+    no cricketing reason. Bars are therefore each gender's own population
+    percentiles, computed once per build from the aggregated batting data.
+    """
+    import numpy as np
+    per_gender: dict = {}
+    for (pid, gender), bo in bat_overall.items():
+        balls = bo["balls"] or 0
+        if balls < _ARCHETYPE_MIN_BALLS:
+            continue
+        d = per_gender.setdefault(gender, {"six_rate": [], "sr": [], "bdry": [],
+                                            "rotation": [], "death_sr": []})
+        d["six_rate"].append(100 * bo["sixes"] / balls)
+        d["sr"].append(100 * bo["runs"] / balls)
+        d["bdry"].append(100 * bo["bdry"] / balls)
+        d["rotation"].append(100 * bo["rotate"] / balls)
+        death = bat_phase.get((pid, gender), {}).get("death")
+        if death and death.get("balls", 0) >= 40:
+            d["death_sr"].append(100 * death["runs"] / death["balls"])
+
+    out: dict = {}
+    for gender, d in per_gender.items():
+        def p(key, q, default):
+            return float(np.percentile(d[key], q)) if d[key] else default
+        out[gender] = {
+            "six_rate_high": p("six_rate", 75, 1.0),    # clears the rope well above the gender norm
+            "sr_high": p("sr", 75, 120.0),
+            "sr_low": p("sr", 50, 100.0),               # "not aggressive" bar for anchor
+            "boundary_high": p("bdry", 75, 12.0),
+            "rotation_high": p("rotation", 75, 45.0),
+            "death_sr_high": p("death_sr", 75, 130.0),  # genuinely destructive at the death
+        }
+    return out
+
+
+def _batting_block(bo, innings, phase, vs_type, accel, vs_type_detail=None, thresholds=None) -> dict:
     balls = bo["balls"]
     block = {
         "innings": int(innings), "runs": int(bo["runs"]), "balls": int(balls),
@@ -239,6 +297,10 @@ def _batting_block(bo, innings, phase, vs_type, accel, vs_type_detail=None) -> d
         "dot_pct": round(100 * bo["dots"] / balls, 1) if balls else None,
         "scoring_pct": round(100 * (balls - bo["dots"]) / balls, 1) if balls else None,
         "rotation_pct": round(100 * bo["rotate"] / balls, 1) if balls else None,
+        # Sixes per 100 balls -- the scale-stable "power" signal the archetype
+        # classifier leans on (a raw six *count* just tracks how long a career
+        # is), surfaced so downstream explanations can narrate it directly.
+        "six_rate": round(100 * bo["sixes"] / balls, 2) if balls else None,
         "fours": int(bo["fours"]), "sixes": int(bo["sixes"]),
         "by_phase": {ph: _phase_block(phase[ph]) for ph in phase},
     }
@@ -250,23 +312,58 @@ def _batting_block(bo, innings, phase, vs_type, accel, vs_type_detail=None) -> d
         block["acceleration"] = {
             k: {"balls": v["balls"], "strike_rate": _bat_rate(v["runs"], v["balls"])}
             for k, v in accel.items()}
-    block["archetype"] = _archetype(block)
+    block["archetype"] = _archetype(block, thresholds or {})
     return block
 
 
-def _archetype(b: dict) -> str:
+def _archetype(b: dict, th: dict) -> str:
+    """Descriptive batting role, classified against this batter's own gender's
+    population bars (`th`, from `_gender_archetype_thresholds`):
+
+      * finisher    -- bats a real share of balls at the death AND is genuinely
+                       destructive there (death SR *and* death boundary% both
+                       above the gender's high bar): strike rate + sizes +
+                       boundaries, exactly what a death finisher needs.
+      * power hitter -- clears the rope well above the gender norm (six rate
+                       at/above the gender p75) at a high overall strike rate:
+                       big hitting wherever they bat. Six rate is the primary
+                       signal (a raw six *count* just tracks career length).
+      * anchor      -- accumulator: bats a lot up top, rotates strike hard, but
+                       at a below-median strike rate.
+      * balanced    -- none of the above stands out.
+
+    finisher takes precedence over power hitter: a death specialist who also
+    hits sixes (e.g. RM Ghosh) is described by the more specific role.
+    """
+    total = b["balls"] or 0
+    if total < _ARCHETYPE_MIN_CLASSIFY_BALLS:
+        return "balanced"  # too small a sample to earn a specialist role label
+
     by = b.get("by_phase", {})
-    total = b["balls"] or 1
-    death_balls = by.get("death", {}).get("balls", 0)
-    pp_balls = by.get("powerplay", {}).get("balls", 0)
     sr = b.get("strike_rate") or 0
+    bdry = b.get("boundary_pct") or 0
+    six_rate = b.get("six_rate") or 0
+    rotation = b.get("rotation_pct") or 0
+    death = by.get("death", {})
+    death_balls = death.get("balls", 0)
     death_share = death_balls / total
-    pp_share = pp_balls / total
-    if death_share > 0.30 and (by.get("death", {}).get("strike_rate") or 0) > 130:
+    death_sr = death.get("strike_rate") or 0
+    death_bdry = death.get("boundary_pct") or 0
+    pp_share = by.get("powerplay", {}).get("balls", 0) / total
+
+    six_hi = th.get("six_rate_high", 2.0)
+    sr_hi = th.get("sr_high", 120.0)
+    sr_lo = th.get("sr_low", 100.0)
+    bdry_hi = th.get("boundary_high", 12.0)
+    rot_hi = th.get("rotation_high", 45.0)
+    death_sr_hi = th.get("death_sr_high", 130.0)
+
+    if (death_balls >= _ARCHETYPE_MIN_DEATH_BALLS and death_share >= 0.25
+            and death_sr >= death_sr_hi and death_bdry >= bdry_hi):
         return "finisher"
-    if sr >= 135:
+    if six_rate >= six_hi and sr >= sr_hi:
         return "power hitter"
-    if pp_share > 0.45 and sr < 115:
+    if pp_share >= 0.40 and sr <= sr_lo and rotation >= rot_hi:
         return "anchor"
     return "balanced"
 
