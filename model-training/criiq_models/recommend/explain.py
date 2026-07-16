@@ -84,6 +84,20 @@ def explain(scored: dict, alternative: dict | None = None, slot: str | None = No
             f"(impact on results), not raw hitting, so a {archetype} with modest recent win-impact "
             f"still rates low here. Worth a manual look for that specific role.")
 
+    sr_part = c.get("strike_rate_part", 0.0)
+    career_sr, sr_bench = inp.get("career_bat_sr"), inp.get("sr_benchmark")
+    if sr_part < 0 and career_sr is not None and sr_bench:
+        aw = inp.get("game_awareness_factor") or 0.0
+        aw_signals = inp.get("game_awareness_signals") or {}
+        if aw > 0 and aw_signals:
+            offset = (f"partly offset by game awareness ({', '.join(sorted(aw_signals))}, "
+                      f"awareness {aw:.0%})")
+        else:
+            offset = "with little experience or game awareness to offset it"
+        lines.append(
+            f"Career strike rate {career_sr:.0f} is below the {sr_bench:.0f} par for this format, "
+            f"{offset} ({sr_part} pts). Modern T20I prizes a higher strike rate.")
+
     dot_pct, boundary_pct = inp.get("bowl_dot_pct"), inp.get("bowl_boundary_pct")
     if dot_pct is not None and boundary_pct is not None:
         style = "control-focused, building pressure with dot balls" if dot_pct >= boundary_pct * 3 \

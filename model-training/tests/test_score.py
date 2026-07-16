@@ -34,8 +34,57 @@ def test_cold_start_skips_model_and_score_is_bounded(conn):
     assert 0.0 <= scored["score"] <= 100.0
 
     parts_sum = (c["model_part"] + c["matchup_part"] + c["phase_fit_part"]
-                 + c["standing_part"] + c["risk_part"])
+                 + c["standing_part"] + c["risk_part"] + c["strike_rate_part"])
     assert scored["score"] == round(max(0.0, min(100.0, parts_sum)), 1)
+
+
+def test_cold_start_model_part_discounted_by_sample_size(conn):
+    # A cold-start (fallback) player's model_part is scaled by how much history
+    # backs it, so a 3-match player who bowled/batted well (often vs weak
+    # opposition) can't post a near-full model_part -- the real Aakash Chand
+    # over-rating (3 matches -> +12.5) this discount fixes.
+    register_player(conn, "p1", "Tiny Sample", role="bowler")
+    for i, d in enumerate(["2024-01-01", "2024-02-01", "2024-03-01"]):
+        mid = f"m{i}"
+        add_match(conn, mid, d, "India", "Australia")
+        add_match_impact(conn, "p1", mid, d, "India", "Australia", won=1,
+                          economy=5.0, bowl_contrib=30.0, wickets=3, balls_bowled=24)
+        add_match_wpa(conn, "p1", mid, bowling_wpa=0.10, date=d)  # strong small-sample WPA
+    conn.commit()
+
+    scorer = RecommendationScorer(conn, "T20", "female", models={})
+    scored = scorer.score("p1", "Australia")
+    c = scored["components"]
+    assert c["model_applied"] is False               # 3 < min_matches_for_model (10)
+    # 3 matches -> confidence 0.3, so model_part is at most 30% of the
+    # undiscounted value -- comfortably below a full-history player's ceiling.
+    from criiq_models.config import SETTINGS
+    assert c["model_part"] <= 45.0 * (3 / SETTINGS.min_matches_for_model) + 0.05
+
+
+def test_strike_rate_penalty_scaled_down_by_game_awareness(conn):
+    # Modern T20I prizes strike rate: a batting-capable player below the gender
+    # par takes a penalty, but experience + game awareness (big-moment impact,
+    # chasing composure, consistency) scale it DOWN -- so an experienced,
+    # aware anchor is largely forgiven while a raw low-SR player is not.
+    from criiq_models.features.current import ExtraContext
+    scorer = RecommendationScorer(conn, "T20", "female", models={})
+    scorer._priors["batter_sr_benchmark"] = 120.0
+
+    aware_ctx = ExtraContext(importance_score=70.0, chasing_strike_rate=118.0, bat_consistency=0.8)
+    pen_aware, aw = scorer._strike_rate_penalty({"career_bat_sr": 90.0, "career_matches": 80},
+                                                 aware_ctx, "batter")
+    raw_ctx = ExtraContext(importance_score=None, chasing_strike_rate=None, bat_consistency=None)
+    pen_raw, aw_raw = scorer._strike_rate_penalty({"career_bat_sr": 90.0, "career_matches": 2},
+                                                   raw_ctx, "batter")
+
+    assert pen_aware < 0 and pen_raw < 0
+    assert pen_raw < pen_aware                      # the raw player is penalized MORE
+    assert aw["factor"] > aw_raw["factor"]
+
+    # at/above par -> no penalty; pure bowler never penalized for batting SR
+    assert scorer._strike_rate_penalty({"career_bat_sr": 130.0, "career_matches": 80}, aware_ctx, "batter")[0] == 0.0
+    assert scorer._strike_rate_penalty({"career_bat_sr": 90.0, "career_matches": 2}, raw_ctx, "bowler")[0] == 0.0
 
 
 def test_explain_mentions_player_and_opponent(conn):

@@ -37,8 +37,8 @@ CREATE TABLE player_match_impact (
     bowl_dot_pct REAL, bowl_boundary_pct REAL, bowl_strike_rate REAL
 );
 CREATE TABLE dismissal_matchup (
-    format TEXT, batter_id TEXT, bowler_id TEXT, bowler_team TEXT,
-    balls INTEGER, runs INTEGER, dismissals INTEGER
+    format TEXT, batter_id TEXT, bowler_id TEXT, batter_name TEXT, bowler_name TEXT,
+    bowler_team TEXT, balls INTEGER, runs INTEGER, dismissals INTEGER
 );
 CREATE TABLE venue_dismissal_matchup (
     format TEXT, venue_id TEXT, batter_id TEXT, bowler_id TEXT, bowler_name TEXT,
@@ -54,7 +54,8 @@ CREATE TABLE player_phase (
     bowl_economy REAL, bowl_team_rank INTEGER, bowl_team_size INTEGER
 );
 CREATE TABLE player_impact (
-    player_id TEXT, format TEXT, importance_score REAL, win_pct REAL, potm_rate REAL
+    player_id TEXT, format TEXT, importance_score REAL, win_pct REAL, potm_rate REAL,
+    setting_strike_rate REAL, chasing_strike_rate REAL
 );
 CREATE TABLE player_career (
     player_id TEXT, format TEXT, bat_average REAL, bat_strike_rate REAL,
@@ -177,10 +178,14 @@ def add_venue(conn: sqlite3.Connection, venue_id: str, canonical_name: str,
 
 
 def add_bowler_matchup(conn: sqlite3.Connection, bowler_id: str, batter_id: str,
-                        balls: int, runs: int, dismissals: int) -> None:
+                        balls: int, runs: int, dismissals: int,
+                        batter_name: str | None = None, bowler_name: str | None = None,
+                        bowler_team: str | None = None) -> None:
     conn.execute(
-        "INSERT INTO dismissal_matchup(format, batter_id, bowler_id, balls, runs, dismissals) "
-        "VALUES('T20',?,?,?,?,?)", (batter_id, bowler_id, balls, runs, dismissals))
+        "INSERT INTO dismissal_matchup(format, batter_id, bowler_id, batter_name, bowler_name, "
+        "bowler_team, balls, runs, dismissals) VALUES('T20',?,?,?,?,?,?,?,?)",
+        (batter_id, bowler_id, batter_name or batter_id, bowler_name or bowler_id,
+         bowler_team, balls, runs, dismissals))
 
 
 def add_venue_matchup(conn: sqlite3.Connection, batter_id: str, bowler_id: str, venue_id: str,

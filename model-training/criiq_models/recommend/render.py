@@ -27,7 +27,10 @@ _POOL_SECTIONS = [
 def render_team_sheet(team: str, opponent: str, venue_id: str | None,
                        xi_explained: list[dict], pool_explained: list[dict],
                        model_metadata: dict | None, constraints: dict | None,
-                       role_options: list[dict] | None = None) -> str:
+                       role_options: list[dict] | None = None,
+                       head_to_head: dict | None = None,
+                       strength_context: dict | None = None,
+                       rotation_xi: dict | None = None) -> str:
     """`xi_explained`/`pool_explained`: the same lists `cmd_recommend
     --explain` builds -- each entry is a brief dict (`name`, `role_bucket`,
     `is_keeper`, `batting_position_median`, `score`) plus a `reasoning` list
@@ -60,6 +63,13 @@ def render_team_sheet(team: str, opponent: str, venue_id: str | None,
         n_rows = model_metadata.get("n_rows_total")
         lines.append(f"  Model trained {trained} on {n_rows} leakage-safe rows "
                       f"({model_metadata.get('format')}, {model_metadata.get('gender')})")
+        lines.append("")
+
+    if strength_context and strength_context.get("lopsided") and strength_context.get("stronger_side") == team:
+        me, opp = strength_context["team"], strength_context["opponent"]
+        lines.append(f"  MATCHUP CONTEXT: {team} is the substantially stronger side here "
+                      f"({me['icc_ranked']} ICC-ranked players vs {opponent}'s {opp['icc_ranked']}).")
+        lines.append(f"  You can rest frontline players; see the ROTATION XI below the first-choice side.")
         lines.append("")
 
     xi_ids = {p["player_id"] for p in xi_explained}
@@ -122,6 +132,50 @@ def render_team_sheet(team: str, opponent: str, venue_id: str | None,
             f"batting-capable, >= {constraints.get('min_bowling_capable')} bowling-capable, "
             f">= {constraints.get('min_keepers')} keeper(s), "
             f">= {constraints.get('min_openers')} opener(s))")
+
+    if head_to_head and (head_to_head.get("batting") or head_to_head.get("bowling")):
+        lines.append(bar)
+        lines.append(f"  HEAD-TO-HEAD vs {opponent.upper()}'S NAMED XI (recorded matchups, >= 6 balls)")
+        lines.append("  " + "-" * (_WIDTH - 2))
+        bat = head_to_head.get("batting") or {}
+        if bat:
+            lines.append("  Your batters vs their bowlers:")
+            for name in sorted(bat):
+                s = bat[name]
+                bits = []
+                if s.get("bogey"):
+                    b = s["bogey"]
+                    bits.append(f"troubled by {b['opponent']} ({b['dismissals']} in {b['balls']} balls)")
+                if s.get("best"):
+                    d = s["best"]
+                    bits.append(f"scores off {d['opponent']} (SR {d['strike_rate']} in {d['balls']})")
+                if bits:
+                    lines.append(_wrap(f"- {name}: {'; '.join(bits)}."))
+        bowl = head_to_head.get("bowling") or {}
+        if bowl:
+            lines.append("  Your bowlers vs their batters:")
+            for name in sorted(bowl):
+                s = bowl[name]
+                bits = []
+                if s.get("best"):
+                    b = s["best"]
+                    bits.append(f"has {b['opponent']}'s number ({b['dismissals']} in {b['balls']} balls)")
+                if s.get("most_expensive"):
+                    e = s["most_expensive"]
+                    bits.append(f"leaks to {e['opponent']} (econ {e['economy']} in {e['balls']})")
+                if bits:
+                    lines.append(_wrap(f"- {name}: {'; '.join(bits)}."))
+
+    if rotation_xi and rotation_xi.get("xi"):
+        lines.append(bar)
+        rested = ", ".join(p["name"] for p in rotation_xi.get("rested", []))
+        lines.append("  ROTATION XI (frontline rested, you are the stronger side)")
+        lines.append(f"  Resting: {rested}")
+        lines.append("  " + "-" * (_WIDTH - 2))
+        for i, p in enumerate(rotation_xi["xi"], start=1):
+            tag = " (wk)" if p.get("is_keeper") else ""
+            lines.append(f"  {i:2d}. {p['name']:<22s} {p['role_bucket']:<12s}{tag:<5s} {p['score']:>5.1f}/100")
+
     lines.append(bar)
     return "\n".join(lines)
 

@@ -238,17 +238,31 @@ class ExtraContext:
     bat_best_phase: str | None = None        # phase with this batter's highest strike rate
     bat_best_phase_sr: float | None = None
     bat_best_phase_boundary_pct: float | None = None
+    # Game-awareness signals (score.py's strike-rate soft-penalty offset).
+    setting_strike_rate: float | None = None   # batting first
+    chasing_strike_rate: float | None = None   # under run-chase pressure
+    bat_consistency: float | None = None        # 0..1, higher = more consistent match-to-match
 
 
 def build_extra_context(conn: sqlite3.Connection, player_id: str, opponent: str,
                          fmt: str = SETTINGS.format, gender: str = SETTINGS.gender,
                          opponent_roster: list[str] | None = None,
-                         venue_id: str | None = None) -> ExtraContext:
+                         venue_id: str | None = None,
+                         opponent_players: list[str] | None = None) -> ExtraContext:
     """`opponent_roster`: the opponent's current player_ids (`roster.team_pool`),
     pre-computed and passed in by callers scoring many players against the
     same opponent (e.g. `RecommendationScorer.score_many`) -- it doesn't
     depend on `player_id`, so recomputing it fresh per player scored would be
     pure waste. Computed internally when omitted (e.g. direct/test callers).
+
+    `opponent_players`: when the coach has named the opponent's *specific* XI
+    (not just "the team"), both matchup axes scope to exactly those players --
+    the batting matchup to *their* bowlers (by bowler_id, not the whole team's
+    bowler_team), the bowling matchup to *their* batters. This is what makes
+    the recommendation counter-optimize against the chosen 11: players who
+    match up well against those specific opponents score higher. When omitted,
+    behaviour is unchanged (batting matchup vs the whole opponent team, bowling
+    matchup vs the full current roster).
     """
     ctx = ExtraContext()
 
@@ -256,10 +270,17 @@ def build_extra_context(conn: sqlite3.Connection, player_id: str, opponent: str,
         "SELECT canonical_name FROM players WHERE player_id=?", (player_id,)).fetchone()
     ctx.name = name_row["canonical_name"] if name_row else None
 
-    matchup = pd.read_sql_query(
-        "SELECT balls, runs, dismissals FROM dismissal_matchup "
-        "WHERE format=? AND batter_id=? AND bowler_team=?",
-        conn, params=(fmt, player_id, opponent))
+    if opponent_players:
+        placeholders = ",".join("?" * len(opponent_players))
+        matchup = pd.read_sql_query(
+            f"SELECT balls, runs, dismissals FROM dismissal_matchup "
+            f"WHERE format=? AND batter_id=? AND bowler_id IN ({placeholders})",
+            conn, params=(fmt, player_id, *opponent_players))
+    else:
+        matchup = pd.read_sql_query(
+            "SELECT balls, runs, dismissals FROM dismissal_matchup "
+            "WHERE format=? AND batter_id=? AND bowler_team=?",
+            conn, params=(fmt, player_id, opponent))
     if not matchup.empty and matchup["balls"].sum() > 0:
         balls = int(matchup["balls"].sum())
         ctx.matchup_balls = balls
@@ -273,7 +294,9 @@ def build_extra_context(conn: sqlite3.Connection, player_id: str, opponent: str,
     # filters by the stored bowler_team), opponent-scoping here goes through
     # the opponent's current roster membership on the batter_id side, same
     # roster lookup `features/style_matchup.py`'s opponent_bowling_mix uses.
-    opponent_batters = opponent_roster if opponent_roster is not None else team_pool(conn, opponent, fmt, gender)
+    opponent_batters = (opponent_players if opponent_players
+                        else opponent_roster if opponent_roster is not None
+                        else team_pool(conn, opponent, fmt, gender))
     if opponent_batters:
         placeholders = ",".join("?" * len(opponent_batters))
         bowl_matchup = pd.read_sql_query(
@@ -317,12 +340,30 @@ def build_extra_context(conn: sqlite3.Connection, player_id: str, opponent: str,
             ctx.venue_bogey_bowler = dict(bogey)
 
     impact = conn.execute(
-        "SELECT importance_score, win_pct, potm_rate FROM player_impact "
-        "WHERE player_id=? AND format=?", (player_id, fmt)).fetchone()
+        "SELECT importance_score, win_pct, potm_rate, setting_strike_rate, chasing_strike_rate "
+        "FROM player_impact WHERE player_id=? AND format=?", (player_id, fmt)).fetchone()
     if impact:
         ctx.importance_score = impact["importance_score"]
         ctx.win_pct = impact["win_pct"]
         ctx.potm_rate = impact["potm_rate"]
+        ctx.setting_strike_rate = impact["setting_strike_rate"]
+        ctx.chasing_strike_rate = impact["chasing_strike_rate"]
+
+    # Consistency: how steady the player's per-match batting contribution is,
+    # match to match (a "game awareness / dependable" signal -- boom-or-bust
+    # players score lower). 1 / (1 + coefficient of variation) over matches
+    # they actually batted in, so 1.0 = perfectly steady, ->0 = wildly
+    # variable. Needs a few innings to mean anything.
+    contribs = [r["bat_contribution_pct"] for r in conn.execute(
+        "SELECT bat_contribution_pct FROM player_match_impact "
+        "WHERE player_id=? AND format=? AND bat_contribution_pct IS NOT NULL",
+        (player_id, fmt)).fetchall()]
+    if len(contribs) >= 5:
+        mean = sum(contribs) / len(contribs)
+        if mean > 0:
+            var = sum((c - mean) ** 2 for c in contribs) / len(contribs)
+            cv = (var ** 0.5) / mean
+            ctx.bat_consistency = round(1.0 / (1.0 + cv), 3)
 
     ctx.role_bucket, ctx.is_keeper, ctx.batting_position_median = resolve_role(conn, player_id, fmt)
 

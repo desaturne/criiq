@@ -58,6 +58,22 @@ class Settings:
     # tuned hyperparameter, a plausible mapping checked against real data.
     wpa_scale: float = 450.0
 
+    # Strike-rate soft penalty (score.py's `strike_rate_part`). Modern T20I is
+    # strike-rate-driven, so a batting-capable player whose career strike rate
+    # is below the gender-relative par gets a *penalty* (never a reward -- WPA
+    # already rewards fast scoring that changes games; this only docks the
+    # genuinely slow). The penalty is scaled DOWN by a "game awareness" factor
+    # in [0,1] (experience + big-moment impact + chasing composure +
+    # consistency), so an experienced, situationally-aware anchor keeps most of
+    # their rating while a slow player with none of that offset takes the full
+    # hit. `sr_penalty_cap` is the most it can ever subtract; `sr_penalty_scale`
+    # maps the fractional shortfall below par to points (a ~30% shortfall with
+    # zero offset hits the cap). `experience_full_matches` is the career-match
+    # count at which the experience sub-signal saturates to 1.0.
+    sr_penalty_cap: float = 6.0
+    sr_penalty_scale: float = 20.0
+    experience_full_matches: int = 50
+
     # Openers (positions 1-2) are handled as a locked, score-ranked slot
     # separate from the rest of the batting order: a player's historical
     # batting_position_median at or below this counts as opener-capable.
@@ -74,6 +90,17 @@ class Settings:
     min_bowling_capable: int = 5
     min_keepers: int = 1
     pool_size: int = 20
+
+    # Lopsided-matchup detection (recommend/strength.py). When this team has at
+    # least this many more currently-ICC-ranked (world-top-10) players than the
+    # opponent -- and the opponent has almost none -- the matchup is flagged
+    # lopsided: the stronger side is told it can rest frontline players, and a
+    # rotation XI (top `rotation_rest_count` performers rested) is offered
+    # alongside the first-choice one. ICC-ranked count is the strength signal
+    # because mean importance_score doesn't separate a top side from a minnow
+    # (associates pad it beating each other).
+    lopsided_icc_gap: int = 3
+    rotation_rest_count: int = 4
 
     # Temporal holdout fraction for backtesting (by match date, never by row).
     backtest_test_fraction: float = 0.2

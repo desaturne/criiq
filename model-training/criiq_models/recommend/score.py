@@ -96,16 +96,71 @@ class RecommendationScorer:
             f"AND bat_average > 0 AND bat_strike_rate > 0",
             self.conn, params=(self.fmt, *scope_ids))
         dismissal_rates = (career["bat_strike_rate"] / (100 * career["bat_average"])) if len(career) else pd.Series(dtype=float)
+        # Gender-relative "par" strike rate for the SR soft-penalty: the median
+        # career SR among genuine batters of this scope (bat_average >= 15, so
+        # tailenders' low SRs don't drag the bar down). Gender-relative for the
+        # same reason the archetype bars are -- men's and women's T20 SR
+        # distributions differ sharply, so an absolute par would be wrong for one.
+        real_batters = career[career["bat_average"] >= 15] if len(career) else career
+        sr_benchmark = float(real_batters["bat_strike_rate"].median()) if len(real_batters) else None
         return {
             "batting_wpa": wpa["batting_wpa"].mean() if wpa["batting_wpa"].notna().any() else _FALLBACK_BATTING_WPA_PRIOR,
             "bowling_wpa": wpa["bowling_wpa"].mean() if wpa["bowling_wpa"].notna().any() else _FALLBACK_BOWLING_WPA_PRIOR,
             "dismissal_rate": dismissal_rates.mean() if len(dismissal_rates) else _FALLBACK_DISMISSAL_RATE_PRIOR,
+            "batter_sr_benchmark": sr_benchmark,
         }
 
-    def score(self, player_id: str, opponent: str, venue_id: str | None = None) -> dict:
+    def _game_awareness(self, feats: dict, ctx: "object") -> dict:
+        """A [0,1] "game awareness / experience" factor from the four signals
+        the coach chose, each normalized to [0,1], averaged over whichever are
+        available. Used only to scale DOWN the strike-rate penalty -- an
+        experienced, situationally-aware player is trusted to bat slower.
+
+        - experience: career matches, saturating at `experience_full_matches`.
+        - big-moment impact: `importance_score` (bundles winning contribution,
+          match-winning performances, and player-of-match -- the available
+          proxy for "shows up when it matters"; a true close-game-only WPA
+          split isn't in the pipeline, noted honestly).
+        - chasing composure: chasing strike rate relative to the gender par
+          (can they still score under run-chase pressure).
+        - consistency: `bat_consistency` (steady match-to-match, not boom-or-bust).
+        """
+        signals = {}
+        matches = feats.get("career_matches") or 0
+        signals["experience"] = min(1.0, matches / SETTINGS.experience_full_matches)
+        if ctx.importance_score is not None:
+            signals["big_moment"] = max(0.0, min(1.0, ctx.importance_score / 100.0))
+        benchmark = self._priors.get("batter_sr_benchmark")
+        if ctx.chasing_strike_rate is not None and benchmark:
+            signals["chasing"] = max(0.0, min(1.0, ctx.chasing_strike_rate / benchmark))
+        if ctx.bat_consistency is not None:
+            signals["consistency"] = max(0.0, min(1.0, ctx.bat_consistency))
+        factor = sum(signals.values()) / len(signals) if signals else 0.0
+        return {"factor": round(factor, 3), "signals": {k: round(v, 3) for k, v in signals.items()}}
+
+    def _strike_rate_penalty(self, feats: dict, ctx: "object", bucket: str) -> tuple[float, dict]:
+        """Soft penalty (<= 0) for a batting-capable player whose career strike
+        rate is below the gender par, scaled down by game awareness. Never a
+        reward, never applied to pure bowlers (not picked for their batting).
+        """
+        awareness = self._game_awareness(feats, ctx)
+        benchmark = self._priors.get("batter_sr_benchmark")
+        career_sr = feats.get("career_bat_sr")
+        if not batting_capable(bucket) or not benchmark or career_sr is None or pd.isna(career_sr) or career_sr <= 0:
+            return 0.0, awareness
+        if career_sr >= benchmark:
+            return 0.0, awareness  # at or above par: no penalty
+        shortfall = (benchmark - career_sr) / benchmark        # fraction below par, (0,1)
+        raw = min(SETTINGS.sr_penalty_cap, shortfall * SETTINGS.sr_penalty_scale)
+        penalty = -round(raw * (1.0 - awareness["factor"]), 1)  # awareness offsets it
+        return penalty, awareness
+
+    def score(self, player_id: str, opponent: str, venue_id: str | None = None,
+              opponent_players: list[str] | None = None) -> dict:
         feats = build_model_features(self.conn, player_id, opponent, venue_id, self.fmt)
         ctx = build_extra_context(self.conn, player_id, opponent, self.fmt, self.gender,
-                                   opponent_roster=self._opponent_roster(opponent), venue_id=venue_id)
+                                   opponent_roster=self._opponent_roster(opponent), venue_id=venue_id,
+                                   opponent_players=opponent_players)
         bucket = feats["role_bucket"] or ctx.role_bucket
 
         model_applied = (feats["career_matches"] or 0) >= SETTINGS.min_matches_for_model \
@@ -153,7 +208,18 @@ class RecommendationScorer:
         # versatility — real, but not enough to dominate raw excellence.
         primary = active_wpa[0] if active_wpa else 0.0
         secondary_bonus = sum(active_wpa[1:]) * SETTINGS.secondary_discipline_weight
-        model_part = round(min(45.0, (primary + secondary_bonus) * SETTINGS.wpa_scale), 1)
+        model_part = min(45.0, (primary + secondary_bonus) * SETTINGS.wpa_scale)
+        # Cold-start confidence discount: in the fallback path the "WPA" is a
+        # shrink over a handful of matches, so a 3-match player who happened to
+        # bowl well (often against weak opposition) could otherwise score a
+        # near-full model_part -- a real over-rating flagged on Aakash Chand
+        # (3 matches -> +12.5, above the 78-match RK Paudel's real +0.2). Scale
+        # the cold-start model_part by how much history actually backs it, so
+        # trust ramps linearly from ~0 up to the full model at min_matches_for_model.
+        if not model_applied:
+            confidence = min(1.0, (feats["career_matches"] or 0) / SETTINGS.min_matches_for_model)
+            model_part *= confidence
+        model_part = round(model_part, 1)
 
         baseline_row = self.conn.execute(
             "SELECT bat_average, bat_strike_rate FROM player_career WHERE player_id=? AND format=?",
@@ -173,9 +239,11 @@ class RecommendationScorer:
         # against the batter's own vs-style record (see features/style_matchup)
         # — smaller-magnitude than the aggregate signal above, and adds
         # nothing when either side's style data isn't known well enough.
-        opponent_roster = self._opponent_roster(opponent)
+        # When a specific opponent XI is named, the opponent's pace/spin mix is
+        # theirs, not the whole team's -- scope the style matchup to it too.
+        roster_for_style = opponent_players or self._opponent_roster(opponent)
         style = style_matchup_edge(self.conn, player_id, opponent, career_dismissal_rate,
-                                    self.fmt, self.gender, opponent_roster=opponent_roster)
+                                    self.fmt, self.gender, opponent_roster=roster_for_style)
 
         # Symmetric bowling-side matchup: was entirely absent before -- a
         # specialist bowler rarely faces enough balls herself to ever get a
@@ -231,13 +299,15 @@ class RecommendationScorer:
             risk_part -= 4.0
         risk_part = round(risk_part, 1)
 
+        strike_rate_part, awareness = self._strike_rate_penalty(feats, ctx, bucket)
+
         total = round(max(0.0, min(100.0, model_part + matchup_part + phase_fit_part
-                                    + standing_part + risk_part)), 1)
+                                    + standing_part + risk_part + strike_rate_part)), 1)
 
         components = {
             "model_part": model_part, "matchup_part": matchup_part,
             "phase_fit_part": phase_fit_part, "standing_part": standing_part,
-            "risk_part": risk_part,
+            "risk_part": risk_part, "strike_rate_part": strike_rate_part,
             # Only ever set by `score_many` (a pool-wide, not per-player,
             # computation) — a lone `score()` call has no pool to compare
             # against, so these stay at their honest "not evaluated" default.
@@ -305,6 +375,13 @@ class RecommendationScorer:
                 "bat_best_phase": ctx.bat_best_phase,
                 "bat_best_phase_sr": ctx.bat_best_phase_sr,
                 "bat_best_phase_boundary_pct": ctx.bat_best_phase_boundary_pct,
+                "career_bat_sr": None if pd.isna(feats.get("career_bat_sr")) else feats.get("career_bat_sr"),
+                "sr_benchmark": self._priors.get("batter_sr_benchmark"),
+                "chasing_strike_rate": ctx.chasing_strike_rate,
+                "setting_strike_rate": ctx.setting_strike_rate,
+                "bat_consistency": ctx.bat_consistency,
+                "game_awareness_factor": awareness["factor"],
+                "game_awareness_signals": awareness["signals"],
             },
         }
 
@@ -316,13 +393,18 @@ class RecommendationScorer:
         }
 
     def score_many(self, player_ids: list[str], opponent: str,
-                    venue_id: str | None = None) -> list[dict]:
+                    venue_id: str | None = None,
+                    opponent_players: list[str] | None = None) -> list[dict]:
         """Scores every player, then applies a synergy-aware team-need bonus
         (see `recommend/team_need.py`) computed once across this whole pool —
         a player scored alone has no way to know "this team is thin on death
         bowling", only the pool as a whole does.
+
+        `opponent_players`: the opponent's specific XI, if named -- threaded to
+        each `score` so matchups counter-optimize against exactly those players.
         """
-        scored = [self.score(pid, opponent, venue_id) for pid in player_ids]
+        scored = [self.score(pid, opponent, venue_id, opponent_players=opponent_players)
+                  for pid in player_ids]
 
         team_need = compute_team_need(self.conn, player_ids, self.fmt, self.gender)
         for player in scored:

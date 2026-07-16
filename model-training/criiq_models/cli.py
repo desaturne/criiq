@@ -24,8 +24,10 @@ from .evaluate.backtest import backtest
 from .evaluate.rank_backtest import rank_backtest
 from .features.historical import build_training_table
 from .recommend.explain import explain
+from .recommend.matchup_matrix import head_to_head_matrix
 from .recommend.render import render_team_sheet, render_xi_analysis
 from .recommend.score import RecommendationScorer
+from .recommend.strength import strength_context
 from .recommend.train import load_metadata, train
 from .roster import known_teams, team_pool
 from .venues import resolve_venue
@@ -81,6 +83,25 @@ def _resolve_player_name(conn, name: str) -> tuple[str | None, bool]:
     return matches[0]["player_id"], True
 
 
+def _resolve_player_list(conn, players: str | None, player_ids: str | None) -> tuple[list[str] | None, bool]:
+    """Resolve a comma-separated --players (fuzzy names, with the same "did
+    you mean" disambiguation) or --player-ids (raw ids) argument to a list of
+    player_ids. Returns `(ids, ok)`; `ok=False` means an unresolved/ambiguous
+    name was already reported. `(None, True)` when neither was given.
+    """
+    if players:
+        out = []
+        for name in players.split(","):
+            pid, ok = _resolve_player_name(conn, name.strip())
+            if not ok:
+                return None, False
+            out.append(pid)
+        return out, True
+    if player_ids:
+        return [x.strip() for x in player_ids.split(",")], True
+    return None, True
+
+
 def cmd_features(args):
     conn = connect()
     table = build_training_table(conn, args.format, args.gender)
@@ -126,8 +147,14 @@ def cmd_recommend(args):
               f"(format={args.format}, gender={args.gender})")
         conn.close()
         return
+    # Optional: the opponent's specific XI, to counter-optimize against (matchups
+    # scope to exactly those players) and to build the head-to-head matrix.
+    opponent_players, ok = _resolve_player_list(conn, args.opponent_players, args.opponent_player_ids)
+    if not ok:
+        conn.close()
+        return
     scorer = RecommendationScorer(conn, args.format, args.gender)
-    scored = scorer.score_many(pool_ids, args.opponent, venue_id)
+    scored = scorer.score_many(pool_ids, args.opponent, venue_id, opponent_players=opponent_players)
     result = select_xi(scored)
 
     def _brief(p):
@@ -149,6 +176,30 @@ def cmd_recommend(args):
                 "is_keeper": p["is_keeper"], "detail": detail}
 
     role_options = [_role_option(arch, p) for arch, p in role_highlights(scored).items()]
+
+    # Head-to-head matrix: how the recommended XI matches up against the named
+    # opposition, player by player (only when an opponent XI was supplied).
+    h2h = None
+    if opponent_players:
+        xi_ids_for_h2h = [p["player_id"] for p in result["xi"]]
+        h2h = head_to_head_matrix(conn, xi_ids_for_h2h, opponent_players, args.format)
+
+    # Lopsided matchup: if this side is much stronger (many more ICC-ranked
+    # players), flag it and offer a rotation XI that rests the top performers,
+    # so the coach can see a viable bench side rather than fielding stars in a
+    # mismatch. Only when *we* are the stronger side.
+    sctx = strength_context(conn, args.team, args.opponent, args.format, args.gender)
+    rotation_xi = None
+    if sctx["lopsided"] and sctx["stronger_side"] == args.team:
+        rested = sorted(scored, key=lambda p: -p["score"])[:SETTINGS.rotation_rest_count]
+        rested_ids = {p["player_id"] for p in rested}
+        remaining = [p for p in scored if p["player_id"] not in rested_ids]
+        rot = select_xi(remaining)
+        rotation_xi = {
+            "rested": [{"player_id": p["player_id"], "name": p["name"], "score": p["score"]} for p in rested],
+            "xi": [_brief(p) for p in rot["xi"]],
+            "constraints": rot.get("constraints"),
+        }
 
     if args.explain or args.pretty:
         xi_ids = {p["player_id"] for p in result["xi"]}
@@ -179,7 +230,8 @@ def cmd_recommend(args):
     if args.pretty:
         print(render_team_sheet(args.team, args.opponent, venue_id, xi_out, pool_out,
                                  load_metadata(args.format, args.gender), result.get("constraints"),
-                                 role_options=role_options))
+                                 role_options=role_options, head_to_head=h2h,
+                                 strength_context=sctx, rotation_xi=rotation_xi))
         conn.close()
         return
 
@@ -196,6 +248,10 @@ def cmd_recommend(args):
         "pool": pool_out,
         "pools": pools_out,
         "role_options": role_options,
+        "opponent_players": opponent_players,
+        "head_to_head": h2h,
+        "strength_context": sctx,
+        "rotation_xi": rotation_xi,
         "selection_method": result["method"], "constraints": result.get("constraints"),
     })
     conn.close()
@@ -336,6 +392,11 @@ def build_parser() -> argparse.ArgumentParser:
                     help="include per-player plain-language reasoning for the XI")
     r.add_argument("--pretty", action="store_true",
                     help="render a human-readable team sheet instead of JSON (implies --explain)")
+    r.add_argument("--opponent-players", dest="opponent_players",
+                    help="the opponent's specific XI (comma-separated names) to counter-optimize "
+                         "against and build a head-to-head matrix for, e.g. \"V Kohli,RG Sharma,...\"")
+    r.add_argument("--opponent-player-ids", dest="opponent_player_ids",
+                    help="opponent XI as comma-separated player_ids (alternative to --opponent-players)")
     r.set_defaults(func=cmd_recommend)
 
     e = sub.add_parser("explain", help="component breakdown for one player")

@@ -275,6 +275,71 @@ substitutes already shipped are exactly what this section surfaces plus the
 existing vs-pace/vs-spin and vs-RHB/vs-LHB splits (`style_matchup.py`) — *who*
 a player is effective against, not *which shot* or *where on the pitch*.
 
+### Strike rate as a soft penalty, offset by game awareness
+
+Modern T20I is strike-rate-driven, so `score.py`'s `strike_rate_part` docks a
+batting-capable player whose career strike rate is below the **gender-relative
+par** (median career SR among genuine batters of that gender — an absolute bar
+would be wrong given how far men's and women's SR distributions sit apart). It
+is deliberately a *soft penalty, never a reward*: WPA already rewards fast
+scoring that changes games, and rewarding raw SR on top would re-import exactly
+the dead-rubber-slogging problem WPA was adopted to fix. The shortfall-based
+penalty (capped −6) is scaled **down** by a `game_awareness` factor in [0,1] —
+the four signals a coach identified as justifying a lower SR: experience
+(career matches), big-moment impact (`importance_score`), chasing composure
+(chasing SR vs par), and consistency (`1/(1+CV)` of per-match contribution). So
+an experienced, aware anchor keeps almost all their rating while a raw low-SR
+player takes close to the full hit. Confirmed on live data: Nida Dar (SR 91.5,
+126 caps, awareness 0.82) → −0.1; an SR-58 five-cap player (awareness 0.28) →
+−4.3. Surfaced in `explain` ("Career strike rate 82 is below the 95 par ...,
+partly offset by game awareness ...") and available as a descriptive tiebreaker.
+
+### Counter-optimizing against a named opposition XI + head-to-head matrix
+
+`recommend --opponent-players "Name1,Name2,..."` (or `--opponent-player-ids`)
+lets a coach name the opposition's likely XI. All matchup signals then scope to
+exactly those eleven — the batting matchup to *their* bowlers (by `bowler_id`,
+not the team-wide `bowler_team`), the bowling matchup and pace/spin mix to
+*their* batters (`features/current.build_extra_context`'s new
+`opponent_players`). Because the MILP maximises total score and those matchup
+components now reflect the specific XI, the recommended team tilts toward
+players who counter it — counter-optimization with no new objective, just
+correctly-scoped inputs.
+
+A **head-to-head matrix** (`recommend/matchup_matrix.py`) accompanies it: real
+`dismissal_matchup` history between your recommended XI and their named XI, both
+ways — each of your batters' bogey bowler (dismissed them most) and best matchup
+(scored most freely off), each of your bowlers' best (most dismissals) and
+most-expensive opposition batter, ≥6 balls per pairing or omitted. Live example
+(India vs a named Australia XI): S Mandhana flagged as troubled by D Brown (4
+in 68) but free-scoring off A Gardner; DB Sharma as having BL Mooney's number
+(5 wickets in 134). This is the concrete "which of mine matches up against which
+of theirs" a selector wants, on top of the aggregate matchup already in the score.
+
+### Lopsided matchups: a rotation XI for the much-stronger side
+
+Against a far weaker opponent, `recommend` flags that this side is dominant and
+offers a **rotation XI** resting the top `rotation_rest_count` (default 4)
+performers, re-running the same constrained selection over the rest — a viable
+bench side for a mismatch (`recommend/strength.py`). The strength signal is the
+count of currently-**ICC-ranked** players, deliberately *not* mean
+`importance_score`: importance is padded by associates beating each other (Nepal
+men's top-11 mean importance ~70 barely trails India's ~79), while ICC-ranked
+count separates them cleanly (India men 6, Nepal 1, Oman 0). It fires only when
+this team leads by `lopsided_icc_gap` (default 3) ranked players and the opponent
+has ≤1 — India-vs-Nepal, not India-vs-Australia — for both genders. Verified
+live: India women vs Nepal flags "5 ICC-ranked vs 0" and rests Mandhana / H Kaur
+/ Hemalatha / Rodrigues; India vs Australia does not fire.
+
+### Cold-start ratings are discounted by how little history backs them
+
+The fallback `model_part` (used below `min_matches_for_model` career matches) is
+scaled by `career_matches / min_matches_for_model`, so a 3-match player can post
+at most ~30% of the full model points. This fixes a real over-rating a domain
+expert flagged on Nepal's Aakash Chand — 3 matches (often vs weak opposition)
+were posting +12.5, above the 78-match captain RK Paudel's genuine +0.2; now
++3.8. The thinner the record, the less the shrink-based fallback is trusted.
+
 ### Per-target model selection — picked from real numbers, not assumed
 
 `recommend/train.py` fits a different model family per target, chosen from
@@ -581,22 +646,24 @@ exclusion logic was always correct, it was just being fed a broken input.
   per-match bowling variance is genuinely unpredictable from history (a
   dropped catch off their bowling isn't *their* signal at all). Run
   `criiq_models.cli backtest` after any change to see current numbers.
-- **Wicket-keeper detection covers 18 women's T20I nations' current squads —
-  zero men's nations yet.** (Wikipedia squad-page role text, merged by
-  `key_cricinfo` — see data-collection's `role_finalize.py`): the original 13
-  major women's nations plus the United Arab Emirates, Namibia, Nepal,
-  Netherlands, and Hong Kong, added by real match-volume ranking among
-  previously-uncovered teams (110, 99, 95, 94, and 93 matches respectively in
-  the current DB). This research was only ever done for women's squads —
-  `player_role_final.is_keeper` is `0`/unset for every men's player in the
-  live DB (confirmed by direct query), so `recommend`/`analyze-xi` for any
-  men's team currently fall back to no keeper constraint entirely (the same
-  graceful degradation — `min(settings.min_keepers, available_keepers)` in
-  `selection/optimize.py` — already used for uncovered women's teams, not a
-  crash or a wrong pick, just no keeper preference enforced). Closing this
-  for men's squads needs the same one-time research-and-merge pass
-  (`role_finalize --load-external`) this bullet describes for women's, not
-  any code change. Still not the full ~7000-player pool either way —
+- **Wicket-keeper detection now covers both genders** (was women's-only). Two
+  sources feed `player_role_final.is_keeper`: (1) the local role-finalize pass
+  now promotes any existing `wicket-keeper` role field (Wikidata/Wikipedia
+  enrichment on `players.role`/`player_styles.playing_role`) into the flag,
+  merged with `MAX` so it never clobbers a researched flag; and (2) the
+  Wikipedia squad-page merge (`role-finalize --load-external`, by
+  `key_cricinfo`) — 18 women's nations, plus a DB-verified set of front-line
+  men's T20I keepers across 12 nations (India, Pakistan, England, Australia,
+  South Africa, New Zealand, West Indies, Sri Lanka, Bangladesh, Nepal,
+  Zimbabwe, Ireland). Live count: 35 women's + 36 men's keepers flagged, so
+  men's XIs now enforce a real keeper (Nepal → Aasif Sheikh, India → Ishan
+  Kishan, etc.) instead of the old degraded "no keeper constraint". A few
+  keepers that didn't resolve cleanly to one DB identity (Sarfaraz Ahmed,
+  Verreynne, Gurbaz, an ambiguous Mohammad Shahzad, a nationality-mismatched
+  Brendan Taylor) were deliberately left out rather than risk a wrong flag.
+  Where no keeper is known for a team, selection still degrades gracefully
+  (`min(settings.min_keepers, available_keepers)`), never a crash or a guess.
+  Still not the full ~7000-player pool either way —
   recommending for a team outside whatever coverage exists falls back to no
   keeper constraint (rather than guessing) until its squad is researched and
   merged the same way. A handful of names didn't confidently resolve even
