@@ -363,6 +363,33 @@ batter could never reach.
 Point any scheduler at `python -m criiq_data.cli refresh` (GitHub Actions cron,
 local cron, or APScheduler — orchestration-agnostic).
 
+### Scheduled weekly ICC rankings update (Fridays 13:00)
+
+ICC rankings shift weekly, and they feed the registry's activity classification
+and the recommendation engine's "standing" component, so they're refreshed on a
+schedule. `scripts/weekly_icc_update.ps1` runs `criiq_data.cli rankings` (fetch
++ rebuild `player_registry`/`player_cards`) and logs to `data/logs/icc_weekly.log`.
+It's registered as a Windows Scheduled Task, **"Criiq ICC Rankings Weekly"**,
+firing every Friday at 13:00:
+
+```powershell
+$s = "<repo>\data-collection\scripts\weekly_icc_update.ps1"
+Register-ScheduledTask -TaskName "Criiq ICC Rankings Weekly" -Force `
+  -Action  (New-ScheduledTaskAction -Execute powershell.exe -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$s`"") `
+  -Trigger (New-ScheduledTaskTrigger -Weekly -DaysOfWeek Friday -At 1:00PM)
+```
+
+**One honest caveat on "fresh" data.** The live ICC endpoint is credentialed:
+the job pulls genuinely new numbers only when `CRIIQ_ICC_RANKINGS_CLIENT_ID` is
+set (as a user env var, so the scheduled task inherits it). Without it the job
+still runs safely every week — reloading the current rankings CSV and rebuilding
+the registry/cards so everything stays consistent — but it can't fetch new ranks
+(the project deliberately refuses to bypass ICC access). To get true weekly
+updates, either set that credential, or refresh `data/rankings/icc_rankings.csv`
+from the public Wikipedia ICC-rankings snapshot (the current source) before the
+Friday run. The task runs "only when logged on" (no stored password); re-run the
+`Register-ScheduledTask` block above on a new machine to recreate it.
+
 ## Advanced data ("detailed" player profiles)
 
 `player_advanced` holds a derived, **fully data-backed** profile per player:
@@ -488,6 +515,20 @@ status is explainable; `status_reason` spells it out in words. Windows and
 thresholds live in `Settings` (`selection_window_days`, `min_window_team_matches`,
 `regular_selection_rate`).
 
+**Fixed: the selection-rate denominator was gender-blended.** `window_team_matches`
+(the "how many matches did the team play in the window" denominator) keyed on
+team *name* alone, so most nations — which field a men's and a women's side under
+the same string ("Nepal", "India", ...) — had a men's player measured against the
+men's *and* women's matches combined. Nepal men played 35 T20Is in the window but
+the denominator read 82 (35 men + 47 women), roughly halving every Nepal player's
+selection rate and wrongly labelling genuine regulars INCONSISTENT (Sandeep
+Lamichhane 25/82 = 30% → INCONSISTENT, when the truth is 25/35 = 71% → a clear
+regular; Gulshan Jha, Sompal Kami, Karan KC, LN Rajbanshi likewise). Flagged by a
+domain expert on the Nepal men's side. `team_dates` is now keyed by
+`(team, gender)` and looked up with the player's own gender, so the denominator
+counts only that gender's matches. Most visible for associate nations, but the
+halving hit every gender-paired side. Verified post-fix: all the above read ACTIVE.
+
 Age advisory and career phase are role-specific (fast bowler threshold 38, others
 40; phase bands per role). Age comes from the Wikidata DOB seed (partial coverage),
 so phase/advisory populate only where DOB is known.
@@ -602,12 +643,12 @@ python -m criiq_data.cli role-finalize --load-external CSV           # merge ext
   `finalize_local_roles`): derives each player's median batting position from
   the same ball-by-ball data, and reclassifies a ball-count "all-rounder"
   whose median position is deep in the order (>=8) as a bowler instead —
-  genuinely new, offline, no external dependency.
+  genuinely new, offline, no external dependency. It also now sets
+  `is_keeper` from any existing `wicket-keeper` role field
+  (`players.role`/`player_styles.playing_role`), merged with `MAX` so it only
+  ever promotes the flag, never demotes one set by the external merge below.
 - **External merge** (`merge_external_roles`): squad-page role/keeper data
-  (currently covers 18 women's T20I nations' current squads, sourced
-  from Wikipedia — the original 13 major nations plus UAE, Namibia, Nepal,
-  Netherlands, and Hong Kong, added by real match-volume ranking among
-  previously-uncovered teams) matched to existing `players` rows and merged **strictly by
+  matched to existing `players` rows **strictly by
   `key_cricinfo`** — never by raw name — so it can never create a duplicate
   identity for a player already resolved (e.g. "Smriti Mandhana" merging
   into the same record as cricsheet's "S Mandhana", not a new one). Squad-page
@@ -617,7 +658,11 @@ python -m criiq_data.cli role-finalize --load-external CSV           # merge ext
   enough to fall below the project's usual fuzzy_threshold (88), so a
   domain-specific heuristic is used instead. Unmatched names (uncapped
   players not yet in cricsheet's history, or genuine ambiguity) are reported,
-  never guessed.
+  never guessed. Live keeper coverage: 35 women's (18 nations) + 36 men's
+  (front-line gloves across 12 nations — India, Pakistan, England, Australia,
+  South Africa, New Zealand, West Indies, Sri Lanka, Bangladesh, Nepal,
+  Zimbabwe, Ireland), so men's XIs enforce a real keeper rather than degrading
+  to none.
 
 ## Scope & config
 

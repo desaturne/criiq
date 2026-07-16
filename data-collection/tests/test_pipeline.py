@@ -16,11 +16,11 @@ from criiq_data.validate import validate_deliveries
 import pandas as pd
 
 
-def _add_match(conn, mid, date, t1, t2, winner, team_type="international"):
+def _add_match(conn, mid, date, t1, t2, winner, team_type="international", gender="female"):
     conn.execute(
         "INSERT INTO matches(match_id, format, gender, date, team1, team2, winner, "
         "venue_raw, venue_id, team_type) VALUES(?,?,?,?,?,?,?,?,?,?)",
-        (mid, "T20", "female", date, t1, t2, winner, "Test Ground", "test-ground", team_type))
+        (mid, "T20", gender, date, t1, t2, winner, "Test Ground", "test-ground", team_type))
 
 
 def _add_player_meta(conn, name, ident, key_cricinfo):
@@ -1178,3 +1178,69 @@ def test_gender_archetype_thresholds_are_scaled_per_gender():
     th = _gender_archetype_thresholds(bat_overall, bat_phase)
     assert th["male"]["six_rate_high"] > th["female"]["six_rate_high"]
     assert th["male"]["sr_high"] > th["female"]["sr_high"]
+
+
+def test_selection_rate_denominator_is_gender_scoped(tmp_path):
+    # Real bug flagged by a domain expert on Nepal men: the selection-rate
+    # denominator (window_team_matches) keyed on team NAME alone, so a men's
+    # player's rate was measured against men's + women's matches combined,
+    # roughly halving it and wrongly flagging genuine regulars INCONSISTENT.
+    # Here "Testland" fields both a men's side (9 matches, above the
+    # min-window gate so a rate is computed) and a women's side (5). A man who
+    # played all 9 men's matches must read 9/9, not 9/14.
+    c = connect(tmp_path / "gender_denom.db")
+    init_schema(c)
+    _add_player_meta(c, "Man Regular", "id_man", "901")
+    _add_player_meta(c, "Woman Regular", "id_woman", "902")
+    for i in range(9):
+        mid = f"MEN{i}"
+        _add_match(c, mid, f"2026-{i+1:02d}-10", "Testland", "Rivalia", "Testland", gender="male")
+        _add_match_player(c, mid, "Testland", "Man Regular")
+    # women's matches (with a real women's appearance, so they land in the
+    # appearance table) must NOT count toward the man's denominator
+    for i in range(5):
+        mid = f"WMN{i}"
+        _add_match(c, mid, f"2025-{i+1:02d}-12", "Testland", "Rivalia", "Testland", gender="female")
+        _add_match_player(c, mid, "Testland", "Woman Regular")
+    c.commit()
+    identity.resolve_players(c)
+
+    registry.build_registry_for_format(c, "T20")
+    r = c.execute("SELECT * FROM player_registry WHERE player_id=?",
+                  (identity.player_id_for("id_man"),)).fetchone()
+    assert r["window_team_matches"] == 9          # men's side only, not 9+5=14
+    assert r["window_player_matches"] == 9
+    assert r["selection_rate"] == 1.0             # a genuine regular, not INCONSISTENT
+    assert r["retirement_status"] == "ACTIVE"
+    c.close()
+
+
+def test_local_pass_promotes_role_field_keepers_and_never_demotes(tmp_path):
+    # is_keeper now also comes from existing wicket-keeper role fields (the
+    # men's-keeper gap fix), merged with MAX so an externally-researched keeper
+    # flag is preserved, never overwritten to 0 by the local pass.
+    from criiq_data import role_finalize
+    c = connect(tmp_path / "kp.db")
+    init_schema(c)
+    _add_player_meta(c, "Keep Er", "id_wk", "701")
+    _add_player_meta(c, "Bat Sman", "id_bat", "702")
+    _add_player_meta(c, "Ext Keeper", "id_ext", "703")
+    _add_match(c, "M1", "2026-01-01", "Team A", "Team B", "Team A", gender="male")
+    for n in ["Keep Er", "Bat Sman", "Ext Keeper"]:
+        _add_match_player(c, "M1", "Team A", n)
+    c.commit()
+    identity.resolve_players(c)
+    c.execute("UPDATE players SET role='wicket-keeper' WHERE cricsheet_identifier='id_wk'")
+    c.execute("INSERT INTO player_role_final(player_id, format, is_keeper, keeper_source) "
+              "VALUES(?, 'T20', 1, 'external')", (identity.player_id_for("id_ext"),))
+    c.commit()
+
+    role_finalize.finalize_local_roles(c, "T20")
+
+    def isk(ident):
+        return c.execute("SELECT is_keeper FROM player_role_final WHERE player_id=?",
+                         (identity.player_id_for(ident),)).fetchone()["is_keeper"]
+    assert isk("id_wk") == 1     # promoted from the role field
+    assert isk("id_bat") == 0    # ordinary batter
+    assert isk("id_ext") == 1    # external keeper flag preserved by the MAX-merge
+    c.close()

@@ -81,11 +81,31 @@ def _classify(derived_role: str | None, position_median: float | None) -> str:
     return role
 
 
-def finalize_local_roles(conn, fmt: str) -> int:
-    """Local-only pass: refines `derived_role` with batting position.
-    Leaves `is_keeper`/`keeper_source` untouched (NULL) — those only ever
-    come from `merge_external_roles`.
+def _role_field_keepers(conn) -> set:
+    """player_ids whose *existing* enrichment role data (players.role or
+    player_styles.playing_role, from Wikidata/Wikipedia) already says
+    wicket-keeper. Promoting these into `is_keeper` is not fabrication -- it's
+    surfacing a fact the pipeline already collected. "goalkeeper" (a Wikidata
+    mis-tag seen on a few players) is explicitly excluded.
     """
+    keepers = set()
+    for q in ("SELECT player_id, role AS r FROM players WHERE role IS NOT NULL",
+              "SELECT player_id, playing_role AS r FROM player_styles WHERE playing_role IS NOT NULL"):
+        for row in conn.execute(q):
+            r = (row["r"] or "").lower()
+            if "wicket-keeper" in r or "wicketkeeper" in r or "wk-batsman" in r:
+                keepers.add(row["player_id"])
+    return keepers
+
+
+def finalize_local_roles(conn, fmt: str) -> int:
+    """Local-only pass: refines `derived_role` with batting position, and sets
+    `is_keeper` from any existing wicket-keeper role field
+    (`_role_field_keepers`). The keeper flag is merged with MAX, never
+    overwritten down to 0, so a subsequent (or prior) `merge_external_roles`
+    keeper flag is preserved -- the two sources add, they don't clobber.
+    """
+    keeper_ids = _role_field_keepers(conn)
     positions = compute_batting_positions(conn, fmt)
     players_df = pd.read_sql_query(
         "SELECT player_id, cricsheet_identifier, gender, derived_role FROM players", conn)
@@ -109,21 +129,28 @@ def finalize_local_roles(conn, fmt: str) -> int:
         (r.player_id, fmt, _classify(r.derived_role, r.batting_position_median),
          r.batting_position_median if pd.notna(r.batting_position_median) else None,
          int(r.innings_batted) if pd.notna(r.innings_batted) else 0,
+         1 if r.player_id in keeper_ids else 0,
+         "local_role_field" if r.player_id in keeper_ids else None,
          "local_derived", now)
         for r in merged.itertuples()
     ]
     conn.executemany(
         "INSERT INTO player_role_final(player_id, format, primary_role, "
-        "batting_position_median, innings_batted, role_source, updated_at) "
-        "VALUES(?,?,?,?,?,?,?) "
+        "batting_position_median, innings_batted, is_keeper, keeper_source, role_source, updated_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?) "
         "ON CONFLICT(player_id, format) DO UPDATE SET "
         "primary_role=excluded.primary_role, "
         "batting_position_median=excluded.batting_position_median, "
         "innings_batted=excluded.innings_batted, "
+        # never demote a keeper flag: MAX preserves a flag set by the external
+        # merge (or a prior run), only ever promoting 0/NULL -> 1.
+        "is_keeper=MAX(COALESCE(player_role_final.is_keeper, 0), excluded.is_keeper), "
+        "keeper_source=COALESCE(player_role_final.keeper_source, excluded.keeper_source), "
         "role_source=excluded.role_source, updated_at=excluded.updated_at",
         rows)
     conn.commit()
-    log.info("role_finalize %s: %d players (local pass)", fmt, len(rows))
+    n_keepers = sum(1 for r in rows if r[5])
+    log.info("role_finalize %s: %d players (local pass), %d keepers from role fields", fmt, len(rows), n_keepers)
     return len(rows)
 
 

@@ -156,11 +156,20 @@ def build_registry_for_format(conn, fmt: str) -> int:
                    if not win.empty else {})
     match_meta = apps_intl.drop_duplicates("match_id")
     match_meta = match_meta[match_meta["date"] >= window_start]
+    # team_dates is keyed by (team, GENDER), not team name alone. Most nations
+    # field both a men's and a women's side under the same team string
+    # ("Nepal", "India", ...); keying on the name alone pools both, so a men's
+    # player's selection-rate denominator silently included the women's team's
+    # matches and vice versa -- e.g. Nepal men played 35 T20Is in the window
+    # but the denominator read 82 (35 men + 47 women), roughly halving every
+    # Nepal player's selection rate and wrongly flagging genuine regulars
+    # (Lamichhane, Gulsan Jha, Sompal Kami, ...) as INCONSISTENT. Most visible
+    # for associate nations, but the halving hit every gender-paired side.
     _td = pd.concat([
-        match_meta[["team1", "date"]].rename(columns={"team1": "team"}),
-        match_meta[["team2", "date"]].rename(columns={"team2": "team"}),
+        match_meta[["team1", "gender", "date"]].rename(columns={"team1": "team"}),
+        match_meta[["team2", "gender", "date"]].rename(columns={"team2": "team"}),
     ])
-    team_dates = {t: sorted(g["date"].tolist()) for t, g in _td.groupby("team")}
+    team_dates = {tg: sorted(g["date"].tolist()) for tg, g in _td.groupby(["team", "gender"])}
     # Fallback for "which country" when the player has no international
     # appearance inside the recent window at all (e.g. she's been playing
     # domestically only lately) -- her most recent international appearance
@@ -224,7 +233,9 @@ def build_registry_for_format(conn, fmt: str) -> int:
         team = recent_team.get(key) or last_intl_team.get(key)
         window_player_matches = int(player_win.get(key, 0))
         fw = first_win.get(key)
-        dates = team_dates.get(team, [])
+        # (team, gender) -- the player's own gender, so a men's player is
+        # measured against his men's side's matches, not the combined total.
+        dates = team_dates.get((team, gender), [])
         window_team_matches = (len(dates) - bisect.bisect_left(dates, fw)) if (fw is not None and dates) else 0
         selection_rate = None
         if window_team_matches >= SETTINGS.min_window_team_matches:
