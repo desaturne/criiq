@@ -315,7 +315,7 @@ All derived builders consume a shared per-(player, match) innings frame built on
 - **`player_impact` and the importance score.** A transparent weighted score: contribution share (up to 35) + winning contribution (up to 25) + standout/player-of-match (up to 25) + a bowling bonus (up to 15, split **equally** between top-order wicket-taking rate and economical-spell rate — economy previously counted for nothing at all, a real imbalance fixed by calibrating an economy sub-bonus against the real per-innings economy distribution the same way every other threshold in this codebase is calibrated) + a batting-innings-worth-having bonus (up to 15), stored alongside a JSON breakdown of every component. This "score as documented sum of parts" pattern was later adopted wholesale by the recommendation engine.
 - **`player_phase`.** Powerplay (overs 1–6) / middle (7–15) / death splits, with each player's *rank and percentile within her own team* per phase (minimum 30 balls) — the raw material for the model's phase-fit component and team-need synergy.
 - **`player_advanced`.** A JSON profile with control/aggression proxies (boundary/dot/rotation percentages), six rate (sixes per 100 balls), acceleration (first 10 balls vs after), per-phase batting splits, an archetype label, and batter-vs-bowling-style splits (vs pace/spin, and finer buckets) — the latter only possible because of the Wikipedia style enrichment. The **archetype** (anchor / power hitter / finisher / balanced) is classified against *each gender's own* population percentiles, not a shared absolute bar — men's and women's T20 six-hitting and strike-rate distributions differ sharply (men's six-rate 90th percentile ~8.0 per 100 balls vs women's ~1.9), so an absolute threshold would misclassify wholesale. A power hitter is six-rate-driven (clears the rope well above the gender norm at a high strike rate); a finisher needs a real death-overs sample that is genuinely destructive (death strike rate *and* boundary% both above the gender's high bar); a minimum-sample gate (60 balls, 40 at the death for a finisher) blocks tiny-sample false positives (a real one: a bowler tagged "finisher" off 7 balls before the gate).
-- **`player_registry`.** The eligibility engine. Classifies each player as ACTIVE / INCONSISTENT / INACTIVE / UNKNOWN / RETIRED_FORMAT / RETIRED_ALL / UNAVAILABLE from ICC rank presence, appearance recency (windows: 180 days recent, 540 active, 1095 inactive), and selection rate within the team's recent matches. Also computes career phase, age advisories (38/40), and a `recall_flag` for recently-returned players. Live status distribution: 2,312 INACTIVE, 1,998 ACTIVE, 1,601 INCONSISTENT, 1,307 UNKNOWN, 21 RETIRED_ALL, 14 UNAVAILABLE, 6 RETIRED_FORMAT — the RETIRED/UNAVAILABLE counts reflect a real, researched `status_overrides` sweep across nine national teams (India, Pakistan, England, Australia, Sri Lanka, Bangladesh, Nepal, Oman, USA), both genders, done specifically because pure appearance-recency can't infer an explicitly-announced retirement (e.g. Rohit Sharma and Virat Kohli both retired from T20Is on 2024-06-29, but recency alone left Rohit Sharma showing UNKNOWN — the exact kind of gap this override mechanism exists to close).
+- **`player_registry`.** The eligibility engine. Classifies each player as ACTIVE / INCONSISTENT / INACTIVE / UNKNOWN / RETIRED_FORMAT / RETIRED_ALL / UNAVAILABLE from ICC rank presence, appearance recency (windows: 180 days recent, 540 active, 1095 inactive), and selection rate within the team's recent matches. Also computes career phase, age advisories (38/40), and a `recall_flag` for recently-returned players. **The selection-rate denominator (`window_team_matches`) is scoped by `(team, gender)`, not team name alone** — a fixed bug (flagged by a domain expert on Nepal's men) where a men's player was measured against the men's *and* women's sides' matches combined (Nepal men 35 in-window, but denominator read 82 = 35 + 47 women's), roughly halving every associate regular's selection rate and mislabelling them INCONSISTENT; Sandeep Lamichhane, Gulshan Jha, Sompal Kami, Karan KC all now correctly read ACTIVE. Live status distribution: 2,312 INACTIVE, 1,998 ACTIVE, 1,601 INCONSISTENT, 1,307 UNKNOWN, 21 RETIRED_ALL, 14 UNAVAILABLE, 6 RETIRED_FORMAT — the RETIRED/UNAVAILABLE counts reflect a real, researched `status_overrides` sweep across nine national teams (India, Pakistan, England, Australia, Sri Lanka, Bangladesh, Nepal, Oman, USA), both genders, done specifically because pure appearance-recency can't infer an explicitly-announced retirement (e.g. Rohit Sharma and Virat Kohli both retired from T20Is on 2024-06-29, but recency alone left Rohit Sharma showing UNKNOWN — the exact kind of gap this override mechanism exists to close).
 - **`role_finalize`.** Fixes a systematic bias in behaviour-derived roles: specialist bowlers accumulate tail-end batting balls and get mislabelled all-rounders. Median batting position (threshold: position 8) separates genuine all-rounders from tailenders. Wicket-keeper flags merge in from Wikipedia squad pages by `key_cricinfo`, with confidence and source recorded.
 
 ### Bowling containment stats
@@ -610,11 +610,83 @@ The split is by **match date quantile** (train strictly before the cutoff; test 
 | `phase_fit_part` | 0 to 8 | How strong the player's best batting phase percentile and best in-team bowling phase rank are. |
 | `standing_part` | 0 to 20 | Track record: the importance score (scaled) plus a bonus for holding an ICC top-10 ranking. |
 | `risk_part` | ≤ 0 | Penalties only: −3 age advisory, −5 INCONSISTENT selection history, −4 INACTIVE-but-recalled. |
+| `strike_rate_part` | ≤ 0 | Soft penalty (cap −6) for a batting-capable player whose career strike rate is below the gender-relative par, *scaled down by a game-awareness factor* (see below). Modern T20I prizes strike rate, so a genuinely slow batter is docked — but an experienced, situationally-aware one is largely forgiven. Never a reward (WPA already rewards fast scoring that changes games), never applied to pure bowlers. |
 | `team_need_part` | 0 to 5 | Pool-level synergy bonus (below). |
 
-**Cold start:** with fewer than 10 career matches, the learned model is skipped entirely; career WPA shrunk toward scope-wide priors substitutes, and the output records *why* (`model_applied=false` plus a reason string) rather than silently degrading.
+**Cold start:** with fewer than 10 career matches, the learned model is skipped entirely; career WPA shrunk toward scope-wide priors substitutes, and the output records *why* (`model_applied=false` plus a reason string) rather than silently degrading. The cold-start `model_part` is additionally scaled by a **sample-confidence factor** (`career_matches / min_matches_for_model`), so a 3-match player can post at most ~30% of the full model points — this fixes a real over-rating flagged by a domain expert (Aakash Chand, 3 matches, was posting +12.5, above the 78-match RK Paudel's real +0.2; now +3.8). The fallback still leans on a handful of often-weak-opposition matches, so trusting it less the thinner it is is the honest treatment.
 
 **Calibration honesty:** several constants (the 450 WPA scale, the ±8 matchup multipliers ×120/×175, the team-need ×35) are *calibrated mappings* — chosen against the real standard deviations of the underlying quantities and validated by eyeballing output — not fitted hyperparameters. The first team-need scale (×200) maxed the bonus out for nearly everyone and was caught precisely by that eyeballing.
+
+### Strike rate and game awareness
+
+Modern T20I selection prizes strike rate, so `strike_rate_part` docks a
+batting-capable player whose career strike rate sits below the **gender-relative
+par** (the median career SR among genuine batters of that gender — men's and
+women's SR distributions differ too much for a shared absolute bar). Crucially
+it is a *soft* penalty: the raw shortfall-based penalty (capped at −6) is scaled
+**down** by a **game-awareness factor** in [0,1], so an experienced,
+situationally-aware player who bats slower is largely forgiven, while a raw
+low-SR player takes close to the full hit. The awareness factor averages the
+four signals a coach identified as justifying a lower SR:
+
+- **experience** — career matches, saturating at 50;
+- **big-moment impact** — `importance_score` (which bundles winning
+  contribution, match-winning performances and player-of-match; the available
+  proxy for close-game impact, since a true close-games-only WPA split isn't in
+  the pipeline — stated honestly rather than overclaimed);
+- **chasing composure** — chasing strike rate relative to par (can they still
+  score under run-chase pressure);
+- **consistency** — `1/(1+coefficient of variation)` of per-match batting
+  contribution (steady vs boom-or-bust).
+
+Confirmed on live data: an experienced anchor like Nida Dar (SR 91.5, 126 caps,
+awareness 0.82) takes only −0.1, while an inexperienced low-SR player (SR 58, 5
+caps, awareness 0.28) takes −4.3. This is deliberately *not* a reward for high
+SR — WPA already rewards fast scoring that changes games, and rewarding raw SR
+too would double-count flat-track slogging in dead rubbers (the exact failure
+WPA was adopted to avoid). It only docks the genuinely, unjustifiably slow.
+
+### Picking a side to counter a specific opposition XI
+
+`recommend --opponent-players "Name1,Name2,..."` (or `--opponent-player-ids`)
+lets the coach name the opposition's likely XI. When given, every matchup signal
+scopes to exactly those eleven players rather than the opponent's whole team:
+the batting matchup to *their* bowlers (by `bowler_id`, not the team-wide
+`bowler_team`), the bowling matchup and the pace/spin style mix to *their*
+batters. Because the MILP maximises total score and those matchup components now
+reflect the named XI, the recommended team naturally tilts toward players who
+match up well against that specific opposition — counter-optimisation with no
+new objective, just correctly-scoped inputs.
+
+Alongside it, a **head-to-head matrix** (`recommend/matchup_matrix.py`) cross-
+references the real `dismissal_matchup` history between the recommended XI and
+the named opposition, both ways: for each of your batters, the opposition bowler
+who has dismissed them most (bogey) and the one they score most freely off; for
+each of your bowlers, the opposition batter they dominate and the one who takes
+them apart (minimum 6 balls in a pairing, else omitted — never guessed).
+Verified live (India vs a named Australia XI): S Mandhana is flagged as troubled
+by D Brown (4 dismissals in 68 balls) but scoring freely off A Gardner, and DB
+Sharma as having BL Mooney's number with the ball (5 wickets in 134). This is
+the concrete "which of my players matches up best against which of theirs" a
+selector actually wants.
+
+### Lopsided matchups and the rotation XI
+
+Against a much weaker side, a strong team can rest frontline players and still
+expect to win — so `recommend` detects that and says so. The strength signal is
+**how many currently-ICC-ranked (world-top-10) players a side fields**, not mean
+`importance_score`: importance is padded by associates beating each other (Nepal
+men's top-11 mean importance ~70 barely trails India's ~79), whereas ICC-ranked
+count cleanly separates them (India men 6, Nepal 1, Oman 0). ICC *country*
+rankings aren't ingested (only per-player ones), so counting world-ranked squad
+members is the faithful, available proxy (`recommend/strength.py`). When this
+side has at least `lopsided_icc_gap` (default 3) more ranked players than the
+opponent, and the opponent has ≤1, the matchup is flagged **lopsided**: the
+output states the strength gap and produces a **rotation XI** that rests the top
+`rotation_rest_count` (default 4) performers and re-runs the same constrained
+selection over the rest, so the coach sees a viable bench side. It fires only
+when *this* team is the stronger one (India-vs-Nepal, not India-vs-Australia),
+and works identically for both genders.
 
 ### Team-need synergy
 
@@ -622,7 +694,7 @@ The split is by **match date quantile** (train strictly before the cutoff; test 
 
 ### Explanations
 
-`explain.py` converts the component breakdown into coach-facing sentences: a headline rating, the slot context ("Picked for the opening slot ahead of X" or "an uncontested pick"), the model or cold-start basis expressed as per-match win-probability percentages, a descriptive bowling profile (control-focused / attacking / balanced, from dot and boundary percentages), each matchup signal, phase fit, team need, standing, and risk flags. The hard rule: explanations **never state anything that isn't in the computed numbers**.
+`explain.py` converts the component breakdown into coach-facing sentences: a headline rating, the slot context ("Picked for the opening slot ahead of X" or "an uncontested pick"), the model or cold-start basis expressed as per-match win-probability percentages, a descriptive bowling profile (control-focused / attacking / balanced, from dot and boundary percentages), each matchup signal, phase fit, team need, standing, risk flags, and (when below par) the strike-rate note with what game-awareness offset it. The hard rule: explanations **never state anything that isn't in the computed numbers**.
 
 **Player analysis: what to expect, and where the impact is.** Beyond the score components, `explain.py` surfaces the descriptive batting profile from `player_advanced` (plumbed through `score.py`'s `inputs`, never a model feature): archetype + hand + age as a headline ("Right-handed finisher, 23 years old"), a "what to expect" line (strike rate, boundary%, dot%, sixes and six rate), and a "highest impact" line naming the phase where the batter's strike rate peaks with that phase's SR and boundary%. For a genuine finisher/power hitter whose composite rating is nonetheless low, it adds an explicit transparency note — the rating is win-probability-added, not raw hitting, so a big-hitter with modest recent win-impact rates low, worth a manual look. This directly answers the recurring "she's our best finisher but isn't recommended" question (real case: RM Ghosh, death-overs strike rate 166, 45 sixes, rating 7.8).
 
@@ -676,7 +748,7 @@ Not unit-tested (exercised via CLI and notebooks instead): actual model fitting,
 ## What is weak or unfinished
 
 - **The predictive signal is genuinely small.** Correlations of ~0.14 (batting) and ~0.11 (bowling), R² near zero, and MAE *slightly worse* than the mean predictor. Single-match WPA is dominated by variance the features cannot see (conditions, luck, opposition plans). The engine compensates by leaning on career/form aggregation and rule components — reasonable, but the "model" part of the score is currently a weak signal amplified by careful framing.
-- **Style/keeper coverage is partial, and gendered.** Bowling styles cover ~33% of real female T20 bowlers and a comparable ~43% of male bowlers (confirmed on live data — the enrichment itself was never gender-restricted). Wicket-keeper detection, by contrast, covers 18 **women's** T20I nations' current squads and **zero** men's nations — that research was only ever done for one gender. Outside whatever coverage exists, the corresponding signals silently contribute nothing (correctly, but nothing) — recommending for an uncovered men's team currently gets no keeper-slot preference, gracefully degraded rather than broken.
+- **Style/keeper coverage is partial (but no longer one-gender).** Bowling styles cover ~33% of real female T20 bowlers and a comparable ~43% of male bowlers. Wicket-keeper detection now covers **both** genders (35 women's + 36 men's keepers flagged): the local role-finalize pass promotes any existing `wicket-keeper` role field into `is_keeper` (MAX-merged so it never clobbers a researched flag), and the Wikipedia squad merge covers 18 women's nations plus a DB-verified set of front-line men's keepers across 12 nations — so men's XIs now enforce a real keeper (Nepal → Aasif Sheikh, India → Ishan Kishan) instead of the old degraded no-keeper fallback. Still not the full pool; where no keeper is known, selection degrades gracefully (`min(min_keepers, available)`), never guesses.
 - **Two pipeline stages are easy to forget.** `wpa` and `role-finalize` are not part of `refresh`; an automated schedule that runs only `refresh` serves stale WPA labels and roles to the model half.
 - **Some constants are eyeballed.** The scaling constants in the composite score are calibrated by inspection, not fitted or sensitivity-tested. They are documented, which mitigates but does not remove the arbitrariness.
 - **Win probability v1 is coarse.** Step-shaped bins, no team-strength or conditions prior. Since WPA (the training label!) derives from it, label quality is bounded by WP-model quality — an important, easily-missed coupling. (It is, as of the gender-isolation audit, at least fit separately per gender rather than blended — see below.)
@@ -707,7 +779,7 @@ Ordered roughly by expected value:
 3. **Richer context features.** Venue scoring environment (average first-innings score, chase success rate), opposition strength at match time, tournament stage, and days-since-last-match are all derivable from data already in the database and are the most plausible sources of new signal.
 4. **Uncertainty estimates.** Quantile regression or forest prediction intervals would let the engine distinguish "confidently mediocre" from "high-variance wildcard" — directly useful for selection decisions and honest explanations.
 5. **A true seed sweep for the production configuration**, and a small sensitivity analysis over the calibrated scale constants (WPA scale, matchup multipliers, team-need scale), replacing eyeballed values with checked ones.
-6. **Close the coverage gaps.** Continue Wikipedia/Wikidata style enrichment; extend wicket-keeper detection to men's nations (currently zero coverage — a data-research gap, not a code one, using the exact same `role-finalize --load-external` mechanism already proven for 18 women's nations); pursue a legitimate full ICC rankings source.
+6. **Close the coverage gaps.** Continue Wikipedia/Wikidata style enrichment; broaden wicket-keeper coverage further (men's keepers now cover 12 nations' front-line gloves via the `role-finalize --load-external` merge plus the role-field promotion, but not the full pool); pursue a legitimate full ICC rankings source.
 7. **Enable men's domestic T20 leagues.** IPL/BBL/PSL/CPL/NTB are scaffolded (`enabled=False` in `config.py`) but never ingested — women's domestic leagues already feed a real `domestic_form` feature; men's currently has no equivalent signal.
 8. **Revisit learning-to-rank properly** — with role-specific relevance labels rather than a single collapsed grade, LTR's earlier loss to regression may not hold.
 9. **Operational hardening.** CI running both test suites, a scheduled refresh with freshness alerts, and database schema versioning would move the project from "runs on my machine" to "runs unattended".

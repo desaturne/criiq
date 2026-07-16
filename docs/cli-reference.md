@@ -284,12 +284,16 @@ python -m criiq_models.cli rank-backtest
 python -m criiq_models.cli teams --gender male
 ```
 
-#### `recommend --team A --opponent B [--venue V] [--format T20] [--gender female] [--explain] [--pretty]`
+#### `recommend --team A --opponent B [--venue V] [--format T20] [--gender female] [--explain] [--pretty] [--opponent-players "N1,N2,..."] [--opponent-player-ids "id1,..."]`
 **What it does:** scores every eligible player in team A's pool for a matchup against B (optionally at venue V), splits them into batting/all-rounder/bowling role pools, and selects the constrained-optimal playing XI (MILP: exactly 11, ≥5 batting-capable, ≥5 bowling-capable, ≥1 keeper, ≥2 openers — each minimum gracefully degrades to what the pool can actually support). `--explain` adds per-player plain-language reasoning; `--pretty` renders an actual team sheet instead of JSON (implies `--explain`). `--venue` takes a ground **name** (fuzzy-matched, "did you mean" on ambiguity), not a raw `venue_id`.
-**Accesses:** `roster.team_pool` (eligibility: `player_registry`, `matches` for current-team resolution), the trained model artifacts, everything `RecommendationScorer`/`explain` read (career/impact/phase/venue/matchup tables, registry status).
-**Extracts/produces:** nothing persisted — prints the scored pool, role-grouped pools, the selected XI, and a `role_options` block (the best available finisher / power hitter / anchor across the whole pool, ranked by finishing/hitting quality rather than the composite score, so a strong finisher shows up even when outside the auto-XI), each pick with a plain-language profile (archetype, strike rate, boundary%, sixes, best phase). JSON or rendered team sheet.
+**Counter-optimize against a specific opposition XI:** pass `--opponent-players` (comma-separated names, disambiguated like `analyze-xi`) or `--opponent-player-ids`. All matchup signals then scope to exactly those eleven (their bowlers / their batters, not the whole opponent team), so the recommended XI tilts toward players who match up well against that specific side, and a **head-to-head matrix** is produced (each of your batters' bogey/best opposition bowler, each of your bowlers' best/most-expensive opposition batter, ≥6 balls per pairing).
+**Accesses:** `roster.team_pool` (eligibility: `player_registry`, `matches` for current-team resolution), the trained model artifacts, everything `RecommendationScorer`/`explain` read (career/impact/phase/venue/matchup tables, registry status), and `dismissal_matchup` for the head-to-head matrix.
+**Extracts/produces:** nothing persisted — prints the scored pool, role-grouped pools, the selected XI, a `role_options` block (best available finisher / power hitter / anchor across the whole pool, ranked by finishing/hitting quality rather than the composite score), a `head_to_head` matrix when an opponent XI is named, a `strength_context` block, and — when this side is much stronger (more ICC-ranked players, e.g. India vs Nepal) — a `rotation_xi` that rests the top performers so a viable bench side is shown. Each pick carries a plain-language profile (archetype, strike rate, boundary%, sixes, best phase) plus a strike-rate note when below par. JSON or rendered team sheet.
 ```bash
 python -m criiq_models.cli recommend --team India --opponent Australia --venue "Lord's" --gender male --pretty
+# counter a named opposition XI + head-to-head matrix:
+python -m criiq_models.cli recommend --team India --opponent Australia --gender female \
+  --opponent-players "TJ Vlaeminck,EA Perry,ML Schutt,A Gardner,G Wareham,BL Mooney,NJ Carey,H Graham,D Brown,L Cheatle,SJ Coyte" --pretty
 ```
 
 #### `explain (--player-id ID | --name NAME) --opponent B [--venue V] [--format T20] [--gender female]`
