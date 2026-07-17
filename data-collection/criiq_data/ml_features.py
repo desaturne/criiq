@@ -6,6 +6,7 @@ import pandas as pd
 
 from .config import FEATURES_DIR, enabled_sources
 from .db import set_meta
+from .identity import resolve_player_ids
 from .logging_utils import get_logger
 from .stats import build_innings
 
@@ -22,7 +23,8 @@ def _team_totals(conn, fmt: str) -> dict:
     tot = pd.read_sql_query(
         "SELECT d.match_id, d.batting_team AS team, SUM(d.runs_total) AS runs "
         "FROM deliveries d JOIN matches m ON d.match_id=m.match_id "
-        "WHERE m.format=? GROUP BY d.match_id, d.batting_team", conn, params=(fmt,))
+        "WHERE m.format=? AND m.team_type='international' "
+        "GROUP BY d.match_id, d.batting_team", conn, params=(fmt,))
     return {(r.match_id, r.team): int(r.runs) for r in tot.itertuples()}
 
 
@@ -31,20 +33,26 @@ def _team_wickets(conn, fmt: str) -> dict:
         "SELECT d.match_id, d.bowling_team AS team, "
         "SUM(CASE WHEN d.player_dismissed IS NOT NULL THEN 1 ELSE 0 END) AS w "
         "FROM deliveries d JOIN matches m ON d.match_id=m.match_id "
-        "WHERE m.format=? GROUP BY d.match_id, d.bowling_team", conn, params=(fmt,))
+        "WHERE m.format=? AND m.team_type='international' "
+        "GROUP BY d.match_id, d.bowling_team", conn, params=(fmt,))
     return {(r.match_id, r.team): int(r.w) for r in tw.itertuples()}
 
 
 def build_match_features_for_format(conn, fmt: str) -> int:
+    # International-only: team1/team2 here are meant to be countries (the
+    # win/loss predictor's whole premise), which a domestic fixture's
+    # franchise names would break.
     matches = pd.read_sql_query(
         "SELECT match_id, date, gender, team1, team2, winner, toss_winner, "
-        "toss_decision, venue_id FROM matches WHERE format=?", conn, params=(fmt,))
+        "toss_decision, venue_id FROM matches WHERE format=? AND team_type='international'",
+        conn, params=(fmt,))
     if matches.empty:
         return 0
     totals = _team_totals(conn, fmt)
     inn1 = pd.read_sql_query(
         "SELECT d.match_id, MIN(d.batting_team) AS bat_first FROM deliveries d "
-        "JOIN matches m ON d.match_id=m.match_id WHERE m.format=? AND d.innings=1 "
+        "JOIN matches m ON d.match_id=m.match_id "
+        "WHERE m.format=? AND m.team_type='international' AND d.innings=1 "
         "GROUP BY d.match_id", conn, params=(fmt,))
     bat_first = dict(zip(inn1["match_id"], inn1["bat_first"]))
 
@@ -117,11 +125,14 @@ def build_match_features_for_format(conn, fmt: str) -> int:
 
 
 def build_ball_state_for_format(conn, fmt: str) -> int:
+    # Win-probability model training data stays international-only (see
+    # winprob.py) -- domestic matches are *scored* by this same fitted model
+    # (wpa.py), never used to train it.
     d = pd.read_sql_query(
         "SELECT d.match_id, d.innings, d.over, d.ball_in_over, d.batting_team, "
         "d.bowling_team, d.runs_total, d.wides, d.noballs, d.player_dismissed, "
         "m.gender, m.winner FROM deliveries d JOIN matches m ON d.match_id=m.match_id "
-        "WHERE m.format=?", conn, params=(fmt,))
+        "WHERE m.format=? AND m.team_type='international'", conn, params=(fmt,))
     if d.empty:
         return 0
     d = d.sort_values(["match_id", "innings", "over", "ball_in_over"]).reset_index(drop=True)
@@ -163,13 +174,17 @@ def build_player_match_impact_for_format(conn, fmt: str) -> int:
         return 0
     team_runs = _team_totals(conn, fmt)
     team_wkts = _team_wickets(conn, fmt)
-    players = {r["cricsheet_identifier"]: r["player_id"] for r in conn.execute(
-        "SELECT cricsheet_identifier, player_id FROM players")}
+    # gender-aware: `inn` already carries each row's match gender (see
+    # stats.build_innings), needed because a handful of Cricsheet's own
+    # registry identifiers are reused across two genuinely different people
+    # of different genders -- a plain identifier->player_id dict would
+    # silently pick one of them for every row.
+    inn = inn.assign(resolved_player_id=resolve_player_ids(conn, inn["identifier"], inn["gender"]))
     now = dt.datetime.now().isoformat(timespec="seconds")
 
     rows = []
     for r in inn.itertuples(index=False):
-        pid = players.get(r.identifier)
+        pid = r.resolved_player_id
         if not pid:
             continue
         runs = int(r.runs)
@@ -177,27 +192,42 @@ def build_player_match_impact_for_format(conn, fmt: str) -> int:
         bb = int(r.balls_bowled)
         rc = int(r.runs_conceded)
         wk = int(r.wickets)
+        dots = int(r.dot_balls)
+        bdry = int(r.boundary_balls)
         tr = team_runs.get((r.match_id, r.team), 0)
         tw = team_wkts.get((r.match_id, r.team), 0)
         bat_sr = round(100 * runs / bf, 1) if bf else None
         econ = round(6 * rc / bb, 2) if bb else None
         bat_contrib = round(100 * runs / tr, 1) if bf and tr else None
         bowl_contrib = round(100 * wk / tw, 1) if bb and tw else None
+        # dot%/boundary% are containment-quality signals economy alone
+        # can't separate ("gave away ones and twos" vs "conceded boundaries")
+        # -- None (not 0) when she didn't bowl, same convention as economy.
+        dot_pct = round(100 * dots / bb, 1) if bb else None
+        boundary_pct = round(100 * bdry / bb, 1) if bb else None
+        # Balls per wicket -- only defined in matches she actually struck;
+        # None rather than 0 for a wicketless spell, so it reads as "no
+        # signal this match" instead of "instant wickets", when averaged.
+        bowl_sr = round(bb / wk, 1) if wk else None
         impact = round((bat_contrib or 0) + (bowl_contrib or 0), 1)
         rows.append((
             pid, r.match_id, fmt,
             r.date.date().isoformat() if pd.notna(r.date) else None,
             r.team, r.opponent, int(r.won), runs, bf, bat_sr, bat_contrib,
-            wk, bb, rc, econ, bowl_contrib, impact, now))
+            wk, bb, rc, econ, bowl_contrib, dot_pct, boundary_pct, bowl_sr,
+            impact, now))
 
     conn.executemany(
         "INSERT INTO player_match_impact(player_id, match_id, format, date, team, "
         "opponent, won, runs, balls_faced, bat_strike_rate, bat_contribution_pct, "
         "wickets, balls_bowled, runs_conceded, economy, bowl_contribution_pct, "
-        "impact_rating, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+        "bowl_dot_pct, bowl_boundary_pct, bowl_strike_rate, "
+        "impact_rating, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
         "ON CONFLICT(player_id, match_id) DO UPDATE SET "
         "bat_strike_rate=excluded.bat_strike_rate, bat_contribution_pct=excluded.bat_contribution_pct, "
-        "bowl_contribution_pct=excluded.bowl_contribution_pct, impact_rating=excluded.impact_rating, "
+        "bowl_contribution_pct=excluded.bowl_contribution_pct, "
+        "bowl_dot_pct=excluded.bowl_dot_pct, bowl_boundary_pct=excluded.bowl_boundary_pct, "
+        "bowl_strike_rate=excluded.bowl_strike_rate, impact_rating=excluded.impact_rating, "
         "won=excluded.won, updated_at=excluded.updated_at", rows)
     conn.commit()
     log.info("player_match_impact %s: %d rows", fmt, len(rows))

@@ -6,6 +6,7 @@ import pandas as pd
 
 from .config import enabled_sources
 from .db import set_meta
+from .identity import player_id_map
 from .logging_utils import get_logger
 from .stats import build_innings
 
@@ -58,21 +59,30 @@ def build_career_for_format(conn, fmt: str) -> int:
     if innings.empty:
         log.info("career %s: no innings", fmt)
         return 0
-    players = {r["cricsheet_identifier"]: dict(r) for r in conn.execute(
-        "SELECT cricsheet_identifier, player_id, canonical_name, role, derived_role "
-        "FROM players")}
+    # gender-scoped group, not just identifier: the handful of Cricsheet
+    # registry identifiers reused across two genuinely different people of
+    # different genders (see identity.py) would otherwise have their innings
+    # blended into one meaningless combined "career" before player_id is
+    # even resolved.
+    meta = {}
+    for r in conn.execute(
+            "SELECT cricsheet_identifier, gender, canonical_name, role, derived_role FROM players"):
+        meta[(r["cricsheet_identifier"], r["gender"])] = dict(r)
+    unambiguous, split = player_id_map(conn)
     now = dt.datetime.now().isoformat(timespec="seconds")
 
     rows = []
-    for ident, g in innings.groupby("identifier"):
-        pm = players.get(ident)
-        if not pm:
+    for (ident, gender), g in innings.groupby(["identifier", "gender"]):
+        pid = unambiguous.get(ident) or split.get((ident, gender))
+        # unsplit (non-colliding) players are stored with gender=NULL.
+        pm = meta.get((ident, gender)) or meta.get((ident, None))
+        if not pid or not pm:
             continue
         c = career_from_group(g)
         b = c["batting"]
         bw = c.get("bowling", {})
         rows.append((
-            pm["player_id"], fmt, pm["canonical_name"],
+            pid, fmt, pm["canonical_name"],
             pm.get("role") or pm.get("derived_role"),
             b["innings"], b["runs"], b["balls"], b["average"], b["strike_rate"],
             b["high_score"], b["fifties"], b["hundreds"],

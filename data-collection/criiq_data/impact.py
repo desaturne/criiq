@@ -8,6 +8,7 @@ import pandas as pd
 from .config import enabled_sources
 from .db import set_meta
 from .h2h import BOWLER_WICKETS
+from .identity import player_id_map
 from .logging_utils import get_logger
 from .opponents import potm_match_to_ident
 from .stats import build_innings
@@ -38,6 +39,10 @@ def _wicket_events(deliv: pd.DataFrame, name2id: dict) -> pd.DataFrame:
     wk = wk.merge(first[["match_id", "innings", "batter", "position"]],
                   left_on=["match_id", "innings", "player_dismissed"],
                   right_on=["match_id", "innings", "batter"], how="left")
+    # identifier, NOT player_id, despite the name -- gender is threaded
+    # alongside it (deliv already carries `gender`) so the final grouping
+    # below can disambiguate the handful of Cricsheet registry identifiers
+    # reused across two genuinely different people of different genders.
     wk["bowler_id"] = wk["bowler"].map(name2id)
     return wk[wk["credited"] & wk["bowler_id"].notna()]
 
@@ -51,13 +56,16 @@ def build_impact_for_format(conn, fmt: str) -> int:
     deliv = pd.read_sql_query(
         "SELECT d.match_id, d.innings, d.over, d.ball_in_over, d.batting_team, "
         "d.bowling_team, d.striker, d.non_striker, d.bowler, d.runs_off_bat, "
-        "d.wides, d.runs_total, d.wicket_type, d.player_dismissed "
-        "FROM deliveries d JOIN matches m ON d.match_id=m.match_id WHERE m.format=?",
+        "d.wides, d.runs_total, d.wicket_type, d.player_dismissed, m.gender "
+        "FROM deliveries d JOIN matches m ON d.match_id=m.match_id "
+        "WHERE m.format=? AND m.team_type='international'",
         conn, params=(fmt,))
     name2id = {r["player_name"]: r["identifier"]
                for r in conn.execute("SELECT player_name, identifier FROM identifier_map")}
-    players = {r["cricsheet_identifier"]: dict(r) for r in conn.execute(
-        "SELECT cricsheet_identifier, player_id, canonical_name FROM players")}
+    meta = {}
+    for r in conn.execute("SELECT cricsheet_identifier, gender, canonical_name FROM players"):
+        meta[(r["cricsheet_identifier"], r["gender"])] = dict(r)
+    unambiguous, split = player_id_map(conn)
     potm = potm_match_to_ident(conn, fmt)
 
     team_runs = deliv.groupby(["match_id", "batting_team"])["runs_total"].sum()
@@ -77,23 +85,27 @@ def build_impact_for_format(conn, fmt: str) -> int:
     deliv["legal"] = (deliv["wides"].fillna(0) == 0).astype(int)
     deliv["striker_id"] = deliv["striker"].map(name2id)
     sit = deliv[deliv["innings"].isin([1, 2]) & deliv["striker_id"].notna()]
-    sit_runs = sit.groupby(["striker_id", "innings"]).agg(
+    # gender kept alongside the identifier in every group key below, for the
+    # same reason as career.py/ml_features.py -- see identity.py.
+    sit_runs = sit.groupby(["striker_id", "gender", "innings"]).agg(
         runs=("runs_off_bat", "sum"), balls=("legal", "sum"))
     outs = (deliv[deliv["player_dismissed"].notna()].assign(
         did=lambda x: x["player_dismissed"].map(name2id))
-        .dropna(subset=["did"]).groupby(["did", "innings"]).size())
+        .dropna(subset=["did"]).groupby(["did", "gender", "innings"]).size())
 
     wk = _wicket_events(deliv, name2id)
-    bowl_impact = wk.groupby("bowler_id").agg(
+    bowl_impact = wk.groupby(["bowler_id", "gender"]).agg(
         wkts=("credited", "size"),
         avg_pp=("partnership_broken", "mean"),
         top_order=("position", lambda s: int((s <= TOP_ORDER).sum())))
 
     now = dt.datetime.now().isoformat(timespec="seconds")
     rows = []
-    for ident, g in inn.groupby("identifier"):
-        pm = players.get(ident)
-        if not pm:
+    for (ident, gender), g in inn.groupby(["identifier", "gender"]):
+        pid = unambiguous.get(ident) or split.get((ident, gender))
+        # unsplit (non-colliding) players are stored with gender=NULL.
+        pm = meta.get((ident, gender)) or meta.get((ident, None))
+        if not pid or not pm:
             continue
         matches = int(g["match_id"].nunique())
         batted = g[g["balls_faced"] > 0]
@@ -107,41 +119,91 @@ def build_impact_for_format(conn, fmt: str) -> int:
         potm_awards = int(g["potm"].sum())
         mwp = int((g["potm"] & (g["won"] == 1)).sum())
 
-        bi = bowl_impact.loc[ident] if ident in bowl_impact.index else None
+        bi_key = (ident, gender)
+        bi = bowl_impact.loc[bi_key] if bi_key in bowl_impact.index else None
         avg_pp = round(float(bi["avg_pp"]), 1) if bi is not None else None
         top_scalps = int(bi["top_order"]) if bi is not None else 0
         total_wk = int(bi["wkts"]) if bi is not None else 0
         top_pct = round(100 * top_scalps / total_wk, 1) if total_wk else None
 
+        # An "economical spell worth having" -- >=12 legal balls (2 overs, so
+        # a single tidy over doesn't count) at economy<=6.0/over. Threshold
+        # picked from the real distribution (`bowled` innings DB-wide,
+        # balls_bowled>=12): rate of qualifying innings per match has
+        # mean 0.402/median 0.389/75th-pctile 0.538 at this exact cutoff --
+        # its 75th-percentile (0.538) lines up almost exactly with
+        # top_order_scalps/matches's own 75th-percentile (0.538), so the two
+        # bonuses hit their (now-equal, see below) caps at a comparably-rare
+        # percentile of real bowlers, the same calibration discipline used
+        # for `big_innings` below.
+        spells = bowled[bowled["balls_bowled"] >= 12]
+        economical_spells = int((spells["runs_conceded"] / spells["balls_bowled"] * 6 <= 6.0).sum())
+
         def _sit(innum):
-            if (ident, innum) not in sit_runs.index:
+            key = (ident, gender, innum)
+            if key not in sit_runs.index:
                 return None, None
-            r = sit_runs.loc[(ident, innum)]
-            o = int(outs.get((ident, innum), 0))
+            r = sit_runs.loc[key]
+            o = int(outs.get(key, 0))
             sr = round(100 * r["runs"] / r["balls"], 1) if r["balls"] else None
             avg = round(r["runs"] / o, 1) if o else None
             return sr, avg
         set_sr, set_avg = _sit(1)
         chase_sr, chase_avg = _sit(2)
 
+        # "A wicket worth having" (top_order_scalps, credited toward dangerous
+        # top-order batters) needs a batting-side equivalent: "an innings worth
+        # having". >=30 runs was picked, not guessed -- checked against the live
+        # DB, (innings>=30)/matches has mean 0.135/median 0.100/75th-pctile 0.222,
+        # and a multiplier of 70 lines its mean and 75th-percentile up with
+        # top_order_scalps/matches's own mean 0.313/75th-pctile 0.538 under the
+        # existing *30 multiplier -- both bonuses hit their 15.0 cap at a
+        # comparably-rare percentile of real players, not an arbitrary round
+        # number on one side only.
+        big_innings = int((batted["runs"] >= 30).sum())
+
         overall_contrib = (bat_contrib or 0) + (bowl_contrib or 0)
         contribution_part = min(35.0, overall_contrib * 0.9)
         winning_part = 25.0 * (win_pct or 0) / 100
         standout_part = 25.0 * min(1.0, (potm_awards / matches) / 0.12) if matches else 0
-        bowling_part = min(15.0, (top_scalps / matches) * 30) if matches else 0
-        importance = round(contribution_part + winning_part + standout_part + bowling_part, 1)
+        # Wicket-taking and economy now split the same 15pt bowling bonus
+        # equally (7.5 each) rather than economy counting for nothing --
+        # previously a bowler's *entire* bowling bonus came from top-order
+        # wicket-taking rate alone, so two bowlers with identical wicket-rates
+        # scored identically here even if one leaked boundaries every over and
+        # the other built pressure with dot balls. Both halves use the same
+        # halved multiplier (*15, not *30) so each still hits its own 7.5 cap
+        # at the same rate-percentile the original *30/cap-15 bowling bonus
+        # did -- the total 15pt ceiling for a bowler who's genuinely elite at
+        # *both* is unchanged from before this split, it's just no longer
+        # 100% wicket-driven.
+        wicket_rate_part = min(7.5, (top_scalps / matches) * 15) if matches else 0
+        economy_part = min(7.5, (economical_spells / matches) * 15) if matches else 0
+        bowling_part = wicket_rate_part + economy_part
+        batting_impact_part = min(15.0, (big_innings / matches) * 70) if matches else 0
+        # A genuine dual-threat all-rounder can now earn both 15pt bonuses at
+        # once (impossible before this fix) -- clamp the total back to the
+        # intended 0-100 scale; pure specialists are unaffected, they only ever
+        # earn one of the two bonuses so their ceiling was already <=100.
+        importance = round(min(100.0, contribution_part + winning_part + standout_part
+                                + bowling_part + batting_impact_part), 1)
         components = {
             "contribution_part": round(contribution_part, 1),
             "winning_part": round(winning_part, 1),
             "standout_part": round(standout_part, 1),
             "bowling_impact_part": round(bowling_part, 1),
+            "wicket_rate_part": round(wicket_rate_part, 1),
+            "economy_part": round(economy_part, 1),
+            "batting_impact_part": round(batting_impact_part, 1),
             "inputs": {"bat_contribution_pct": bat_contrib, "bowl_contribution_pct": bowl_contrib,
                        "win_pct": win_pct, "potm_rate": round(potm_awards / matches, 3) if matches else None,
-                       "top_order_scalps_per_match": round(top_scalps / matches, 3) if matches else None},
+                       "top_order_scalps_per_match": round(top_scalps / matches, 3) if matches else None,
+                       "economical_spells_per_match": round(economical_spells / matches, 3) if matches else None,
+                       "big_innings_per_match": round(big_innings / matches, 3) if matches else None},
         }
 
         rows.append((
-            pm["player_id"], fmt, matches, bat_contrib, bowl_contrib, win_pct,
+            pid, fmt, matches, bat_contrib, bowl_contrib, win_pct,
             round(runs_wins.mean(), 1) if len(runs_wins) else None,
             round(runs_loss.mean(), 1) if len(runs_loss) else None,
             potm_awards, round(potm_awards / matches, 3) if matches else None, mwp,

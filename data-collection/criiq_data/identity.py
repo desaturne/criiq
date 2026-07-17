@@ -19,46 +19,164 @@ _VENUE_ALIASES = {
     "m.chinnaswamy stadium": "M Chinnaswamy Stadium",
     "punjab cricket association stadium, mohali": "PCA Stadium, Mohali",
     "punjab cricket association is bindra stadium, mohali": "PCA Stadium, Mohali",
+    # Confirmed real venue conflation (found while auditing gender/venue
+    # isolation): the default fallback below canonicalizes on `raw.split(",")[0]`,
+    # which for a generic English ground name merges genuinely different real
+    # grounds that all happen to share a bare "County Ground"/"National
+    # Stadium" prefix -- e.g. Bristol, Chelmsford, Derby, Hove, Northampton,
+    # and Worcester's county grounds all collapsed into one `venue_id`
+    # (54 matches wrongly sharing one ground), and Hamilton NZ's National
+    # Stadium collapsed with Karachi's (29 matches, two different countries).
+    # Each specifically-qualified raw string below gets its own correct,
+    # distinct canonical name instead of losing the city on the general path.
+    "county ground, bristol": "County Ground, Bristol",
+    "county ground, chelmsford": "County Ground, Chelmsford",
+    "county ground, derby": "County Ground, Derby",
+    "county ground, hove": "County Ground, Hove",
+    "county ground, new road, worcester": "County Ground, New Road, Worcester",
+    "county ground, northampton": "County Ground, Northampton",
+    # Same real ground as "The Cooper Associates County Ground[, Taunton]"
+    # (Somerset's sponsored name) -- both already independently canonicalize
+    # to "The Cooper Associates County Ground" via the general fallback
+    # below, so this one needs to be pointed at that name explicitly to join
+    # them rather than being left to collide with the *other* cities' grounds.
+    "county ground, taunton": "The Cooper Associates County Ground",
+    # The raw venue string itself doesn't say which English county ground --
+    # honestly labelled as unresolved rather than guessed or merged with any
+    # of the specific ones above (see data-collection's "not obtainable, not
+    # faked" principle).
+    "county ground": "County Ground (ground unspecified)",
+    "national stadium, hamilton": "National Stadium, Hamilton",
+    "national stadium, karachi": "National Stadium, Karachi",
+    "national stadium": "National Stadium (ground unspecified)",
 }
 
 
-def player_id_for(identifier: str) -> str:
-    return str(uuid.uuid5(_NS, f"cricsheet:{identifier}"))
+def player_id_for(identifier: str, gender: str | None = None) -> str:
+    """Deterministic id from a Cricsheet registry identifier. `gender` must
+    be passed when (and only when) `identifier` is confirmed to span more
+    than one gender's matches (see `_colliding_identifiers`) -- a real,
+    if rare, quirk in Cricsheet's own upstream registry, not a bug in this
+    codebase's matching, where the same identifier gets reused across two
+    genuinely different people. Left `None` for the overwhelming majority of
+    identifiers, which only ever appear under one gender, so their id is
+    identical to before this parameter existed -- no downstream rebuild
+    needed for them.
+    """
+    suffix = f":{gender}" if gender else ""
+    return str(uuid.uuid5(_NS, f"cricsheet:{identifier}{suffix}"))
+
+
+def player_id_map(conn) -> tuple[dict[str, str], dict[tuple[str, str], str]]:
+    """Two lookup structures every builder that resolves cricsheet identifiers
+    to player_ids should use instead of a plain `{identifier: player_id}`
+    dict (which silently picks an arbitrary one of two real people for the
+    handful of identifiers Cricsheet's own registry reuses across genders):
+
+      * `unambiguous`: identifier -> player_id, for the ~99.5% of
+        identifiers that only ever appear under one gender -- check this
+        first, no gender needed.
+      * `split`: (identifier, gender) -> player_id, for the rare identifiers
+        that do span more than one gender -- only reachable when the
+        caller's row actually carries a gender to disambiguate with.
+    """
+    unambiguous: dict[str, str] = {}
+    split: dict[tuple[str, str], str] = {}
+    for r in conn.execute("SELECT cricsheet_identifier, gender, player_id FROM players"):
+        if r["gender"] is None:
+            unambiguous[r["cricsheet_identifier"]] = r["player_id"]
+        else:
+            split[(r["cricsheet_identifier"], r["gender"])] = r["player_id"]
+    return unambiguous, split
+
+
+def resolve_player_ids(conn, identifiers: pd.Series, genders: pd.Series | None = None) -> pd.Series:
+    """Vectorized counterpart to `player_id_map` for pandas-merge-style
+    builders: `identifiers` resolved to player_id, falling back to
+    `(identifier, gender)` (using the aligned `genders` series) only for the
+    rare identifiers that need it. Omit `genders` only when the caller
+    already knows none of its identifiers can possibly collide.
+
+    Unmatched entries are `None`, never NaN -- `pd.Series.map` on an object
+    dtype produces `float('nan')` for misses, and `nan` is truthy in Python
+    (`bool(nan) is True`), so a caller's usual `if not pid: continue` guard
+    (the same idiom a plain dict's `.get()` has always supported) would
+    silently let unmatched rows through instead of skipping them.
+    """
+    unambiguous, split = player_id_map(conn)
+    result = identifiers.map(unambiguous)
+    if genders is not None and split:
+        missing = result.isna() & identifiers.notna()
+        if missing.any():
+            paired = pd.Series(
+                list(zip(identifiers[missing], genders[missing])), index=identifiers[missing].index)
+            result.loc[missing] = paired.map(split)
+    return result.astype(object).where(result.notna(), None)
 
 
 def _slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
 
 
-def _derived_roles(conn) -> dict[str, str]:
-    idmap = pd.read_sql_query("SELECT player_name, identifier FROM identifier_map", conn)
+def _derived_roles(conn) -> dict[tuple[str, str | None], str]:
+    """(identifier, gender) -> role. Gender-scoped (not just identifier) so
+    the rare identifier Cricsheet's own registry reuses across two genuinely
+    different people doesn't blend one person's batting with the other's
+    bowling into a single, meaningless combined role.
+    """
+    idmap = pd.read_sql_query(
+        "SELECT im.player_name, im.identifier, m.gender FROM identifier_map im "
+        "JOIN match_players mp ON mp.player_name = im.player_name "
+        "JOIN matches m ON m.match_id = mp.match_id", conn).drop_duplicates()
     if idmap.empty:
         return {}
 
     bat = pd.read_sql_query(
-        "SELECT striker AS player_name, COUNT(*) AS balls_faced "
-        "FROM deliveries WHERE wides=0 GROUP BY striker", conn)
+        "SELECT d.striker AS player_name, m.gender, COUNT(*) AS balls_faced "
+        "FROM deliveries d JOIN matches m ON m.match_id = d.match_id "
+        "WHERE d.wides=0 GROUP BY d.striker, m.gender", conn)
     bowl = pd.read_sql_query(
-        "SELECT bowler AS player_name, COUNT(*) AS balls_bowled "
-        "FROM deliveries WHERE wides=0 AND noballs=0 GROUP BY bowler", conn)
+        "SELECT d.bowler AS player_name, m.gender, COUNT(*) AS balls_bowled "
+        "FROM deliveries d JOIN matches m ON m.match_id = d.match_id "
+        "WHERE d.wides=0 AND d.noballs=0 GROUP BY d.bowler, m.gender", conn)
 
-    m = idmap.merge(bat, on="player_name", how="left").merge(bowl, on="player_name", how="left")
+    m = idmap.merge(bat, on=["player_name", "gender"], how="left") \
+             .merge(bowl, on=["player_name", "gender"], how="left")
     m["balls_faced"] = m["balls_faced"].fillna(0)
     m["balls_bowled"] = m["balls_bowled"].fillna(0)
-    agg = m.groupby("identifier")[["balls_faced", "balls_bowled"]].sum()
+    agg = m.groupby(["identifier", "gender"])[["balls_faced", "balls_bowled"]].sum()
 
     roles = {}
-    for ident, row in agg.iterrows():
+    for (ident, gender), row in agg.iterrows():
         bf, bb = row["balls_faced"], row["balls_bowled"]
         if bb >= 60 and bf >= 60:
-            roles[ident] = "all-rounder"
+            role = "all-rounder"
         elif bb >= 60:
-            roles[ident] = "bowler"
+            role = "bowler"
         elif bf >= 1:
-            roles[ident] = "batter"
+            role = "batter"
         else:
-            roles[ident] = "unknown"
+            role = "unknown"
+        roles[(ident, gender)] = role
     return roles
+
+
+def _colliding_identifiers(conn) -> dict[str, list[str]]:
+    """identifier -> sorted list of the >1 distinct genders it appears under
+    in Cricsheet's own per-match registry data. Confirmed real (not a
+    matching bug in this codebase -- see `ingest._parse_info`, which reads
+    these identifiers verbatim from each match file's own `registry,people`
+    rows) but rare: identifiers not in this dict (the overwhelming majority)
+    only ever appear under one gender.
+    """
+    rows = conn.execute(
+        "SELECT DISTINCT im.identifier, m.gender FROM identifier_map im "
+        "JOIN match_players mp ON mp.player_name = im.player_name "
+        "JOIN matches m ON m.match_id = mp.match_id").fetchall()
+    by_ident: dict[str, set[str]] = {}
+    for r in rows:
+        by_ident.setdefault(r["identifier"], set()).add(r["gender"])
+    return {ident: sorted(genders) for ident, genders in by_ident.items() if len(genders) > 1}
 
 
 def resolve_players(conn) -> dict:
@@ -72,13 +190,14 @@ def resolve_players(conn) -> dict:
     people = {r["identifier"]: r for r in conn.execute(
         "SELECT identifier, name, unique_name, key_cricinfo FROM people")}
     roles = _derived_roles(conn)
+    colliding = _colliding_identifiers(conn)
 
     name_variants: dict[str, str] = {}
     for r in conn.execute(
             "SELECT identifier, player_name FROM identifier_map ORDER BY player_name"):
         name_variants.setdefault(r["identifier"], r["player_name"])
 
-    matched = with_cricinfo = 0
+    matched = with_cricinfo = split_identifiers = 0
     rows = []
     for ident in identifiers:
         p = people.get(ident)
@@ -94,30 +213,45 @@ def resolve_players(conn) -> dict:
             method = "register_no_cricinfo"
         else:
             method = "cricsheet_only"
-        rows.append((
-            player_id_for(ident), ident, canonical, unique, key_cricinfo,
-            roles.get(ident, "unknown"), method, 0 if key_cricinfo else 1,
-        ))
+
+        # A colliding identifier mints one row PER gender (each a distinct,
+        # stable id via player_id_for(ident, gender)); everyone else keeps a
+        # single gender=NULL row with exactly the id they've always had.
+        genders_for_ident = colliding.get(ident)
+        if genders_for_ident:
+            split_identifiers += 1
+        else:
+            genders_for_ident = [None]
+        for gender in genders_for_ident:
+            role_key = (ident, gender) if gender else next(
+                (k for k in roles if k[0] == ident), (ident, None))
+            rows.append((
+                player_id_for(ident, gender), ident, gender, canonical, unique, key_cricinfo,
+                roles.get(role_key, "unknown"), method, 0 if key_cricinfo else 1,
+            ))
 
     conn.executemany(
-        "INSERT INTO players(player_id, cricsheet_identifier, canonical_name, "
+        "INSERT INTO players(player_id, cricsheet_identifier, gender, canonical_name, "
         "unique_name, key_cricinfo, derived_role, resolution_method, needs_review) "
-        "VALUES(?,?,?,?,?,?,?,?) "
+        "VALUES(?,?,?,?,?,?,?,?,?) "
         "ON CONFLICT(player_id) DO UPDATE SET "
         "canonical_name=excluded.canonical_name, unique_name=excluded.unique_name, "
         "key_cricinfo=excluded.key_cricinfo, derived_role=excluded.derived_role, "
         "resolution_method=excluded.resolution_method, needs_review=excluded.needs_review",
         rows,
     )
-    conn.execute(
-        "DELETE FROM players WHERE cricsheet_identifier NOT IN ("
-        "SELECT DISTINCT im.identifier FROM identifier_map im "
-        "JOIN match_players mp ON mp.player_name = im.player_name)")
+    # Removes players for identifiers no longer present at all, AND the OLD
+    # gender-agnostic id of any identifier that has just been split into
+    # per-gender ids above (that id is deliberately not in `rows` anymore).
+    valid_ids = tuple(row[0] for row in rows)
+    placeholders = ",".join("?" * len(valid_ids)) if valid_ids else "NULL"
+    conn.execute(f"DELETE FROM players WHERE player_id NOT IN ({placeholders})", valid_ids)
     conn.commit()
     log.info("players resolved: %d total, %d in register, %d with key_cricinfo, "
-             "%d need review", len(rows), matched, with_cricinfo, len(rows) - with_cricinfo)
+             "%d need review, %d identifiers split by gender",
+             len(rows), matched, with_cricinfo, len(rows) - with_cricinfo, split_identifiers)
     return {"players": len(rows), "in_register": matched, "with_cricinfo": with_cricinfo,
-            "needs_review": len(rows) - with_cricinfo}
+            "needs_review": len(rows) - with_cricinfo, "split_identifiers": split_identifiers}
 
 
 def fuzzy_match_name(name: str, candidates: list[str]) -> tuple[str | None, int]:

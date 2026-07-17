@@ -15,6 +15,19 @@ without touching the build/CLI code.
 Training data is ``data/features/ball_state_<fmt>.parquet`` (built by
 ``ml_features``); the fitted grids and a per-ball win-probability parquet are
 written under ``data/models`` and ``data/features``.
+
+Fit and persisted **per (format, gender)**, never blended: men's and women's
+T20 have genuinely different typical scores and required-run-rate
+distributions (see the project's broader gender-isolation discipline), so a
+single shared model would answer "how winnable is this state" against the
+wrong reference population for both genders. This used to be a real bug —
+`build_for_format` fit one model across every ball for a format regardless
+of gender — fixed by fitting/scoring each gender's balls independently
+(`_fit_and_score_one_gender`) and persisting under `winprob_{fmt}_{gender}_*`
+rather than `winprob_{fmt}_*`. The combined per-ball output parquet
+(``win_prob_<fmt>.parquet``) still holds both genders' rows together (it
+already carries a `gender` column) — only the *fitting/scoring* is
+gender-split, not that file's shape.
 """
 from __future__ import annotations
 
@@ -124,24 +137,30 @@ class EmpiricalWinProb:
         return out
 
     # --- persistence -----------------------------------------------------
-    def save(self, fmt: str) -> str:
+    def save(self, fmt: str, gender: str) -> str:
+        """Persisted per (format, gender) -- men's and women's cricket have
+        genuinely different scoring/required-run-rate distributions, so a
+        shared model would be miscalibrated for both (see winprob.py's module
+        docstring). Filenames mirror model-training's `_artifacts_dir(fmt,
+        gender)` gender-scoping fix for the exact same reason.
+        """
         MODELS_DIR.mkdir(parents=True, exist_ok=True)
         for name, grid in self.grids.items():
-            grid.to_parquet(MODELS_DIR / f"winprob_{fmt}_{name}.parquet", index=False)
+            grid.to_parquet(MODELS_DIR / f"winprob_{fmt}_{gender}_{name}.parquet", index=False)
         meta = {"kind": "empirical", "alpha": self.alpha,
                 "prior_chase": self.prior_chase, "prior_set": self.prior_set}
-        path = MODELS_DIR / f"winprob_{fmt}_meta.json"
+        path = MODELS_DIR / f"winprob_{fmt}_{gender}_meta.json"
         path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
         return str(path)
 
     @classmethod
-    def load(cls, fmt: str) -> "EmpiricalWinProb":
-        meta = json.loads((MODELS_DIR / f"winprob_{fmt}_meta.json").read_text(encoding="utf-8"))
+    def load(cls, fmt: str, gender: str) -> "EmpiricalWinProb":
+        meta = json.loads((MODELS_DIR / f"winprob_{fmt}_{gender}_meta.json").read_text(encoding="utf-8"))
         m = cls(alpha=meta["alpha"])
         m.prior_chase = meta["prior_chase"]
         m.prior_set = meta["prior_set"]
         for name in ("chase_full", "chase_coarse", "set_full", "set_coarse"):
-            m.grids[name] = pd.read_parquet(MODELS_DIR / f"winprob_{fmt}_{name}.parquet")
+            m.grids[name] = pd.read_parquet(MODELS_DIR / f"winprob_{fmt}_{gender}_{name}.parquet")
         return m
 
 
@@ -167,17 +186,20 @@ def _ball_state_path(fmt: str):
 
 
 # --- build ---------------------------------------------------------------
-def build_for_format(conn, fmt: str) -> dict:
-    path = _ball_state_path(fmt)
-    if not path.exists():
-        log.info("winprob %s: no ball_state parquet (run `ml` first) — skip", fmt)
-        return {"format": fmt, "status": "no_ball_state"}
-
-    balls = pd.read_parquet(path)
+def _fit_and_score_one_gender(balls: pd.DataFrame, fmt: str, gender: str) -> tuple[pd.DataFrame, dict | None]:
+    """Fit + persist one gender's own win-prob model, and score that
+    gender's own balls with it. Men's and women's T20 have genuinely
+    different scoring/required-run-rate distributions (see module docstring)
+    -- a shared model fit across both would be miscalibrated for both, so
+    this must never see the other gender's rows at any point.
+    """
     labelled = balls.dropna(subset=["label_batting_team_won"]).copy()
     labelled["label_batting_team_won"] = labelled["label_batting_team_won"].astype(int)
     if labelled.empty:
-        return {"format": fmt, "status": "no_labels"}
+        out = balls.copy()
+        out["win_prob_batting"] = np.nan
+        out["win_prob_bowling"] = np.nan
+        return out, None
 
     # Honest calibration: fit on train matches, score held-out matches.
     test = _test_mask(labelled["match_id"])
@@ -189,20 +211,43 @@ def build_for_format(conn, fmt: str) -> dict:
         y = test_df["label_batting_team_won"].to_numpy()
         base = np.where(test_df["innings"].to_numpy() == 2, m.prior_chase, m.prior_set)
         eval_report = {
-            "test_balls": int(len(test_df)),
+            "gender": gender, "test_balls": int(len(test_df)),
             "brier": round(_brier(p, y), 4),
             "brier_baseline": round(_brier(base, y), 4),
             "logloss": round(_logloss(p, y), 4),
             "logloss_baseline": round(_logloss(base, y), 4),
         }
 
-    # Final model on ALL labelled data, then persist + attach per-ball WP.
+    # Final model on ALL of this gender's labelled data, then persist +
+    # attach per-ball WP to this gender's own rows only.
     model = EmpiricalWinProb().fit(labelled)
-    model.save(fmt)
+    model.save(fmt, gender)
 
     out = balls.copy()
     out["win_prob_batting"] = np.round(model.predict(out), 4)
     out["win_prob_bowling"] = np.round(1 - out["win_prob_batting"], 4)
+    return out, eval_report
+
+
+def build_for_format(conn, fmt: str) -> dict:
+    path = _ball_state_path(fmt)
+    if not path.exists():
+        log.info("winprob %s: no ball_state parquet (run `ml` first) — skip", fmt)
+        return {"format": fmt, "status": "no_ball_state"}
+
+    balls = pd.read_parquet(path)
+    if balls.empty:
+        return {"format": fmt, "status": "no_labels"}
+
+    scored_by_gender = []
+    eval_reports = {}
+    for gender, gender_balls in balls.groupby("gender"):
+        scored, eval_report = _fit_and_score_one_gender(gender_balls, fmt, gender)
+        scored_by_gender.append(scored)
+        if eval_report:
+            eval_reports[gender] = eval_report
+
+    out = pd.concat(scored_by_gender, ignore_index=True)
     out["ball_seq"] = out.groupby(["match_id", "innings"]).cumcount()
     keep = ["match_id", "gender", "innings", "ball_seq", "over", "phase",
             "batting_team", "bowling_team", "score", "wickets", "balls_remaining",
@@ -212,9 +257,9 @@ def build_for_format(conn, fmt: str) -> dict:
     out[keep].to_parquet(wp_path, index=False)
 
     log.info("winprob %s: %d balls scored -> %s%s", fmt, len(out), wp_path.name,
-             f" | eval {eval_report}" if eval_report else "")
+             f" | eval {eval_reports}" if eval_reports else "")
     return {"format": fmt, "balls": int(len(out)), "path": str(wp_path),
-            "eval": eval_report}
+            "eval": eval_reports}
 
 
 def build_winprob(conn) -> dict:
@@ -230,13 +275,13 @@ def build_winprob(conn) -> dict:
 _PHASE_END = {"powerplay": 5, "middle": 14, "death": 19}
 
 
-def probability_for_state(fmt: str, *, innings: int, wickets: int,
+def probability_for_state(fmt: str, gender: str, *, innings: int, wickets: int,
                           balls_remaining: int | None = None,
                           runs_required: int | None = None,
                           balls_bowled: int | None = None,
                           score: int | None = None) -> float:
     """Ad-hoc win probability (batting team) for a single game state."""
-    model = EmpiricalWinProb.load(fmt)
+    model = EmpiricalWinProb.load(fmt, gender)
     row = {"innings": innings, "wickets": wickets,
            "balls_remaining": balls_remaining, "runs_required": runs_required,
            "balls_bowled": balls_bowled, "score": score}

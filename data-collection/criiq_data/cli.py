@@ -5,8 +5,8 @@ import json
 
 from . import advanced, career, download_cricsheet, download_register, identity, impact
 from . import ingest, matchups, ml_features, opponents, overrides, phases, player_card
-from . import rankings, refresh, registry, rss_monitor, scrape_cricinfo, sheet, styles
-from . import venue_stats, winprob
+from . import rankings, refresh, registry, role_finalize, rss_monitor, scrape_cricinfo, sheet, styles
+from . import venue_stats, winprob, wpa
 from .db import connect, get_meta, init_schema, table_count
 from .h2h import batter_vs_bowler, names_for_player
 from .logging_utils import get_logger
@@ -117,9 +117,24 @@ def cmd_phases(args):
     _pp(phases.build_phases(conn)); conn.close()
 
 
+def cmd_role_finalize(args):
+    conn = connect(); init_schema(conn)
+    if args.load_external:
+        records = role_finalize.load_external_roles_csv(args.load_external)
+        _pp(role_finalize.merge_external_roles(conn, records, args.format))
+    else:
+        _pp(role_finalize.finalize_all_local(conn))
+    conn.close()
+
+
 def cmd_ml(args):
     conn = connect(); init_schema(conn)
     _pp(ml_features.build_all(conn)); conn.close()
+
+
+def cmd_wpa(args):
+    conn = connect(); init_schema(conn)
+    _pp(wpa.build_wpa(conn)); conn.close()
 
 
 def cmd_winprob(args):
@@ -142,8 +157,8 @@ def cmd_winprob(args):
         missing = required - kv.keys()
         if missing:
             raise SystemExit(f"--state: missing required key(s): {sorted(missing)}")
-        wp = winprob.probability_for_state(args.format, **kv)
-        _pp({"format": args.format, "state": kv,
+        wp = winprob.probability_for_state(args.format, args.gender, **kv)
+        _pp({"format": args.format, "gender": args.gender, "state": kv,
              "win_prob_batting": wp, "win_prob_bowling": round(1 - wp, 4)})
     elif args.match:
         tl = winprob.match_timeline(args.format, args.match)
@@ -276,11 +291,40 @@ def cmd_h2h(args):
     bowl = _find_player(conn, args.bowler)
     if not bat or not bowl:
         print("player not found"); conn.close(); return
-    bat_names = names_for_player(conn, bat[0]["player_id"])
-    bowl_names = names_for_player(conn, bowl[0]["player_id"])
+    bat_names, bat_gender = names_for_player(conn, bat[0]["player_id"])
+    bowl_names, bowl_gender = names_for_player(conn, bowl[0]["player_id"])
     _pp({"batter": bat[0]["canonical_name"], "bowler": bowl[0]["canonical_name"],
          "format": args.format,
-         "h2h": batter_vs_bowler(conn, args.format, bat_names, bowl_names)})
+         "h2h": batter_vs_bowler(conn, args.format, bat_names, bowl_names,
+                                  bat_gender, bowl_gender)})
+    conn.close()
+
+
+def cmd_vs_team(args):
+    """A player's full matchup breakdown against one specific opponent team
+    -- the "player card, clicked against Australia" view: every bowler
+    she's faced (runs/balls/strike rate/dismissal rate, bogey bowler
+    highlighted) if she bats, every batter she's bowled to (economy/wickets,
+    best-matchup and most-expensive batter highlighted) if she bowls. An
+    all-rounder gets both; a pure specialist just gets her one real side.
+    """
+    conn = connect(); init_schema(conn)
+    found = _find_player(conn, args.name)
+    if not found:
+        print("player not found"); conn.close(); return
+    player_id = found[0]["player_id"]
+    out = {"player": found[0]["canonical_name"], "opponent": args.team, "format": args.format}
+
+    batting = matchups.batter_vs_team_bowlers(conn, player_id, args.format, args.team)
+    if batting["bowlers"]:
+        out["batting"] = batting
+    bowling = matchups.bowler_vs_team_batters(conn, player_id, args.format, args.team, args.gender)
+    if bowling["batters"]:
+        out["bowling"] = bowling
+    if "batting" not in out and "bowling" not in out:
+        out["note"] = "no recorded matchup data vs this opponent"
+
+    _pp(out)
     conn.close()
 
 
@@ -318,9 +362,19 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("matchups").set_defaults(func=cmd_matchups)
     sub.add_parser("phases").set_defaults(func=cmd_phases)
     sub.add_parser("ml").set_defaults(func=cmd_ml)
+    sub.add_parser("wpa", help="win-probability-added per player/match/phase").set_defaults(func=cmd_wpa)
+
+    rf = sub.add_parser("role-finalize", help="finalized batter/bowler/all-rounder/keeper role")
+    rf.add_argument("--format", default="T20")
+    rf.add_argument("--load-external", metavar="CSV",
+                     help="merge an externally-researched roles CSV (key_cricinfo, is_keeper, ...) "
+                          "instead of running the local batting-position pass")
+    rf.set_defaults(func=cmd_role_finalize)
 
     wp = sub.add_parser("winprob", help="build/query ball-by-ball win probability")
     wp.add_argument("--format", default="T20")
+    wp.add_argument("--gender", default="female", help="which gender's fitted model to query (--state only; "
+                                                         "build/--match are gender-agnostic, both are built/read together)")
     wp.add_argument("--match", help="print the per-over WP timeline for a match id")
     wp.add_argument("--state", help='ad-hoc WP, e.g. "innings=2,balls_remaining=30,wickets=4,runs_required=40"')
     wp.set_defaults(func=cmd_winprob)
@@ -369,6 +423,13 @@ def build_parser() -> argparse.ArgumentParser:
     h = sub.add_parser("h2h")
     h.add_argument("--batter", required=True); h.add_argument("--bowler", required=True)
     h.add_argument("--format", default="T20"); h.set_defaults(func=cmd_h2h)
+
+    vt = sub.add_parser("vs-team", help="a player's per-bowler/per-batter matchup breakdown vs one opponent team")
+    vt.add_argument("--name", required=True)
+    vt.add_argument("--team", required=True, help="opponent team name")
+    vt.add_argument("--format", default="T20")
+    vt.add_argument("--gender", default="female")
+    vt.set_defaults(func=cmd_vs_team)
 
     return p
 

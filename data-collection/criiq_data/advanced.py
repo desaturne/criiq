@@ -8,6 +8,7 @@ import pandas as pd
 from .config import enabled_sources
 from .db import set_meta
 from .h2h import BOWLER_WICKETS
+from .identity import player_id_map
 from .logging_utils import get_logger
 from . import styles
 
@@ -35,8 +36,9 @@ def _bat_rate(runs, balls):
 def build_for_format(conn, fmt: str) -> int:
     deliv = pd.read_sql_query(
         "SELECT d.match_id, d.innings, d.over, d.ball_in_over, d.striker, d.bowler, "
-        "d.runs_off_bat, d.wides, d.noballs, d.wicket_type, d.player_dismissed "
-        "FROM deliveries d JOIN matches m ON d.match_id=m.match_id WHERE m.format=?",
+        "d.runs_off_bat, d.wides, d.noballs, d.wicket_type, d.player_dismissed, m.gender "
+        "FROM deliveries d JOIN matches m ON d.match_id=m.match_id "
+        "WHERE m.format=? AND m.team_type='international'",
         conn, params=(fmt,))
     if deliv.empty:
         log.info("advanced %s: no deliveries", fmt)
@@ -46,11 +48,31 @@ def build_for_format(conn, fmt: str) -> int:
     bowl_bucket = styles.bowler_buckets(conn)
     bowl_bucket_detail = styles.bowler_buckets(conn, detail=True)
     bat_hand = styles.batter_hands(conn)
-    players = {r["cricsheet_identifier"]: r["player_id"]
-               for r in conn.execute("SELECT cricsheet_identifier, player_id FROM players")}
-    style_meta = {r["cricsheet_identifier"]: (r["batting_hand"], r["bowling_style"])
-                  for r in conn.execute(
-                      "SELECT cricsheet_identifier, batting_hand, bowling_style FROM players")}
+    unambiguous, split = player_id_map(conn)
+    # (cricsheet_identifier, gender) -> (batting_hand, bowling_style); the
+    # handful of Cricsheet registry identifiers reused across two genuinely
+    # different people of different genders (see identity.py) can have
+    # different style metadata for each, so a plain identifier-keyed dict
+    # would silently keep only one of them.
+    style_meta = {}
+    for r in conn.execute(
+            "SELECT cricsheet_identifier, gender, batting_hand, bowling_style FROM players"):
+        style_meta[(r["cricsheet_identifier"], r["gender"])] = (r["batting_hand"], r["bowling_style"])
+
+    def _style_meta(ident, gender):
+        return style_meta.get((ident, None)) or style_meta.get((ident, gender)) or (None, None)
+
+    def _lookup_by_name_gender(names: pd.Series, genders: pd.Series, mapping: dict) -> pd.Series:
+        """`bowler_buckets`/`batter_hands` are keyed (name, gender) -- `None`
+        for the overwhelming majority of unsplit names, a real gender for the
+        handful split by the cross-gender-collision fix (see styles.py). Try
+        the split-specific key first, falling back to the unsplit `None` key
+        -- same precedence every other split/unambiguous lookup in this
+        codebase uses.
+        """
+        exact = pd.Series(list(zip(names, genders)), index=names.index).map(mapping)
+        fallback = pd.Series(list(zip(names, [None] * len(names))), index=names.index).map(mapping)
+        return exact.fillna(fallback)
 
     deliv["striker_id"] = deliv["striker"].map(n2i)
     deliv["bowler_id"] = deliv["bowler"].map(n2i)
@@ -74,31 +96,35 @@ def build_for_format(conn, fmt: str) -> int:
     bat["rotate"] = (bat["legal"] & bat["rob"].isin([1, 2, 3])).astype(int)
     bat["lb"] = bat["legal"].astype(int)
 
-    bat_overall = bat.groupby("striker_id").agg(
+    # gender kept in every group key throughout this function: the handful
+    # of colliding identifiers would otherwise have two different people's
+    # deliveries blended into one meaningless combined "profile" -- see
+    # identity.py.
+    bat_overall = bat.groupby(["striker_id", "gender"]).agg(
         runs=("rob", "sum"), balls=("lb", "sum"), fours=("four", "sum"),
         sixes=("six", "sum"), bdry=("bdry", "sum"), dots=("dot", "sum"),
         rotate=("rotate", "sum"), outs=("out_self", "sum")).to_dict("index")
-    bat_innings = (bat.drop_duplicates(["striker_id", "match_id", "innings"])
-                   .groupby("striker_id").size().to_dict())
+    bat_innings = (bat.drop_duplicates(["striker_id", "gender", "match_id", "innings"])
+                   .groupby(["striker_id", "gender"]).size().to_dict())
 
     def _nest_phase(df, idcol):
-        d = df.groupby([idcol, "phase"]).agg(
+        d = df.groupby([idcol, "gender", "phase"]).agg(
             runs=("rob", "sum"), balls=("lb", "sum"), bdry=("bdry", "sum"),
             dots=("dot", "sum"), outs=("out_self", "sum"))
         out = {}
-        for (pid, ph), row in d.iterrows():
-            out.setdefault(pid, {})[ph] = row.to_dict()
+        for (pid, gender, ph), row in d.iterrows():
+            out.setdefault((pid, gender), {})[ph] = row.to_dict()
         return out
     bat_phase = _nest_phase(bat, "striker_id")
 
     def _vs_type(col_map, colname):
-        bat[colname] = bat["bowler"].map(col_map)
-        v = bat.dropna(subset=[colname]).groupby(["striker_id", colname]).agg(
+        bat[colname] = _lookup_by_name_gender(bat["bowler"], bat["gender"], col_map)
+        v = bat.dropna(subset=[colname]).groupby(["striker_id", "gender", colname]).agg(
             runs=("rob", "sum"), balls=("lb", "sum"), bdry=("bdry", "sum"),
             dots=("dot", "sum"), outs=("out_self", "sum"))
         nested: dict = {}
-        for (pid, bk), row in v.iterrows():
-            nested.setdefault(pid, {})[bk] = row.to_dict()
+        for (pid, gender, bk), row in v.iterrows():
+            nested.setdefault((pid, gender), {})[bk] = row.to_dict()
         return nested
 
     bat_vs_type = _vs_type(bowl_bucket, "bowl_bucket")                 # coarse pace/spin
@@ -107,43 +133,47 @@ def build_for_format(conn, fmt: str) -> int:
     legal = bat[bat["legal"]].sort_values(["match_id", "innings", "over", "ball_in_over"])
     legal["ball_no"] = legal.groupby(["match_id", "innings", "striker_id"]).cumcount() + 1
     legal["accel"] = (legal["ball_no"] > 10).map({False: "first10", True: "after10"})
-    ac = legal.groupby(["striker_id", "accel"]).agg(runs=("rob", "sum"), balls=("ball_no", "count"))
+    ac = legal.groupby(["striker_id", "gender", "accel"]).agg(
+        runs=("rob", "sum"), balls=("ball_no", "count"))
     accel: dict = {}
-    for (pid, a), row in ac.iterrows():
-        accel.setdefault(pid, {})[a] = {"runs": int(row["runs"]), "balls": int(row["balls"])}
+    for (pid, gender, a), row in ac.iterrows():
+        accel.setdefault((pid, gender), {})[a] = {"runs": int(row["runs"]), "balls": int(row["balls"])}
 
     bw = deliv.dropna(subset=["bowler_id"]).copy()
     bw["lbb"] = bw["legal_bowl"].astype(int)
     bw["dotb"] = (bw["legal_bowl"] & (bw["rc"] == 0)).astype(int)
     bw["wktb"] = bw["bwkt"].astype(int)
-    bowl_overall = bw.groupby("bowler_id").agg(
+    bowl_overall = bw.groupby(["bowler_id", "gender"]).agg(
         balls=("lbb", "sum"), runs=("rc", "sum"), wkts=("wktb", "sum"),
         dots=("dotb", "sum")).to_dict("index")
 
-    bp = bw.groupby(["bowler_id", "phase"]).agg(
+    bp = bw.groupby(["bowler_id", "gender", "phase"]).agg(
         balls=("lbb", "sum"), runs=("rc", "sum"), wkts=("wktb", "sum"), dots=("dotb", "sum"))
     bowl_phase: dict = {}
-    for (pid, ph), row in bp.iterrows():
-        bowl_phase.setdefault(pid, {})[ph] = row.to_dict()
+    for (pid, gender, ph), row in bp.iterrows():
+        bowl_phase.setdefault((pid, gender), {})[ph] = row.to_dict()
 
-    bw["bat_hand"] = bw["striker"].map(bat_hand)
-    vh = bw.dropna(subset=["bat_hand"]).groupby(["bowler_id", "bat_hand"]).agg(
+    bw["bat_hand"] = _lookup_by_name_gender(bw["striker"], bw["gender"], bat_hand)
+    vh = bw.dropna(subset=["bat_hand"]).groupby(["bowler_id", "gender", "bat_hand"]).agg(
         balls=("lbb", "sum"), runs=("rc", "sum"), wkts=("wktb", "sum"))
     bowl_vs_hand: dict = {}
-    for (pid, h), row in vh.iterrows():
-        bowl_vs_hand.setdefault(pid, {})[h] = row.to_dict()
+    for (pid, gender, h), row in vh.iterrows():
+        bowl_vs_hand.setdefault((pid, gender), {})[h] = row.to_dict()
+
+    archetype_th = _gender_archetype_thresholds(bat_overall, bat_phase)
 
     now = dt.datetime.now().isoformat(timespec="seconds")
     rows = []
     all_ids = set(bat_overall) | set(bowl_overall)
-    for ident in all_ids:
-        pid = players.get(ident)
+    for (ident, gender) in all_ids:
+        pid = unambiguous.get(ident) or split.get((ident, gender))
         if not pid:
             continue
+        key = (ident, gender)
         profile = {"format": fmt}
         archetype = None
 
-        hand_raw, bstyle = style_meta.get(ident, (None, None))
+        hand_raw, bstyle = _style_meta(ident, gender)
         profile["style"] = {
             "batting_hand": styles.classify_hand(hand_raw),
             "batting_hand_raw": hand_raw,
@@ -151,19 +181,20 @@ def build_for_format(conn, fmt: str) -> int:
             "bowling_type": styles.classify_bowling_detail(bstyle),
         }
 
-        bo = bat_overall.get(ident)
+        bo = bat_overall.get(key)
         if bo and bo["balls"] > 0:
-            profile["batting"] = _batting_block(bo, bat_innings.get(ident, 0),
-                                                bat_phase.get(ident, {}),
-                                                bat_vs_type.get(ident, {}),
-                                                accel.get(ident, {}),
-                                                bat_vs_type_detail.get(ident, {}))
+            profile["batting"] = _batting_block(bo, bat_innings.get(key, 0),
+                                                bat_phase.get(key, {}),
+                                                bat_vs_type.get(key, {}),
+                                                accel.get(key, {}),
+                                                bat_vs_type_detail.get(key, {}),
+                                                thresholds=archetype_th.get(gender, {}))
             archetype = profile["batting"]["archetype"]
 
-        bwo = bowl_overall.get(ident)
+        bwo = bowl_overall.get(key)
         if bwo and bwo["balls"] > 0:
-            profile["bowling"] = _bowling_block(bwo, bowl_phase.get(ident, {}),
-                                                bowl_vs_hand.get(ident, {}))
+            profile["bowling"] = _bowling_block(bwo, bowl_phase.get(key, {}),
+                                                bowl_vs_hand.get(key, {}))
 
         profile["strengths"] = _strengths_summary(profile)
         profile["meta"] = {"updated_at": now}
@@ -201,7 +232,62 @@ def _vs_type_block(vs: dict) -> dict:
         for t, v in vs.items()}
 
 
-def _batting_block(bo, innings, phase, vs_type, accel, vs_type_detail=None) -> dict:
+# Minimum balls faced before a batter's population stats count toward the
+# per-gender archetype thresholds (below) -- ~2 T20 innings, so a one-off
+# cameo can't skew a whole gender's percentile bars.
+_ARCHETYPE_MIN_BALLS = 120
+
+# Minimum balls faced before an *individual* earns a specialist role label at
+# all. Without it a bowler who faced 7 balls (all at the death, decent strike
+# rate) gets tagged "finisher" off pure noise and pollutes the finisher pool;
+# below this a batter is just "balanced". Deliberately lower than the
+# percentile-bar minimum above: this is "enough to describe a role", not
+# "enough to move a population percentile".
+_ARCHETYPE_MIN_CLASSIFY_BALLS = 60
+_ARCHETYPE_MIN_DEATH_BALLS = 40  # death sample a finisher needs, matching the death-SR percentile gate
+
+
+def _gender_archetype_thresholds(bat_overall: dict, bat_phase: dict) -> dict:
+    """Per-gender percentile bars for the archetype classifier. Men's and
+    women's T20 six-hitting/strike-rate distributions are very different
+    (men's six rate p90 ~8.0 per 100 balls vs women's ~1.9, SR p90 ~146 vs
+    ~115 -- confirmed on the live DB), so an absolute SR/six threshold shared
+    across both would label most men "power hitters" and almost no women, for
+    no cricketing reason. Bars are therefore each gender's own population
+    percentiles, computed once per build from the aggregated batting data.
+    """
+    import numpy as np
+    per_gender: dict = {}
+    for (pid, gender), bo in bat_overall.items():
+        balls = bo["balls"] or 0
+        if balls < _ARCHETYPE_MIN_BALLS:
+            continue
+        d = per_gender.setdefault(gender, {"six_rate": [], "sr": [], "bdry": [],
+                                            "rotation": [], "death_sr": []})
+        d["six_rate"].append(100 * bo["sixes"] / balls)
+        d["sr"].append(100 * bo["runs"] / balls)
+        d["bdry"].append(100 * bo["bdry"] / balls)
+        d["rotation"].append(100 * bo["rotate"] / balls)
+        death = bat_phase.get((pid, gender), {}).get("death")
+        if death and death.get("balls", 0) >= 40:
+            d["death_sr"].append(100 * death["runs"] / death["balls"])
+
+    out: dict = {}
+    for gender, d in per_gender.items():
+        def p(key, q, default):
+            return float(np.percentile(d[key], q)) if d[key] else default
+        out[gender] = {
+            "six_rate_high": p("six_rate", 75, 1.0),    # clears the rope well above the gender norm
+            "sr_high": p("sr", 75, 120.0),
+            "sr_low": p("sr", 50, 100.0),               # "not aggressive" bar for anchor
+            "boundary_high": p("bdry", 75, 12.0),
+            "rotation_high": p("rotation", 75, 45.0),
+            "death_sr_high": p("death_sr", 75, 130.0),  # genuinely destructive at the death
+        }
+    return out
+
+
+def _batting_block(bo, innings, phase, vs_type, accel, vs_type_detail=None, thresholds=None) -> dict:
     balls = bo["balls"]
     block = {
         "innings": int(innings), "runs": int(bo["runs"]), "balls": int(balls),
@@ -211,6 +297,10 @@ def _batting_block(bo, innings, phase, vs_type, accel, vs_type_detail=None) -> d
         "dot_pct": round(100 * bo["dots"] / balls, 1) if balls else None,
         "scoring_pct": round(100 * (balls - bo["dots"]) / balls, 1) if balls else None,
         "rotation_pct": round(100 * bo["rotate"] / balls, 1) if balls else None,
+        # Sixes per 100 balls -- the scale-stable "power" signal the archetype
+        # classifier leans on (a raw six *count* just tracks how long a career
+        # is), surfaced so downstream explanations can narrate it directly.
+        "six_rate": round(100 * bo["sixes"] / balls, 2) if balls else None,
         "fours": int(bo["fours"]), "sixes": int(bo["sixes"]),
         "by_phase": {ph: _phase_block(phase[ph]) for ph in phase},
     }
@@ -222,23 +312,58 @@ def _batting_block(bo, innings, phase, vs_type, accel, vs_type_detail=None) -> d
         block["acceleration"] = {
             k: {"balls": v["balls"], "strike_rate": _bat_rate(v["runs"], v["balls"])}
             for k, v in accel.items()}
-    block["archetype"] = _archetype(block)
+    block["archetype"] = _archetype(block, thresholds or {})
     return block
 
 
-def _archetype(b: dict) -> str:
+def _archetype(b: dict, th: dict) -> str:
+    """Descriptive batting role, classified against this batter's own gender's
+    population bars (`th`, from `_gender_archetype_thresholds`):
+
+      * finisher    -- bats a real share of balls at the death AND is genuinely
+                       destructive there (death SR *and* death boundary% both
+                       above the gender's high bar): strike rate + sizes +
+                       boundaries, exactly what a death finisher needs.
+      * power hitter -- clears the rope well above the gender norm (six rate
+                       at/above the gender p75) at a high overall strike rate:
+                       big hitting wherever they bat. Six rate is the primary
+                       signal (a raw six *count* just tracks career length).
+      * anchor      -- accumulator: bats a lot up top, rotates strike hard, but
+                       at a below-median strike rate.
+      * balanced    -- none of the above stands out.
+
+    finisher takes precedence over power hitter: a death specialist who also
+    hits sixes (e.g. RM Ghosh) is described by the more specific role.
+    """
+    total = b["balls"] or 0
+    if total < _ARCHETYPE_MIN_CLASSIFY_BALLS:
+        return "balanced"  # too small a sample to earn a specialist role label
+
     by = b.get("by_phase", {})
-    total = b["balls"] or 1
-    death_balls = by.get("death", {}).get("balls", 0)
-    pp_balls = by.get("powerplay", {}).get("balls", 0)
     sr = b.get("strike_rate") or 0
+    bdry = b.get("boundary_pct") or 0
+    six_rate = b.get("six_rate") or 0
+    rotation = b.get("rotation_pct") or 0
+    death = by.get("death", {})
+    death_balls = death.get("balls", 0)
     death_share = death_balls / total
-    pp_share = pp_balls / total
-    if death_share > 0.30 and (by.get("death", {}).get("strike_rate") or 0) > 130:
+    death_sr = death.get("strike_rate") or 0
+    death_bdry = death.get("boundary_pct") or 0
+    pp_share = by.get("powerplay", {}).get("balls", 0) / total
+
+    six_hi = th.get("six_rate_high", 2.0)
+    sr_hi = th.get("sr_high", 120.0)
+    sr_lo = th.get("sr_low", 100.0)
+    bdry_hi = th.get("boundary_high", 12.0)
+    rot_hi = th.get("rotation_high", 45.0)
+    death_sr_hi = th.get("death_sr_high", 130.0)
+
+    if (death_balls >= _ARCHETYPE_MIN_DEATH_BALLS and death_share >= 0.25
+            and death_sr >= death_sr_hi and death_bdry >= bdry_hi):
         return "finisher"
-    if sr >= 135:
-        return "aggressor"
-    if pp_share > 0.45 and sr < 115:
+    if six_rate >= six_hi and sr >= sr_hi:
+        return "power hitter"
+    if pp_share >= 0.40 and sr <= sr_lo and rotation >= rot_hi:
         return "anchor"
     return "balanced"
 

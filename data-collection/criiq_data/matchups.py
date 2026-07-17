@@ -7,23 +7,28 @@ import pandas as pd
 from .config import enabled_sources
 from .db import set_meta
 from .h2h import BOWLER_WICKETS
+from .identity import player_id_map
 from .logging_utils import get_logger
 
 log = get_logger("matchups")
+
+# ~one over -- enough to be a real sample rather than a single fluke ball,
+# not so high a bar that it hides a genuine (if short) matchup.
+MIN_MATCHUP_BALLS = 6
 
 
 def build_for_format(conn, fmt: str) -> int:
     d = pd.read_sql_query(
         "SELECT d.striker, d.bowler, d.bowling_team, d.runs_off_bat, d.wides, "
-        "d.wicket_type, d.player_dismissed "
-        "FROM deliveries d JOIN matches m ON d.match_id=m.match_id WHERE m.format=?",
+        "d.wicket_type, d.player_dismissed, m.gender "
+        "FROM deliveries d JOIN matches m ON d.match_id=m.match_id "
+        "WHERE m.format=? AND m.team_type='international'",
         conn, params=(fmt,))
     if d.empty:
         return 0
     n2i = {r["player_name"]: r["identifier"]
            for r in conn.execute("SELECT player_name, identifier FROM identifier_map")}
-    id2pid = {r["cricsheet_identifier"]: r["player_id"]
-              for r in conn.execute("SELECT cricsheet_identifier, player_id FROM players")}
+    unambiguous, split = player_id_map(conn)
     pid2name = {r["player_id"]: r["canonical_name"]
                 for r in conn.execute("SELECT player_id, canonical_name FROM players")}
 
@@ -34,25 +39,35 @@ def build_for_format(conn, fmt: str) -> int:
     d["dismissed"] = ((d["player_dismissed"] == d["striker"]) &
                       d["wicket_type"].isin(BOWLER_WICKETS)).astype(int)
 
-    grp = d.groupby(["sid", "bid"]).agg(
+    # gender kept in every group key: the handful of Cricsheet registry
+    # identifiers reused across two genuinely different people of different
+    # genders (see identity.py) would otherwise have their dismissal history
+    # against each other blended into one meaningless combined pair.
+    grp = d.groupby(["sid", "bid", "gender"]).agg(
         balls=("legal", "sum"), runs=("runs_off_bat", "sum"),
         dismissals=("dismissed", "sum")).reset_index()
-    grp = grp[grp["dismissals"] >= 1]
+    # Was `dismissals >= 1` -- meaning a bowler who's contained a batter for
+    # 50 balls without ever getting her out was invisible in this table
+    # entirely, even though "she's never been dismissed by X" is exactly as
+    # real a matchup fact as "X has dismissed her 3 times". Every matchup
+    # with a real sample is kept now; the *count* of dismissals (zero
+    # included) is what actually distinguishes a bogey bowler from a safe one.
+    grp = grp[grp["balls"] >= MIN_MATCHUP_BALLS]
     if grp.empty:
         return 0
-    bteam = d.groupby("bid")["bowling_team"].agg(
+    bteam = d.groupby(["bid", "gender"])["bowling_team"].agg(
         lambda s: s.mode().iloc[0] if not s.mode().empty else None).to_dict()
 
     now = dt.datetime.now().isoformat(timespec="seconds")
     rows = []
     for r in grp.itertuples(index=False):
-        batter_pid = id2pid.get(r.sid)
-        bowler_pid = id2pid.get(r.bid)
+        batter_pid = unambiguous.get(r.sid) or split.get((r.sid, r.gender))
+        bowler_pid = unambiguous.get(r.bid) or split.get((r.bid, r.gender))
         if not batter_pid or not bowler_pid:
             continue
         rows.append((
             fmt, batter_pid, bowler_pid, pid2name.get(batter_pid),
-            pid2name.get(bowler_pid), bteam.get(r.bid),
+            pid2name.get(bowler_pid), bteam.get((r.bid, r.gender)),
             int(r.balls), int(r.runs), int(r.dismissals), now,
         ))
     conn.executemany(
@@ -67,10 +82,79 @@ def build_for_format(conn, fmt: str) -> int:
     return len(rows)
 
 
+def build_venue_matchups_for_format(conn, fmt: str) -> int:
+    """Same dismissal-count logic as `build_for_format`, with `venue_id`
+    added to the group key -- "who's gotten her out most *at this ground*"
+    is a genuinely different (and sometimes different) question from her
+    overall bogey bowler, the same way a career average differs from a
+    home/away split.
+    """
+    d = pd.read_sql_query(
+        "SELECT d.striker, d.bowler, d.bowling_team, d.runs_off_bat, d.wides, "
+        "d.wicket_type, d.player_dismissed, m.gender, m.venue_id "
+        "FROM deliveries d JOIN matches m ON d.match_id=m.match_id "
+        "WHERE m.format=? AND m.team_type='international' AND m.venue_id IS NOT NULL",
+        conn, params=(fmt,))
+    if d.empty:
+        return 0
+    n2i = {r["player_name"]: r["identifier"]
+           for r in conn.execute("SELECT player_name, identifier FROM identifier_map")}
+    unambiguous, split = player_id_map(conn)
+    pid2name = {r["player_id"]: r["canonical_name"]
+                for r in conn.execute("SELECT player_id, canonical_name FROM players")}
+
+    d["legal"] = (d["wides"].fillna(0) == 0).astype(int)
+    d["sid"] = d["striker"].map(n2i)
+    d["bid"] = d["bowler"].map(n2i)
+    d = d.dropna(subset=["sid", "bid"])
+    d["dismissed"] = ((d["player_dismissed"] == d["striker"]) &
+                      d["wicket_type"].isin(BOWLER_WICKETS)).astype(int)
+
+    grp = d.groupby(["sid", "bid", "gender", "venue_id"]).agg(
+        balls=("legal", "sum"), runs=("runs_off_bat", "sum"),
+        dismissals=("dismissed", "sum")).reset_index()
+    grp = grp[grp["balls"] >= MIN_MATCHUP_BALLS]
+    if grp.empty:
+        return 0
+    bteam = d.groupby(["bid", "gender"])["bowling_team"].agg(
+        lambda s: s.mode().iloc[0] if not s.mode().empty else None).to_dict()
+
+    now = dt.datetime.now().isoformat(timespec="seconds")
+    rows = []
+    for r in grp.itertuples(index=False):
+        batter_pid = unambiguous.get(r.sid) or split.get((r.sid, r.gender))
+        bowler_pid = unambiguous.get(r.bid) or split.get((r.bid, r.gender))
+        if not batter_pid or not bowler_pid:
+            continue
+        rows.append((
+            fmt, r.venue_id, batter_pid, bowler_pid, pid2name.get(batter_pid),
+            pid2name.get(bowler_pid), bteam.get((r.bid, r.gender)),
+            int(r.balls), int(r.runs), int(r.dismissals), now,
+        ))
+    conn.executemany(
+        "INSERT INTO venue_dismissal_matchup(format, venue_id, batter_id, bowler_id, "
+        "batter_name, bowler_name, bowler_team, balls, runs, dismissals, updated_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?) "
+        "ON CONFLICT(format, venue_id, batter_id, bowler_id) DO UPDATE SET "
+        "bowler_team=excluded.bowler_team, balls=excluded.balls, runs=excluded.runs, "
+        "dismissals=excluded.dismissals, updated_at=excluded.updated_at", rows)
+    conn.commit()
+    log.info("venue_matchups %s: %d dismissal pairs", fmt, len(rows))
+    return len(rows)
+
+
+def top_dismissers_at_venue(conn, player_id: str, fmt: str, venue_id: str, limit: int = 5) -> list[dict]:
+    return [dict(r) for r in conn.execute(
+        "SELECT bowler_name, bowler_team, dismissals, balls, runs "
+        "FROM venue_dismissal_matchup WHERE batter_id=? AND format=? AND venue_id=? "
+        "ORDER BY dismissals DESC, balls DESC LIMIT ?", (player_id, fmt, venue_id, limit))]
+
+
 def build_matchups(conn) -> dict:
     out = {}
     for fmt in sorted({s.fmt for s in enabled_sources()}):
         out[fmt] = build_for_format(conn, fmt)
+        build_venue_matchups_for_format(conn, fmt)
     set_meta(conn, "matchups_built_at", dt.datetime.now().isoformat(timespec="seconds"))
     conn.commit()
     return out
@@ -95,3 +179,74 @@ def favourite_victims(conn, player_id: str, fmt: str, limit: int = 10) -> list[d
         "SELECT batter_name, dismissals, balls, runs FROM dismissal_matchup "
         "WHERE bowler_id=? AND format=? ORDER BY dismissals DESC, balls DESC LIMIT ?",
         (player_id, fmt, limit))]
+
+
+def batter_vs_team_bowlers(conn, player_id: str, fmt: str, opponent_team: str) -> dict:
+    """Every bowler from `opponent_team` this batter has faced (>=
+    MIN_MATCHUP_BALLS balls) -- not just the ones who've dismissed her, so a
+    bowler who's safely contained her is visible too, not silently absent.
+    `dismissal_matchup` already stores `bowler_team` per row (set at build
+    time from that bowler's most common team), so no roster lookup is
+    needed here, unlike the reverse direction (see `bowler_vs_team_batters`).
+
+    Ranked the same way `top_dismissers` already does (dismissal *count*
+    first, not rate) -- a bowler who's gotten her out 3 times in 80 balls is
+    a more real bogey than a lucky 1-for-6, even though the second has the
+    higher raw rate.
+    """
+    rows = conn.execute(
+        "SELECT bowler_name, balls, runs, dismissals FROM dismissal_matchup "
+        "WHERE batter_id=? AND format=? AND bowler_team=? "
+        "ORDER BY dismissals DESC, balls DESC", (player_id, fmt, opponent_team)).fetchall()
+    bowlers = []
+    for r in rows:
+        balls = r["balls"]
+        bowlers.append({
+            "bowler_name": r["bowler_name"], "balls": balls, "runs": r["runs"],
+            "dismissals": r["dismissals"],
+            "strike_rate": round(100 * r["runs"] / balls, 1) if balls else None,
+            "dismissal_rate": round(r["dismissals"] / balls, 4) if balls else None,
+        })
+    return {"opponent": opponent_team, "bowlers": bowlers,
+            "bogey_bowler": bowlers[0] if bowlers else None}
+
+
+def bowler_vs_team_batters(conn, player_id: str, fmt: str, opponent_team: str,
+                           gender: str = "female") -> dict:
+    """Every batter from `opponent_team` this bowler has bowled to (>=
+    MIN_MATCHUP_BALLS balls), with economy/wickets/the batter's own strike
+    rate against her. `dismissal_matchup` has no `batting_team` column
+    (unlike `bowler_team`), so opponent-scoping goes through actual roster
+    membership (`role_finalize.team_candidates` -- any player who's ever
+    appeared for that team) instead, the same approach model-training's
+    bowler-side matchup signal uses for the identical reason.
+
+    Two highlights, deliberately different questions: `best_matchup` is the
+    batter she's dismissed the *most times* (a real recurring wicket, not a
+    rate fluke); `most_expensive` is the batter who's hit the *most total
+    runs* off her, regardless of how many balls that took.
+    """
+    from .role_finalize import team_candidates
+    roster = team_candidates(conn, opponent_team, gender)
+    if roster.empty:
+        return {"opponent": opponent_team, "batters": [], "best_matchup": None, "most_expensive": None}
+
+    placeholders = ",".join("?" * len(roster))
+    rows = conn.execute(
+        f"SELECT batter_name, balls, runs, dismissals FROM dismissal_matchup "
+        f"WHERE bowler_id=? AND format=? AND batter_id IN ({placeholders})",
+        (player_id, fmt, *roster["player_id"])).fetchall()
+    batters = []
+    for r in rows:
+        balls = r["balls"]
+        batters.append({
+            "batter_name": r["batter_name"], "balls": balls, "runs": r["runs"],
+            "wickets": r["dismissals"],
+            "economy": round(6 * r["runs"] / balls, 2) if balls else None,
+            "batter_strike_rate": round(100 * r["runs"] / balls, 1) if balls else None,
+        })
+    batters.sort(key=lambda b: (-b["wickets"], -b["balls"]))
+    best_matchup = batters[0] if batters and batters[0]["wickets"] > 0 else None
+    most_expensive = max(batters, key=lambda b: b["runs"], default=None)
+    return {"opponent": opponent_team, "batters": batters,
+            "best_matchup": best_matchup, "most_expensive": most_expensive}
