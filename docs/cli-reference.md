@@ -312,6 +312,40 @@ python -m criiq_models.cli analyze-xi --team India --opponent Australia \
   --players "RG Sharma,YBK Jaiswal,V Kohli,SA Yadav,..." --gender male --pretty
 ```
 
+#### `simulate --team1 A --team2 B (--team1-players "N1,..." | --team1-player-ids "id1,...") (--team2-players "..." | --team2-player-ids "...") --toss-winner A [--venue V] [--format T20] [--gender female] [--n-simulations 100] [--seed N] [--force-dismissal "NAME:OVER:BALL"] [--coach-team A] [--out-dir DIR]`
+**What it does:** ball-by-ball Monte Carlo simulation of a full T20 match between two literal, user-supplied Playing XIs (not an abstract pool — every player is named). Rules-checked directly against `rulebook-cricket.md`: 20 overs, 6 legal deliveries/over, a bowler capped at 4 overs and barred from bowling consecutive overs, wide/no-ball replay + free hit, byes/leg-byes scored correctly, and — since T20Is have no draw — a tied run-chase is resolved by one or more Super Overs rather than reported as a bare tie. Bowler-over selection (when no GA rotation is supplied) mirrors real captaincy: each eligible bowler's real per-phase economy rank *within their own team* is used to prefer whoever's actually proven strongest in the current over's phase, falling back to fewest-overs-bowled-so-far with a bare-minimum-size pool (no slack to hold anyone back safely). `--venue` conditions batters' setting/chasing strike rate at that ground (shrunk toward their overall rate by real matches there). `--force-dismissal` re-runs the match with that named batter forced out at a specific point, for the "what if this player goes out here" scenario, overlaid against the baseline on the win-probability chart. `--seed` is optional and *should usually be omitted* — every run without it is a genuinely different Monte Carlo draw, as real cricket is; pass an integer only to reproduce one exact run again. Prints a full scorecard (batting: runs/balls/strike rate with century/fifty/top-scorer/fastest-innings highlights; bowling: overs/runs/wickets/economy with pick-of-the-bowlers/most-economical highlights) for both innings, a coach's-eye narrative from `--coach-team`'s side (defaults to `--team1`), and the complete key-moments list (batting milestones, every boundary, bowling milestones, hat-tricks, biggest win-probability swings).
+**Accesses:** `deliveries`/`matches` (phase-level outcome baseline), `player_match_impact`/`player_by_venue`/`dismissal_matchup` (per-player strike rate/economy/venue/matchup adjustment), `player_phase` (bowler phase-rank for realistic scheduling), the persisted win-probability model (`data-collection`'s `winprob_{fmt}_{gender}_*.parquet`, read directly — this package never imports `criiq_data`'s code).
+**Extracts/produces:** `{out-dir}/win_probability.png` (ball-by-ball chart, baseline vs. scenario, key moments annotated), `{out-dir}/ball_log.parquet`, `{out-dir}/summary.json` (scores, winner, Super Over rounds if any, key moments).
+```bash
+python -m criiq_models.cli simulate --team1 India --team2 Australia \
+  --team1-players "S Mandhana,Shafali Verma,D Hemalatha,JI Rodrigues,H Kaur,S Meghana,DB Sharma,P Vastrakar,YH Bhatia,M Mani,N Shree Charani" \
+  --team2-players "G Voll,BL Mooney,EA Perry,A Gardner,EJ Villani,TM McGrath,EA Burns,KJ Garth,G Wareham,A Sutherland,JL Jonassen" \
+  --toss-winner India --venue "M Chinnaswamy Stadium" --gender female --n-simulations 200 \
+  --force-dismissal "S Mandhana:0:1" --coach-team India
+```
+
+#### `optimize-bowling --bowling-team A --batting-team B (--bowling-players "..." | --bowling-player-ids "...") (--batting-players "..." | --batting-player-ids "...") [--no-primary-bowlers] [--venue V] [--format T20] [--gender female] [--pop-size 40] [--generations 60] [--seed N] [--out-dir DIR]`
+**What it does:** genetic-algorithm search over legal bowler-to-over rotations (chromosome = which bowler bowls each of the 20 overs) to minimize the named opposition's expected runs conceded — the tractable, correct proxy for bowling-side win probability. The exact-MILP squad selector (`recommend`) can't express this in-match *sequencing* decision (legality of a choice depends on every earlier one); a GA searches it instead, with every candidate *repaired* back to a rules-legal rotation after crossover/mutation (never merely penalized). **The recognized bowlers take the full quota between them by default, not an even spread across everyone bowling-capable**: the up to 5 specialist bowlers (`role_bucket == "bowler"`) default to 4 overs each — real captaincy — with a part-timer only introduced via ordinary mutation (if genuinely better for this matchup) or when the recognized group is short of a full 20 overs' capacity (`--no-primary-bowlers` disables this, searching freely across every bowling-capable player instead). Fitness is noisy (a Monte Carlo mean), so the tracked best is protected by elitism (the best-known rotation always stays in the gene pool) and a re-verification step before accepting an apparent new best — `fitness_history` is the running best-known fitness, monotonically non-decreasing. `--seed` optional, omit for a genuinely different search each run.
+**Accesses:** same as `simulate`.
+**Extracts/produces:** `{out-dir}/bowling_rotation.json` (the best rotation found, overs-per-bowler breakdown, expected runs conceded, fitness history). Prints the recognized bowlers and the over-by-over rotation.
+```bash
+python -m criiq_models.cli optimize-bowling --bowling-team Australia --batting-team India \
+  --bowling-players "G Voll,BL Mooney,EA Perry,A Gardner,EJ Villani,TM McGrath,EA Burns,KJ Garth,G Wareham,A Sutherland,JL Jonassen" \
+  --batting-players "S Mandhana,Shafali Verma,D Hemalatha,JI Rodrigues,H Kaur,S Meghana,DB Sharma,P Vastrakar,YH Bhatia,M Mani,N Shree Charani" \
+  --gender female
+```
+
+#### `optimize-batting --batting-team A --bowling-team B (--batting-players "..." | --batting-player-ids "...") (--bowling-players "..." | --bowling-player-ids "...") [--target T] [--no-role-bands] [--venue V] [--format T20] [--gender female] [--pop-size 40] [--generations 60] [--seed N] [--out-dir DIR]`
+**What it does:** genetic-algorithm (order-crossover) search over the batting order against the named opposition's bowling attack — maximizing expected score (first-innings framing) or, with `--target`, the fraction of Monte Carlo reps that actually reach it (chase framing, where "more runs than needed" carries no extra value). **Searched in role bands by default, not one free-for-all permutation**: openers / top-middle order / tail (resolved from real batting position + `role_bucket`) constrain the search so a player never crosses a band boundary, while still permuting *within* each band — the two openers can interchange which bats first, the top/middle order rotates among itself, and the tail (specialist bowlers) fills out the rest, just like a real lineup (`--no-role-bands` disables this and searches the full permutation freely). Same noisy-fitness protection (elitism + verify-before-accept) as `optimize-bowling`.
+**Accesses:** same as `simulate`, plus `player_role_final.batting_position_median` (for band assignment).
+**Extracts/produces:** `{out-dir}/batting_order.json` (the best order, the role bands used, expected score or win probability, fitness history). Prints the bands and the order.
+```bash
+python -m criiq_models.cli optimize-batting --batting-team India --bowling-team Australia \
+  --batting-players "S Mandhana,Shafali Verma,D Hemalatha,JI Rodrigues,H Kaur,S Meghana,DB Sharma,P Vastrakar,YH Bhatia,M Mani,N Shree Charani" \
+  --bowling-players "G Voll,BL Mooney,EA Perry,A Gardner,EJ Villani,TM McGrath,EA Burns,KJ Garth,G Wareham,A Sutherland,JL Jonassen" \
+  --gender female --target 162
+```
+
 ---
 
 ## 3. Quick lookup — "I want to know/extract X, which command?"
@@ -334,3 +368,7 @@ python -m criiq_models.cli analyze-xi --team India --opponent Australia \
 | Check a coach's own hand-picked XI | `model-training: analyze-xi --team A --opponent B --players "..."` |
 | Retrain the models after a data change | `model-training: train --gender female` **and** `--gender male` (independent) |
 | Check current model accuracy | `model-training: backtest` |
+| Simulate a ball-by-ball match between two named XIs | `model-training: simulate --team1 A --team2 B --team1-players "..." --team2-players "..." --toss-winner A` |
+| See "what if this player gets out here" | `model-training: simulate ... --force-dismissal "NAME:OVER:BALL"` |
+| Find the best bowling rotation vs. a named opposition | `model-training: optimize-bowling --bowling-team A --batting-team B ...` |
+| Find the best batting order vs. a named opposition | `model-training: optimize-batting --batting-team A --bowling-team B ...` |
