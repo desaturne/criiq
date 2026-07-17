@@ -55,10 +55,13 @@ def build_innings(conn, fmt: str, team_type: str | None = "international") -> pd
         _rc=(deliv["runs_off_bat"].fillna(0) + deliv["wides"].fillna(0) + deliv["noballs"].fillna(0)),
         _wk=bowl_credit.astype(int),
         # Dot ball: a legal delivery off which the batting team scored
-        # nothing at all (the standard commentary definition — includes the
-        # rare bye/leg-bye-only ball, which isn't charged to the bowler's
-        # economy but still reads as pressure applied). A wide/no-ball is
+        # nothing at all (the standard commentary definition). A wide/no-ball is
         # never a dot: the bowler has already conceded a run by bowling it.
+        # A bye/leg-bye is also never a dot in practice: `runs_total` counts
+        # any run scored off the delivery regardless of source, and a real
+        # bye/leg-bye is by definition at least 1 run -- so this criterion
+        # naturally excludes them too, it isn't a special case being made
+        # here for byes specifically.
         _dot=(legal_bowl & (deliv["runs_total"].fillna(0) == 0)).astype(int),
         # Boundary conceded off the bat (4s/6s) -- containment quality that
         # economy alone doesn't distinguish from "gave away ones and twos".

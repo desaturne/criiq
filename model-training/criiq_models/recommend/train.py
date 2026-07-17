@@ -119,6 +119,8 @@ def _make_model(target: str):
 
 def _fit_one(df: pd.DataFrame, target: str) -> tuple[object, dict]:
     rows = df.dropna(subset=[target])
+    if rows.empty:
+        raise RuntimeError(f"no non-null training rows for target={target}")
     X = rows[MODEL_FEATURES]
     y = rows[target]
 

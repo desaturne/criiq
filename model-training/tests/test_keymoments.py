@@ -95,3 +95,31 @@ def test_biggest_swings_are_ranked_and_capped():
     moments = detect_key_moments(df, top_swings=2)
     swings = [m for m in moments if m["type"] == "turning_point"]
     assert len(swings) == 2
+
+
+def test_biggest_swings_dont_treat_the_innings_break_as_a_swing():
+    """`win_prob_batting` is relative to whichever team is batting, and that
+    flips at the innings break -- the boundary between the two innings must
+    never itself be reported as a "swing" (a real bug: a plain `.diff()`
+    across the whole log did exactly this).
+    """
+    rows = [
+        _row(innings=1, over=18, ball_in_over=5, win_prob_batting=0.95),
+        _row(innings=1, over=19, ball_in_over=6, win_prob_batting=0.97),
+        # Second innings opens near 50/50 from the chasing side's own
+        # perspective -- a huge raw gap from the first innings' closing
+        # value, but not a real "swing" within either innings.
+        _row(innings=2, over=0, ball_in_over=1, win_prob_batting=0.05),
+        _row(innings=2, over=0, ball_in_over=2, win_prob_batting=0.08),
+    ]
+    df = pd.DataFrame(rows)
+    moments = detect_key_moments(df, top_swings=5)
+    swings = [m for m in moments if m["type"] == "turning_point"]
+    # None of the reported swings may straddle the innings boundary --
+    # every swing's "before" ball must be in the same innings as its "after".
+    assert all(m["innings"] in (1, 2) for m in swings)
+    # The genuine within-innings deltas here are tiny (0.02-0.03); the fake
+    # cross-innings "swing" would have been ~0.9 -- confirm nothing anywhere
+    # near that magnitude was reported.
+    for m in swings:
+        assert abs(m["win_prob_after"] - m["win_prob_before"]) < 0.5

@@ -112,8 +112,14 @@ def _bowling_milestones_and_hattricks(df: pd.DataFrame, name_map: dict | None) -
 def _biggest_swings(df: pd.DataFrame, top_n: int, name_map: dict | None) -> list:
     if "win_prob_batting" not in df.columns or df.empty:
         return []
-    d = df.copy()
-    d["delta_wp"] = d["win_prob_batting"].diff().fillna(0.0)
+    # `win_prob_batting` is relative to whichever team is *currently*
+    # batting, and that team flips at the innings break -- a plain `.diff()`
+    # across the whole log would score the innings-1-to-innings-2 boundary
+    # as one giant "swing", when it's really just two different reference
+    # frames being subtracted. Reset the diff per innings (on a stable
+    # chronological sort) so only genuine within-innings swings are ranked.
+    d = df.copy().sort_values(["innings", "over", "ball_in_over"]).reset_index(drop=True)
+    d["delta_wp"] = d.groupby("innings")["win_prob_batting"].diff().fillna(0.0)
     top = d.reindex(d["delta_wp"].abs().sort_values(ascending=False).index[:top_n])
     moments = []
     for _, row in top.sort_values(["innings", "over", "ball_in_over"]).iterrows():
