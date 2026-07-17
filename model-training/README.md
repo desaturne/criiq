@@ -127,6 +127,167 @@ matters for a ranking task like XI selection). Re-run after any feature
 change, same as the notebook above; confirmed after adding the domestic-form
 feature that the model choice per target is unchanged.
 
+## Match simulation, genetic-algorithm optimizers, win-probability graphs
+
+`criiq_models.simulate` (new package) adds a ball-by-ball T20 Monte Carlo
+match simulator, two genetic-algorithm optimizers, and win-probability
+charts with key-moment annotation -- given two literal, user-supplied
+Playing XIs (not an abstract pool), not the pre-match XI-selection problem
+`recommend`/`select_xi` already solve.
+
+```bash
+python -m criiq_models.cli simulate --team1 India --team2 Australia \
+    --team1-players "S Mandhana,Shafali Verma,..." --team2-players "..." \
+    --toss-winner India --n-simulations 200 \
+    --force-dismissal "S Mandhana:0:1"   # optional: "what if this player goes out here"
+
+python -m criiq_models.cli optimize-bowling --bowling-team Australia --batting-team India \
+    --bowling-players "..." --batting-players "..."
+
+python -m criiq_models.cli optimize-batting --batting-team India --bowling-team Australia \
+    --batting-players "..." --bowling-players "..." [--target 162]
+```
+
+**Rules compliance** (`simulate/engine.py`), checked directly against
+`rulebook-cricket.md`: 20 overs, 6 legal deliveries per over, a bowler capped
+at 4 overs and barred from bowling two overs consecutively (Law 17.6 / ICC PC
+cl. 13.9.1), wide/no-ball replay with a 1-run penalty and a free hit after a
+no-ball (with the free hit's wicket probability suppressed, since only
+run-out-type dismissals are possible off it), byes/leg-byes counting as a
+legal ball but never credited to the batter or debited to the bowler,
+correct end-of-over strike rotation, and an innings ending on all-out,
+overs-complete, or (second innings) target-chased. Reduced/rain-shortened-
+innings bowler-overs rules and DLS are explicitly out of scope -- only a
+standard, uninterrupted 20-over innings is modelled.
+
+**Ball outcomes** (`simulate/outcomes.py`) are drawn from real, per-
+(format, gender) phase-level (powerplay/middle/death) empirical frequencies
+straight from `deliveries`, adjusted per ball for the specific batter's
+strike rate, the bowler's economy and wicket rate, and any real head-to-head
+dismissal history between them (`dismissal_matchup`), shrunk toward the
+phase prior the same way every other sparse feature in this repo is
+(`features/common.shrink`). Simplification, documented rather than silently
+assumed: each delivery is classified into exactly one outcome bucket, so a
+wicket never coincides with a wide/no-ball (no stumped-off-a-wide, no
+run-out-off-a-no-ball -- both real but rare).
+
+A real bug found and fixed while building this: pandas returns a missing SQL
+`NULL` as Python `float('nan')`, not `None` -- and `nan` is truthy in plain
+Python, so an initial `if wicket_type:` check classified roughly 95% of
+*every* delivery as a wicket. Caught immediately by a live smoke test
+(`India: 1/10` inside the first over) before it ever reached calibration;
+fixed by checking `pd.notna(...)` explicitly, confirmed afterward against
+the real per-phase wicket rate (a plausible ~4-9%, not ~95%).
+
+**Default bowler scheduling mirrors real captaincy, not just "fewest overs
+bowled so far".** When `simulate`/`ga_bowling`'s fitness evaluation don't
+supply an explicit rotation, `engine.select_bowler` uses each bowler's real
+per-phase economy rank *within their own team* (`player_phase.
+bowl_team_rank`, threaded through as `outcomes.BowlerProfile.phase_rank`) to
+prefer whoever has actually proven strongest in the *current over's* phase
+(powerplay/middle/death) -- a captain's best death bowler actually bowls the
+death overs. This preference only applies with real squad depth (more
+bowling-capable players than the bare minimum 5 needed to cover 20 overs at
+4 each) -- with exactly 5, every bowler's overs are already fully committed
+and holding one back risks a legal deadlock, so the engine correctly falls
+back to the plain least-used-first schedule there (verified by a dedicated
+test). Confirmed on a real India-vs-Australia simulation: Australia's
+rotation split cleanly into JL Jonassen (ranked 8th at powerplay economy)
+sharing the new ball, EA Burns (ranked **2nd** at middle economy) and KJ
+Garth (5th) taking almost the whole middle phase, and G Wareham/EA Perry
+(4th/5th at death) closing it out -- exactly the real-world "two strike
+bowlers open, middle specialists split the bulk overs, death specialists
+finish" pattern, not an arbitrary round-robin.
+
+**Win probability** (`simulate/winprob_reader.py`) reuses the exact same
+persisted per-(format, gender) grids data-collection's `EmpiricalWinProb`
+already trains (`winprob_{fmt}_{gender}_*.parquet`) -- a local, read-only
+mirror of its binning/shrinkage-lookup logic, loaded once per simulated
+match rather than once per ball (this package never imports
+data-collection's own code, only reads its DB/persisted artifacts, same
+boundary as everywhere else in this README).
+
+**Key moments** (`simulate/keymoments.py`): batting milestones (50/100/150/
+200), every boundary, bowling milestones (3/4/5-for), hat-trick detection
+(three wickets off three consecutive *legal* deliveries by the same bowler
+-- a wide/no-ball in between does not break it, since it isn't a counted
+"ball" under real cricket scoring convention, same as the strike-rate
+convention already documented in section 6 of the rulebook), and the
+biggest single-ball win-probability swings in the match. `simulate/report.py`
+plots all of it on one win-probability line chart (`plot_win_probability`),
+optionally overlaying a forced-dismissal scenario against the baseline for
+direct comparison, plus a Monte-Carlo mean/10th-90th-percentile band
+(`aggregate_win_probability`) across `--n-simulations` reps.
+
+**Two genetic algorithms**, hand-rolled with numpy (no new dependency --
+`scipy`/`numpy` already cover it, consistent with keeping every optimizer in
+this repo self-contained): the exact-MILP squad selector
+(`selection/optimize.py`) picks *who* plays; neither of these in-match
+*sequencing* decisions fits a linear program cleanly, since legality at each
+step depends on every earlier choice in the sequence.
+
+- `simulate/ga_bowling.optimize_bowling_rotation`: searches bowler-to-over
+  assignments to minimize the opposition's expected runs conceded (the
+  tractable, correct proxy for bowling-side win probability -- restricting
+  runs is exactly what choosing a rotation controls). Every candidate is
+  *repaired* back to a rules-legal rotation after crossover/mutation, never
+  merely penalized, using the same greedy "most overs remaining, excluding
+  the previous over's bowler" scheduling rule (the standard, provably-
+  correct algorithm for arranging items under a no-two-adjacent-equal
+  constraint) that guarantees a legal rotation always exists for a
+  sufficient bowling-capable pool. **The recognized bowlers take the full
+  quota between them by default, not an even spread across everyone
+  bowling-capable**: `primary_bowlers` (the up to 5 specialist bowlers,
+  `role_bucket == "bowler"`, resolved by `optimize-bowling`'s
+  `_primary_bowlers`) default to 4 overs each, with a part-timer only
+  introduced via ordinary mutation (if genuinely better for this matchup)
+  or when the recognized group is short of a full 20 overs' capacity
+  (`--no-primary-bowlers` disables this and searches freely across every
+  bowling-capable player, the old behaviour).
+- `simulate/ga_batting.optimize_batting_order`: order-crossover (OX) search
+  over the batting order, maximizing expected score (first-innings framing)
+  or, with `--target`, the fraction of Monte Carlo reps that actually reach
+  it (chase framing). **Searched in role bands, not one free-for-all
+  permutation**: `batting_groups` (openers / top-middle order / tail,
+  resolved by `optimize-batting`'s `_batting_groups` from real batting
+  position + `role_bucket`) constrains the search so a player never crosses
+  a band boundary, while still permuting *within* each band -- the two
+  openers can interchange which bats first, the top/middle order rotates
+  among itself, and the tail (specialist bowlers) fills out the rest, just
+  like a real lineup (`--no-role-bands` disables this and searches the full
+  11-player permutation freely, the old behaviour).
+
+Both expose `--pop-size`/`--generations` (defaults 40/60) to trade runtime
+for search quality -- ball-by-ball simulation is the bottleneck, not the GA
+itself, so a quick exploratory run should lower these. Fitness in both is a
+noisy Monte Carlo mean (a handful of reps), so the tracked "best" is
+protected against that noise rather than trusting raw per-generation scores:
+elitism (the best-known individual always stays in the gene pool) plus a
+re-verification step (extra reps) before accepting an apparent new best.
+`fitness_history` logs the running best-known fitness, monotonically
+non-decreasing by construction -- a real bug found while first demoing this
+in the notebook: the original version plotted each generation's *raw* top
+score, which visibly bounced up and down from Monte Carlo noise alone and
+looked like the GA wasn't converging, even though the actual best-tracked
+result never regressed.
+
+**No draws in T20I.** A tied run-chase doesn't stop at "Tie" -- the engine
+plays one or more Super Overs (`engine.simulate_super_over`, rulebook-
+cricket.md sec 7.1 / ICC PC Appendix F: 1 over per side, innings ends early
+on 2 wickets, the side that batted second in the main match bats first in
+the Super Over, a further tie swaps who bats first and repeats) until a
+winner emerges, recorded in `simulate_match`'s `super_over_rounds`. Verified
+on real data: of 300 simulated India-vs-Australia matches, 6 genuinely tied
+and every one correctly resolved via at least one Super Over rather than
+reporting a bare Tie. `engine.super_over_win_probabilities` also answers
+"who's more likely to win a Super Over between these two sides" directly
+(independent of whether a full match actually tied) -- real example: with
+Australia batting first (the side that would've batted second in the main
+match), Australia 60.7% / India 32.7% / Tie-again 6.7% across 300 reps.
+`MAX_SUPER_OVER_ROUNDS` (10) bounds the real "repeat indefinitely" rule --
+reaching it is a documented, extremely-unlikely fallback to a bare Tie, not
+real cricket, needed only so a pathological outcome model can't hang.
+
 ## How a player is scored
 
 Every score is a transparent sum of parts (mirrors the
