@@ -43,7 +43,8 @@ from .simulate.ga_bowling import optimize_bowling_rotation
 from .simulate.keymoments import detect_key_moments
 from .simulate.outcomes import build_outcome_model, build_player_profiles
 from .simulate.report import SIMULATION_ARTIFACTS_DIR, aggregate_win_probability, plot_win_probability, save_simulation_artifacts
-from .simulate.scorecard import batting_scorecard, bowling_scorecard, coach_perspective, render_scorecard_text
+from .simulate.scorecard import (batting_scorecard, bowling_phase_summary, bowling_rotation, bowling_scorecard,
+                                  coach_perspective, render_bowling_rotation_text, render_scorecard_text)
 from .simulate.winprob_reader import WinProbLookup
 
 
@@ -547,6 +548,15 @@ def cmd_simulate(args):
     second_bowl = bowling_scorecard(representative["second_innings_log"], names)
     print(render_scorecard_text(representative["bowling_first_team"], second_bat, second_bowl,
                                  representative["batting_first_team"]))
+
+    print(f"\n{'=' * 60}\nBOWLING ROTATION -- who bowled each over, and each phase\n{'=' * 60}\n")
+    first_rotation = bowling_rotation(representative["first_innings_log"], names)
+    print(render_bowling_rotation_text(representative["bowling_first_team"], first_rotation,
+                                        bowling_phase_summary(first_rotation)))
+    print()
+    second_rotation = bowling_rotation(representative["second_innings_log"], names)
+    print(render_bowling_rotation_text(representative["batting_first_team"], second_rotation,
+                                        bowling_phase_summary(second_rotation)))
 
     scenario_rep = None
     if forced:
