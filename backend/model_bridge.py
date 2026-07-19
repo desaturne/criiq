@@ -86,18 +86,33 @@ def simulate(team1: str, team2: str, team1_player_ids: list[str], team2_player_i
     return run_cli(args, timeout=300)
 
 
+# The CLI's own --pop-size/--generations defaults (40/60) are tuned for an
+# offline notebook run, not a synchronous HTTP request -- with the GA's
+# default n_reps=8, that's ~19,200 full ball-by-ball innings simulations
+# (pop_size * generations * n_reps, plus re-verification passes on every new
+# best), measured at 10+ minutes for a live matchup. pop_size=16/generations=
+# 20 (~19s measured for the same matchup) is the default here instead; a
+# caller can still ask for a deeper search via the pop_size/generations args.
+FAST_POP_SIZE = 16
+FAST_GENERATIONS = 20
+
+
 def optimize_bowling(bowling_team: str, batting_team: str, bowling_player_ids: list[str], batting_player_ids: list[str],
-                      venue: str | None = None, fmt: str = DEFAULT_FORMAT, gender: str = DEFAULT_GENDER) -> dict:
+                      venue: str | None = None, pop_size: int = FAST_POP_SIZE, generations: int = FAST_GENERATIONS,
+                      fmt: str = DEFAULT_FORMAT, gender: str = DEFAULT_GENDER) -> dict:
     args = ["optimize-bowling", "--bowling-team", bowling_team, "--batting-team", batting_team,
             "--bowling-player-ids", ",".join(bowling_player_ids), "--batting-player-ids", ",".join(batting_player_ids),
-            "--format", fmt, "--gender", gender, "--json", *_opt("--venue", venue)]
+            "--format", fmt, "--gender", gender, "--json", "--pop-size", str(pop_size), "--generations", str(generations),
+            *_opt("--venue", venue)]
     return run_cli(args, timeout=300)
 
 
 def optimize_batting(batting_team: str, bowling_team: str, batting_player_ids: list[str], bowling_player_ids: list[str],
                       target: int | None = None, venue: str | None = None,
+                      pop_size: int = FAST_POP_SIZE, generations: int = FAST_GENERATIONS,
                       fmt: str = DEFAULT_FORMAT, gender: str = DEFAULT_GENDER) -> dict:
     args = ["optimize-batting", "--batting-team", batting_team, "--bowling-team", bowling_team,
             "--batting-player-ids", ",".join(batting_player_ids), "--bowling-player-ids", ",".join(bowling_player_ids),
-            "--format", fmt, "--gender", gender, "--json", *_opt("--target", target), *_opt("--venue", venue)]
+            "--format", fmt, "--gender", gender, "--json", "--pop-size", str(pop_size), "--generations", str(generations),
+            *_opt("--target", target), *_opt("--venue", venue)]
     return run_cli(args, timeout=300)
