@@ -73,14 +73,28 @@ Everything returns `{"data": ..., "error": null}` (or `{"data": null, "error": "
 
 **Phase 4 — selection & AI**
 - `GET /selection/{match_id}` · `PUT /selection/{match_id}` — body `{"xi": [], "extra": [], "excluded": []}`, max 11 in the XI
-- `POST /recommendations` — body `{"opponent": "...", "venue": "..."}`
+- `POST /recommendations` — body `{"opponent": "...", "venue": "...", "team": "India", "gender": "female"}` (only `opponent` required)
 - `GET /winprob?innings=2&balls_remaining=30&wickets=4&runs_required=40`
 
-## Swapping in the real AI model
+## The AI — real model, wired in
 
-`ai_stub.py` fakes `get_recommendations(match_context)` and
-`get_win_probability(state)`. When the real model is ready, replace that module
-(keeping the same function names/arguments) — no other file changes.
+`ai_model.py` is the live wiring. It calls the two real models as subprocesses
+(each has its own folder + virtualenv + heavy deps, so we don't merge them into
+the backend's env):
+
+- **Recommendations** → `model-training/criiq_models` (trained per gender). Run
+  once after any data change: `cd model-training && python -m criiq_models.cli
+  train --gender female` and `--gender male`.
+- **Win probability** → `data-collection`'s empirical model (`criiq_data.cli
+  winprob --state ...`).
+
+If a subprocess fails (model not trained, timeout, bad arg), `ai_model.py`
+falls back to `ai_stub.py` so the API always answers. `winprob` responses now
+report `"model": "empirical"` when the real model answered, `"stub"` otherwise.
+
+**Prerequisite:** the recommendation model needs the WPA + role tables, which
+`refresh` does NOT build. After `python run.py refresh`, also run:
+`python run.py wpa` and `python run.py role-finalize`, then train the models.
 
 ## File map
 
@@ -92,4 +106,5 @@ Everything returns `{"data": ..., "error": null}` (or `{"data": null, "error": "
 | `players.py` | player list/detail/vs/compare + add/edit/delete manual players |
 | `matches.py` | matches, dashboard summary + alerts, ticker |
 | `selection.py` | playing XI save/load, recommendations, winprob |
-| `ai_stub.py` | placeholder AI — replaced later by the real model |
+| `ai_model.py` | calls the REAL models (recommend + winprob) as subprocesses; falls back to `ai_stub` |
+| `ai_stub.py` | fake AI kept as the graceful fallback |

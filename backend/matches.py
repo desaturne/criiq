@@ -9,7 +9,7 @@ import json
 
 from fastapi import APIRouter, Depends, HTTPException
 
-import ai_stub
+import ai_model  # the real AI (falls back to ai_stub if a subprocess fails)
 from auth import require_user
 from database import app_db, criiq_db
 
@@ -124,7 +124,7 @@ def dashboard_summary():
             xi_count = len(squad.get("xi", []))
             extras_count = len(squad.get("extra", []))
 
-    win_prob = ai_stub.get_win_probability(
+    win_prob = ai_model.get_win_probability(
         {"innings": 1, "balls_remaining": 120, "wickets": 0}
     )
 
