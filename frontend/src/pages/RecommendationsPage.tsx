@@ -6,8 +6,9 @@ import { RadialGauge } from "../components/common/RadialGauge";
 import { SelectionControl } from "../components/common/SelectionControl";
 import * as api from "../lib/api";
 import { colorFor, initialsFor } from "../lib/mappers";
-import { SelectionState } from "../types/index";
 import { SimulatorPrefill } from "./SimulationPage";
+import { useApp } from "../context/AppContext";
+import { SelectionState } from "../types/index";
 
 interface Recommendation { rank: number; player_id: string; player_name: string; role: string; score: number; reasons: string[]; in_xi: boolean; }
 
@@ -40,7 +41,10 @@ export function RecommendationsPage() {
   const [format, setFormat] = useState("T20I");
   const [gender, setGender] = useState<"female" | "male">("female");
   const [simulating, setSimulating] = useState(false);
-  const [selections, setSelections] = useState<Record<string, SelectionState>>({});
+  // Shared with the Squads page (keyed by player_id) so a pick made here shows
+  // up in the squad's Playing XI. Local component state would strand it here.
+  const { selections, setSelections } = useApp();
+  const [confirming, setConfirming] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [ranked, setRanked] = useState<Recommendation[]>([]);
   const selectedCount = Object.values(selections).filter(s => s === "select").length;
@@ -90,6 +94,35 @@ export function RecommendationsPage() {
       setError(err instanceof Error ? err.message : "Couldn't prepare the opponent's XI for simulation");
     } finally {
       setSimulating(false);
+    }
+  };
+
+  // "Confirm Selection" -- persist whatever the coach has picked as the Playing
+  // XI (plus reserves/excluded) to the backend for the next fixture, then hand
+  // off to the Squads page, which reads the same shared `selections` and opens
+  // straight onto the XI panel.
+  const handleConfirm = async () => {
+    const idsFor = (state: SelectionState) =>
+      Object.entries(selections).filter(([, s]) => s === state).map(([id]) => id);
+    const xi = idsFor("select");
+    if (xi.length === 0) return;
+    if (xi.length > 11) {
+      setError(`You've selected ${xi.length} players — a Playing XI can have at most 11. Remove ${xi.length - 11}.`);
+      return;
+    }
+    setConfirming(true);
+    setError(null);
+    try {
+      const matches = await api.listMatches();
+      const matchId = matches.upcoming[0]?.id;
+      if (matchId) {
+        await api.saveSelection(matchId, { xi, extra: idsFor("reserve"), excluded: idsFor("exclude") });
+      }
+      navigate("/squads", { state: { openSquad: true } });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't save the selection");
+    } finally {
+      setConfirming(false);
     }
   };
 
@@ -162,8 +195,20 @@ export function RecommendationsPage() {
                 <RadialGauge value={squadStrength} decimals={1} size={100} strokeWidth={7} color="#AAFF57" label="Score" />
               </div>
               <div className="space-y-2 text-[12px] mb-4">
-                <p className="text-muted-foreground text-center">Select {Math.max(0, 11 - selectedCount)} more players from the list to build your own XI</p>
+                <p className="text-muted-foreground text-center">
+                  {selectedCount === 0
+                    ? "Tap Select on players below to build your own XI"
+                    : `${selectedCount}/11 selected${selectedCount > 11 ? " — remove " + (selectedCount - 11) : ""}`}
+                </p>
               </div>
+              {selectedCount > 0 && (
+                <button onClick={handleConfirm} disabled={confirming || selectedCount > 11}
+                  className="w-full mb-2 py-2.5 bg-[#5FA800] text-white font-semibold text-[13px] rounded-lg hover:opacity-90 active:scale-[0.98] transition-all flex items-center justify-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed">
+                  {confirming
+                    ? <><RefreshCw size={14} className="animate-spin" /> Saving…</>
+                    : <><CheckCircle2 size={14} /> Confirm Selection ({selectedCount}/11) → Squad</>}
+                </button>
+              )}
               <button onClick={handleSimulateXI} disabled={simulating}
                 className="w-full py-2 border border-border text-foreground text-[12px] rounded-lg hover:border-[#AAFF57]/40 hover:text-[#AAFF57] transition-all flex items-center justify-center gap-1.5 disabled:opacity-60">
                 {simulating
@@ -229,7 +274,7 @@ export function RecommendationsPage() {
                       <button onClick={() => setExpandedId(expandedId === rec.player_name ? null : rec.player_name)} className="text-[11px] text-muted-foreground hover:text-foreground flex items-center gap-0.5 px-2">
                         Explain <ChevronDown size={10} className={`transition-transform ${expandedId === rec.player_name ? "rotate-180" : ""}`} />
                       </button>
-                      <SelectionControl state={selections[rec.player_name] || "undecided"} onChange={s => setSelections(prev => ({ ...prev, [rec.player_name]: s }))} />
+                      <SelectionControl state={selections[rec.player_id] || "undecided"} onChange={s => setSelections(prev => ({ ...prev, [rec.player_id]: s }))} />
                     </div>
                     <AnimatePresence>
                       {expandedId === rec.player_name && (

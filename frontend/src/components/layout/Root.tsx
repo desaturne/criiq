@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { Outlet, useNavigate, useLocation } from "react-router";
-import { LayoutDashboard, Calendar, MessageSquare, Activity } from "lucide-react";
+import { LayoutDashboard, Calendar, Star, Activity } from "lucide-react";
 import { LiveTicker } from "../common/LiveTicker";
 import { Navbar } from "./Navbar";
 import { Sidebar } from "./Sidebar";
@@ -18,7 +18,7 @@ export function Root() {
     { path: "dashboard",       label: "Home",    icon: LayoutDashboard },
     { path: "players",         label: "Players", icon: Activity },
     { path: "matches",         label: "Matches", icon: Calendar },
-    { path: "assistant",       label: "AI",      icon: MessageSquare },
+    { path: "recommendations", label: "Picks",   icon: Star },
   ];
 
   return (

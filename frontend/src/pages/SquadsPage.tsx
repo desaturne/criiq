@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { useNavigate } from "react-router";
+import { useNavigate, useLocation } from "react-router";
 import { Search, CheckCircle, X, Eye, Download, UserPlus, Edit, Trash2, Users, GitCompare, ClipboardList } from "lucide-react";
 import { PlayerCard } from "../components/player/PlayerCard";
 import { PlayerCompareModal } from "../components/player/PlayerCompareModal";
@@ -30,6 +30,7 @@ export function SquadsPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [newPlayer, setNewPlayer] = useState({ name: "", role: "Batsman", battingHand: "Right", bowlingStyle: "", status: "ACTIVE" as PlayerStatus });
   const [showSquadPanel, setShowSquadPanel] = useState(false);
+  const location = useLocation();
   const [compareIds, setCompareIds] = useState<string[]>([]);
   const [showCompare, setShowCompare] = useState(false);
 
@@ -41,6 +42,14 @@ export function SquadsPage() {
   };
 
   useEffect(() => { loadPlayers(); }, [team, gender]);
+
+  // Arriving from Recommendations' "Confirm Selection" -> open straight onto
+  // the Playing XI panel so the confirmed picks are shown, not left to a click.
+  useEffect(() => {
+    if ((location.state as { openSquad?: boolean } | null)?.openSquad) {
+      setShowSquadPanel(true);
+    }
+  }, [location.state]);
 
   const filtered = players.filter(p =>
     p.name.toLowerCase().includes(search.toLowerCase()) &&
@@ -188,6 +197,23 @@ export function SquadsPage() {
         <div className="py-16 text-center text-sm text-muted-foreground">Loading squad…</div>
       ) : tab === "build" ? (
         <>
+          {/* Empty-state prompt shown before the coach has picked anyone --
+              tells them how the XI gets built and where it shows up. */}
+          {selectedCount === 0 && (
+            <motion.div initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }}
+              className="mb-4 flex items-center gap-3 bg-[#AAFF57]/[0.08] border border-[#AAFF57]/25 rounded-2xl px-4 py-3.5">
+              <div className="w-10 h-10 rounded-full bg-[#AAFF57]/15 flex items-center justify-center flex-shrink-0">
+                <Users size={18} className="text-[#AAFF57]" />
+              </div>
+              <div>
+                <p className="text-[13px] font-semibold text-foreground">Build your Playing XI</p>
+                <p className="text-[12px] text-muted-foreground">
+                  Tap <span className="text-[#AAFF57] font-medium">Select</span> on any player below to add them — your XI builds up in{" "}
+                  <span className="text-foreground font-medium">View Squad</span> as you go, up to 11.
+                </p>
+              </div>
+            </motion.div>
+          )}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             {players.map((p, i) => (
               <PlayerCard

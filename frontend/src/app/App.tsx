@@ -5,7 +5,6 @@ import { AdminShell } from "../admin/AdminShell";
 import { Root } from "../components/layout/Root";
 import { AppContext } from "../context/AppContext";
 import * as api from "../lib/api";
-import { AssistantPage } from "../pages/AssistantPage";
 import { DashboardOverviewPage } from "../pages/DashboardOverviewPage";
 import { DashboardPage } from "../pages/DashboardPage";
 import { MatchDetailPage } from "../pages/MatchDetailPage";
@@ -41,7 +40,6 @@ const router = createBrowserRouter([
       { path: "matches/:id",     Component: MatchDetailPage },
       { path: "recommendations", Component: RecommendationsPage },
       { path: "simulator",       Component: SimulationPage },
-      { path: "assistant",       Component: AssistantPage },
       { path: "reports",         Component: ReportsPage },
       { path: "settings",        Component: SettingsPage },
       { path: "*",               element: <Navigate to="/dashboard" replace /> },
