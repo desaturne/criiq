@@ -13,7 +13,7 @@ import numpy as np
 
 from criiq_models.simulate.engine import MAX_OVERS, MAX_OVERS_PER_BOWLER
 from criiq_models.simulate.ga_batting import optimize_batting_order
-from criiq_models.simulate.ga_bowling import _quotas, optimize_bowling_rotation
+from criiq_models.simulate.ga_bowling import _quotas, _repair, optimize_bowling_rotation
 from criiq_models.simulate.outcomes import BatterProfile, BowlerProfile, PHASES, PlayerAdjustedOutcomeModel
 
 BATTERS = [f"b{i}" for i in range(11)]
@@ -69,6 +69,31 @@ def test_bowling_rotation_ga_raises_for_too_small_a_pool():
     with pytest.raises(ValueError):
         optimize_bowling_rotation(BOWLERS5[:4], BATTERS, _model(), batter_profiles, bowler_profiles,
                                    pop_size=4, generations=2, n_reps=1, rng_seed=42)
+
+
+def test_repair_fixes_a_badly_skewed_post_crossover_rotation_in_a_razor_tight_pool():
+    """Real bug, caught live: with exactly 5 bowlers (zero slack -- 5 x 4 =
+    20, no room to spare), a crossover child can badly skew per-bowler over-
+    counts (here: 10 overs each for just 2 of the 5 bowlers) before repair
+    ever runs. The old left-to-right patch could paint itself into a corner
+    on inputs like this even though the *pool as a whole* can legally cover
+    20 overs -- `_repair` must always succeed here, not raise.
+    """
+    skewed = ["w0"] * 10 + ["w1"] * 10
+    rng = np.random.default_rng(3)
+    fixed = _repair(skewed, BOWLERS5, rng)
+    _assert_legal_rotation(fixed)
+
+
+def test_repair_prefers_primary_bowlers_when_reassigning_a_shortfall():
+    skewed = ["w0"] * 10 + ["w1"] * 10
+    rng = np.random.default_rng(3)
+    fixed = _repair(skewed, BOWLERS5, rng, primary_bowlers=["w2", "w3", "w4"])
+    _assert_legal_rotation(fixed)
+    counts = {b: fixed.count(b) for b in set(fixed)}
+    # w0/w1 already contributed their capped 4 each; the remaining 12 overs'
+    # worth of shortfall must have gone to the (non-skewed) primary bowlers.
+    assert sum(counts.get(b, 0) for b in ("w2", "w3", "w4")) == MAX_OVERS - 2 * MAX_OVERS_PER_BOWLER
 
 
 def test_bowling_rotation_ga_gives_primary_bowlers_the_full_quota_by_default():

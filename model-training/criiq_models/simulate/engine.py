@@ -99,7 +99,7 @@ class MatchState:
 def select_bowler(bowler_pool: list, bowler_balls: dict, last_over_bowler: str | None,
                    rotation: list | None = None, over_idx: int | None = None,
                    max_overs_per_bowler: int = MAX_OVERS_PER_BOWLER,
-                   bowler_profiles: dict | None = None) -> str:
+                   bowler_profiles: dict | None = None, max_overs: int = MAX_OVERS) -> str:
     """Picks the next over's bowler. With an explicit `rotation` (a length-20
     bowler_id list, e.g. from `ga_bowling.optimize_bowling_rotation`), that
     choice is used but still validated -- an illegal rotation raises rather
@@ -141,12 +141,21 @@ def select_bowler(bowler_pool: list, bowler_balls: dict, last_over_bowler: str |
     # Preferring a phase specialist over a merely-less-used bowler only makes
     # sense with real squad depth: holding a death-overs bowler back from the
     # middle overs risks the pool running out of legal options entirely (Law
-    # 17.6/cap-4) once the pool is down to the bare minimum needed to cover
-    # 20 overs at all -- with exactly that minimum, every bowler's overs are
-    # already fully committed, and a real captain has no such flexibility
-    # either. `min_required` mirrors `ga_bowling.py`'s own pool-size check.
-    min_required = -(-MAX_OVERS // max_overs_per_bowler)
-    if bowler_profiles is not None and over_idx is not None and len(bowler_pool) > min_required:
+    # 17.6/cap-4) once real slack runs out. A *static*, pool-size-only check
+    # (len(bowler_pool) > minimum-needed, computed once) is not safe: it
+    # doesn't account for slack already unevenly spent by earlier overs, nor
+    # a pool list that happens to contain a duplicate/near-duplicate entry --
+    # a real deadlock was hit live this way. Instead recompute actual
+    # remaining capacity vs. actual remaining need fresh every over, over
+    # *distinct* bowlers only: only prefer a specialist when there is
+    # genuine spare capacity beyond the bare minimum required to legally
+    # finish the innings from here.
+    overs_remaining = max_overs - over_idx if over_idx is not None else None
+    total_remaining_capacity = sum(
+        max(0, max_overs_per_bowler * BALLS_PER_OVER - bowler_balls.get(b, 0)) for b in set(bowler_pool))
+    has_slack = (overs_remaining is not None
+                 and total_remaining_capacity > overs_remaining * BALLS_PER_OVER)
+    if bowler_profiles is not None and has_slack:
         phase = _phase(over_idx)
 
         def _key(b):
@@ -289,7 +298,8 @@ def simulate_innings(batting_order: list, bowling_pool: list, outcome_model, bat
         if state.is_over():
             break
         bowler_id = select_bowler(bowling_pool, state.bowler_balls, state.last_over_bowler,
-                                   rotation, over_idx, max_overs_per_bowler, bowler_profiles=bowler_profiles)
+                                   rotation, over_idx, max_overs_per_bowler, bowler_profiles=bowler_profiles,
+                                   max_overs=max_overs)
         simulate_over(state, bowler_id, outcome_model, batter_profiles, bowler_profiles, rng,
                       ball_log, forced_dismissal)
 

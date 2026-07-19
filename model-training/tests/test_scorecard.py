@@ -6,11 +6,12 @@ from __future__ import annotations
 
 import pandas as pd
 
-from criiq_models.simulate.scorecard import batting_scorecard, bowling_scorecard, coach_perspective
+from criiq_models.simulate.scorecard import (batting_scorecard, bowling_phase_summary, bowling_rotation,
+                                              bowling_scorecard, coach_perspective)
 
 
 def _row(**kw):
-    base = {"innings": 1, "over": 0, "ball_in_over": 1, "striker": "b0", "bowler": "w0",
+    base = {"innings": 1, "over": 0, "ball_in_over": 1, "phase": "powerplay", "striker": "b0", "bowler": "w0",
             "outcome": "1", "runs_off_bat": 1, "extras": 0, "runs_total": 1, "is_legal": True,
             "is_wicket": False, "dismissed": None}
     base.update(kw)
@@ -86,3 +87,39 @@ def test_coach_perspective_generalizes_to_either_side_of_any_named_teams():
         narrative = coach_perspective(rep, key_moments, coach_team)
         assert coach_team in narrative
         assert "Result:" in narrative
+
+
+def test_bowling_rotation_reports_one_row_per_over_with_its_own_phase_and_figures():
+    rows = [
+        _row(over=0, ball_in_over=1, bowler="w0", phase="powerplay", outcome="4", runs_off_bat=4, runs_total=4),
+        _row(over=0, ball_in_over=2, bowler="w0", phase="powerplay", outcome="0", runs_off_bat=0, runs_total=0),
+        _row(over=6, ball_in_over=1, bowler="w1", phase="middle", outcome="wicket", runs_off_bat=0,
+             runs_total=0, is_wicket=True, dismissed="b0"),
+        _row(over=15, ball_in_over=1, bowler="w2", phase="death", outcome="6", runs_off_bat=6, runs_total=6),
+    ]
+    df = pd.DataFrame(rows)
+    rotation = bowling_rotation(df)
+    assert len(rotation) == 3  # one row per distinct over
+    powerplay_over = next(r for r in rotation if r["over"] == 1)
+    assert powerplay_over["phase"] == "powerplay"
+    assert powerplay_over["runs_conceded"] == 4
+    death_over = next(r for r in rotation if r["over"] == 16)
+    assert death_over["phase"] == "death"
+    assert death_over["runs_conceded"] == 6
+    middle_over = next(r for r in rotation if r["over"] == 7)
+    assert middle_over["wickets"] == 1
+
+
+def test_bowling_phase_summary_aggregates_by_bowler_within_each_phase():
+    rows = [
+        _row(over=0, ball_in_over=1, bowler="w0", phase="powerplay", outcome="4", runs_off_bat=4, runs_total=4),
+        _row(over=1, ball_in_over=1, bowler="w1", phase="powerplay", outcome="0", runs_off_bat=0, runs_total=0),
+        _row(over=15, ball_in_over=1, bowler="w0", phase="death", outcome="6", runs_off_bat=6, runs_total=6),
+    ]
+    df = pd.DataFrame(rows)
+    rotation = bowling_rotation(df)
+    summary = bowling_phase_summary(rotation)
+    assert set(summary["powerplay"]) == {"w0", "w1"}
+    assert summary["powerplay"]["w0"]["runs"] == 4
+    assert summary["death"]["w0"]["runs"] == 6
+    assert "w1" not in summary["death"]

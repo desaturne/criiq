@@ -94,8 +94,9 @@ def test_bowler_selection_prefers_a_real_phase_specialist_over_least_used():
 def test_bowler_selection_ignores_phase_tiering_at_exact_minimum_pool_size():
     """Exactly 5 bowlers (the bare minimum for a 20-over innings at 4 overs
     each) has zero slack -- phase-tiering must not apply here at all (see
-    `select_bowler`'s `min_required` guard), since holding any bowler back
-    from a phase they're needed in risks a legal deadlock.
+    `select_bowler`'s dynamic remaining-capacity-vs-remaining-need check),
+    since holding any bowler back from a phase they're needed in risks a
+    legal deadlock.
     """
     batter_profiles, bowler_profiles = _profiles(BATTERS + BOWLERS5)
     bowler_profiles["w0"].phase_rank = {"powerplay": 1}
@@ -106,6 +107,27 @@ def test_bowler_selection_ignores_phase_tiering_at_exact_minimum_pool_size():
     state, log = simulate_innings(BATTERS, BOWLERS5, model, batter_profiles, bowler_profiles,
                                    rng=np.random.default_rng(11))
     assert state.balls_bowled == TOTAL_LEGAL_BALLS
+
+
+def test_bowler_selection_is_safe_even_with_a_duplicate_pool_entry():
+    """Real bug, caught live: a *static* len(bowler_pool)-based slack check
+    can be fooled by a pool list containing a duplicate entry (the same
+    bowler_id twice) -- it counts as "extra slack" by raw list length even
+    though there's no genuinely different bowler behind it, which let phase-
+    tiering wrongly activate in a razor-tight 5-distinct-bowler pool and
+    deadlock. The dynamic remaining-capacity check (computed over *distinct*
+    bowlers) must not be fooled by this and must never raise.
+    """
+    pool_with_duplicate = BOWLERS5 + ["w0"]  # w0 listed twice, still only 5 real bowlers
+    batter_profiles, bowler_profiles = _profiles(BATTERS + BOWLERS5)
+    bowler_profiles["w0"].phase_rank = {"powerplay": 1}
+    bowler_profiles["w1"].phase_rank = {"death": 1}
+    model = _model(NO_EXTRAS_NO_WICKET)
+    state, log = simulate_innings(BATTERS, pool_with_duplicate, model, batter_profiles, bowler_profiles,
+                                   rng=np.random.default_rng(11))
+    assert state.balls_bowled == TOTAL_LEGAL_BALLS
+    for bowler, balls in state.bowler_balls.items():
+        assert balls <= MAX_OVERS_PER_BOWLER * 6
     for bowler, balls in state.bowler_balls.items():
         assert balls <= MAX_OVERS_PER_BOWLER * 6
 
