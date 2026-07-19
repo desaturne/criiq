@@ -11,7 +11,7 @@ import json
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-import ai_model  # the real AI (falls back to ai_stub if a subprocess fails)
+import ai_stub  # calls the real model via model_bridge, falls back to stub data
 from auth import require_user
 from database import app_db
 
@@ -74,13 +74,11 @@ class RecommendationBody(BaseModel):
     team: str = "India"        # which side we are picking for
     gender: str = "female"     # "female" | "male"
     format: str = "T20I"
-    team: str = "India"
-    gender: str = "female"
 
 
 @router.post("/recommendations")
 def recommendations(body: RecommendationBody):
-    result = ai_model.get_recommendations(body.model_dump())
+    result = ai_stub.get_recommendations(body.model_dump())
     return {"data": {"match_context": body.model_dump(),
                      "recommendations": result}, "error": None}
 
@@ -95,7 +93,7 @@ def winprob(innings: int = 1, balls_remaining: int = 120,
         raise HTTPException(400, "innings must be 1 or 2")
     if not 0 <= wickets <= 10:
         raise HTTPException(400, "wickets must be 0–10")
-    result = ai_model.get_win_probability({
+    result = ai_stub.get_win_probability({
         "innings": innings, "balls_remaining": balls_remaining,
         "wickets": wickets, "runs_required": runs_required, "gender": gender,
     })

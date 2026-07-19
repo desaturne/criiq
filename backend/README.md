@@ -119,7 +119,9 @@ Two env vars point this backend at that other venv:
 | `database.py` | opens criiq.db (read-only) + app.db + auth.db (ours), creates/seeds tables |
 | `auth.py` | login/logout, JWT check (`require_user`), `/auth/me` |
 | `players.py` | player list/detail/vs/compare + add/edit/delete manual players |
-| `matches.py` | matches, dashboard summary + alerts, ticker |
+| `matches.py` | matches, dashboard summary + alerts, ticker, real scorecard |
 | `selection.py` | playing XI save/load, recommendations, winprob |
-| `ai_model.py` | calls the REAL models (recommend + winprob) as subprocesses; falls back to `ai_stub` |
-| `ai_stub.py` | fake AI kept as the graceful fallback |
+| `simulation.py` | match simulation + batting/bowling optimization + analyze-XI |
+| `model_bridge.py` | shells out to `model-training`'s CLI (`--json`); raises `ModelBridgeError` on failure |
+| `ai_stub.py` | calls `model_bridge` for recommend/winprob; falls back to hand-written stub data if it fails |
+| `roster_index.py` | in-memory index of which players play for which team/gender (from real appearances) |
