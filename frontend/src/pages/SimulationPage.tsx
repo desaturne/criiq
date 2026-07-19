@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { useLocation, useNavigate } from "react-router";
-import { Area, Line, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, ResponsiveContainer, ComposedChart } from "recharts";
+import { useLocation } from "react-router";
 import { PlayCircle, Wind, ListOrdered, RefreshCw, Search, Check } from "lucide-react";
 import * as api from "../lib/api";
 import { mapApiPlayerListItem } from "../lib/mappers";
 import { Player } from "../types/index";
+import { WinProbChart } from "../components/match/WinProbChart";
+import { Scorecard } from "../components/match/Scorecard";
 
 const TEAM_OPTS = ["India", "Australia", "England", "South Africa", "New Zealand", "Pakistan"];
 
@@ -133,135 +134,6 @@ function TeamPicker({ value, onChange, opts, label }: { value: string; onChange:
         className="w-full text-sm bg-secondary border border-border rounded-lg px-3 py-2 text-foreground focus:outline-none focus:ring-2 focus:ring-[#AAFF57]/40">
         {opts.map(o => <option key={o}>{o}</option>)}
       </select>
-    </div>
-  );
-}
-
-// Real per-ball win-probability timeline (mean + 10th-90th percentile band
-// across the Monte Carlo reps) from criiq_models.simulate.report.
-// aggregate_win_probability -- only present when n_simulations > 1, since a
-// single rep has no distribution to band.
-function WinProbChart({ timeline, team1, team2 }: { timeline: any[]; team1: string; team2: string }) {
-  const data = timeline.map(t => ({
-    ball: t.match_ball_index,
-    over: Math.floor(t.match_ball_index / 6),
-    mean: Math.round(t.mean * 1000) / 10,
-    band: [Math.round(t.p10 * 1000) / 10, Math.round(t.p90 * 1000) / 10],
-  }));
-  // ~240 ball-level rows (6/over) would otherwise render one x-axis tick per
-  // row -- thin to roughly 10 evenly-spaced labels regardless of match length.
-  const tickInterval = Math.max(1, Math.floor(data.length / 10));
-  return (
-    <div className="bg-card border border-border rounded-xl p-4">
-      <div className="flex items-center justify-between mb-1">
-        <h4 className="text-[12px] font-semibold text-muted-foreground uppercase tracking-wider">Win Probability — {team1}</h4>
-        <span className="text-[10px] text-muted-foreground">shaded band = 10th–90th percentile across sims</span>
-      </div>
-      <ResponsiveContainer width="100%" height={200}>
-        <ComposedChart data={data} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" opacity={0.4} vertical={false} />
-          <XAxis dataKey="over" interval={tickInterval} tick={{ fontSize: 10, fill: "var(--muted-foreground)" }} tickLine={false} axisLine={{ stroke: "var(--border)" }}
-            tickFormatter={v => `${v}`} label={{ value: "Over", position: "insideBottom", offset: -2, fontSize: 10, fill: "var(--muted-foreground)" }} />
-          <YAxis domain={[0, 100]} ticks={[0, 25, 50, 75, 100]} tick={{ fontSize: 10, fill: "var(--muted-foreground)" }} tickLine={false} axisLine={false}
-            tickFormatter={v => `${v}%`} width={34} />
-          <ReferenceLine y={50} stroke="var(--muted-foreground)" strokeDasharray="4 4" strokeOpacity={0.5} />
-          <Tooltip
-            contentStyle={{ background: "var(--card)", border: "1px solid var(--border)", borderRadius: 8, fontSize: 12 }}
-            labelFormatter={v => `Over ${v}`}
-            formatter={(value: any, name: string) => name === "mean" ? [`${value}%`, `${team1} win %`] : [null, null]}
-          />
-          <Area dataKey="band" stroke="none" fill="#AAFF57" fillOpacity={0.12} isAnimationActive={false} />
-          <Line type="monotone" dataKey="mean" stroke="#AAFF57" strokeWidth={2} dot={false} isAnimationActive={false} />
-        </ComposedChart>
-      </ResponsiveContainer>
-      <div className="flex justify-between text-[10px] text-muted-foreground mt-1 px-1">
-        <span>{team1} favoured above 50%</span>
-        <span>{team2} favoured below 50%</span>
-      </div>
-    </div>
-  );
-}
-
-// batting_scorecard/bowling_scorecard rows from criiq_models.simulate.scorecard.
-// Real <table> markup, not flex rows -- a flex row with a long highlight
-// string (e.g. "Fastest scoring innings (SR 133.3)") pushed the numeric
-// columns onto a second line and broke alignment between rows.
-function BattingTable({ team, rows }: { team: string; rows: any[] }) {
-  return (
-    <div>
-      <h5 className="text-[11px] font-semibold text-foreground mb-1.5">{team} batting</h5>
-      <table className="w-full text-[11px] border-collapse">
-        <colgroup><col /><col className="w-16" /><col className="w-14" /></colgroup>
-        <tbody>
-          {rows.map(b => (
-            <tr key={b.player_id} className="odd:bg-secondary/30">
-              <td className="px-2 py-1 align-top">
-                <div className="text-foreground truncate">{b.name}</div>
-                {b.highlight && <div className="text-[#AAFF57] text-[10px] leading-tight">{b.highlight}</div>}
-              </td>
-              <td className="px-2 py-1 font-mono text-foreground text-right whitespace-nowrap align-top">
-                {b.runs} ({b.balls}){b.status === "not out" ? "*" : ""}
-              </td>
-              <td className="px-2 py-1 font-mono text-muted-foreground text-right whitespace-nowrap align-top">
-                {b.strike_rate ?? "-"}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function BowlingTable({ team, rows }: { team: string; rows: any[] }) {
-  return (
-    <div>
-      <h5 className="text-[11px] font-semibold text-foreground mb-1.5">{team} bowling</h5>
-      <table className="w-full text-[11px] border-collapse">
-        <colgroup><col /><col className="w-10" /><col className="w-14" /><col className="w-12" /></colgroup>
-        <tbody>
-          {rows.map(b => (
-            <tr key={b.player_id} className="odd:bg-secondary/30">
-              <td className="px-2 py-1 align-top">
-                <div className="text-foreground truncate">{b.name}</div>
-                {b.highlight && <div className="text-[#AAFF57] text-[10px] leading-tight">{b.highlight}</div>}
-              </td>
-              <td className="px-2 py-1 font-mono text-foreground text-right whitespace-nowrap align-top">{b.overs}</td>
-              <td className="px-2 py-1 font-mono text-foreground text-right whitespace-nowrap align-top">{b.wickets}/{b.runs_conceded}</td>
-              <td className="px-2 py-1 font-mono text-muted-foreground text-right whitespace-nowrap align-top">{b.economy ?? "-"}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function InningsScorecard({ battingTeam, bowlingTeam, batting, bowling }: {
-  battingTeam: string; bowlingTeam: string; batting: any[]; bowling: any[];
-}) {
-  return (
-    <div className="space-y-3">
-      <BattingTable team={battingTeam} rows={batting} />
-      <BowlingTable team={bowlingTeam} rows={bowling} />
-    </div>
-  );
-}
-
-function Scorecard({ result }: { result: any }) {
-  return (
-    <div className="bg-card border border-border rounded-xl p-4 space-y-4">
-      <h4 className="text-[12px] font-semibold text-muted-foreground uppercase tracking-wider">Scorecard</h4>
-      <InningsScorecard
-        battingTeam={result.first_innings?.team} bowlingTeam={result.second_innings?.team}
-        batting={result.first_innings_scorecard?.batting ?? []} bowling={result.first_innings_scorecard?.bowling ?? []}
-      />
-      <div className="border-t border-border pt-4">
-        <InningsScorecard
-          battingTeam={result.second_innings?.team} bowlingTeam={result.first_innings?.team}
-          batting={result.second_innings_scorecard?.batting ?? []} bowling={result.second_innings_scorecard?.bowling ?? []}
-        />
-      </div>
     </div>
   );
 }
@@ -546,18 +418,36 @@ function OptimizeBattingTab({ gender }: { gender: "female" | "male" }) {
 
 export function SimulationPage() {
   const location = useLocation();
-  const navigate = useNavigate();
   // A coach arriving from "Simulate This XI" on Recommendations brings a
-  // pre-built pair of XIs via router state -- read it once, then clear it so
-  // navigating back here later doesn't keep re-applying a stale prefill.
-  const [prefill] = useState<SimulatorPrefill | undefined>(() => (location.state as SimulatorPrefill) ?? undefined);
+  // pre-built pair of XIs via router state, applied once on mount. Router
+  // state (not query params) here since it needs to carry full player-id
+  // arrays that don't belong in a URL.
+  //
+  // Not calling navigate() again afterwards to "clean up" the state: a
+  // same-pathname navigate() -- even a `replace` -- triggers a full
+  // unmount/remount of this component (Root's Outlet, wrapped in
+  // AnimatePresence, tears the route element down and rebuilds it), which
+  // would wipe prefill/prefillKey right back to their initial values a
+  // render after they were set.
+  const [prefill, setPrefill] = useState<SimulatorPrefill | undefined>(() => (location.state as SimulatorPrefill) ?? undefined);
+  const [prefillKey, setPrefillKey] = useState(0);
   useEffect(() => {
-    if (location.state) navigate(location.pathname, { replace: true, state: null });
+    if (location.state) {
+      setPrefill(location.state as SimulatorPrefill);
+      setPrefillKey(k => k + 1);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [location.state]);
 
   const [tab, setTab] = useState<"simulate" | "optimize-bowling" | "optimize-batting">("simulate");
   const [gender, setGender] = useState<"female" | "male">(prefill?.gender ?? "female");
+  // Keep the Women/Men toggle in sync with a freshly-arrived prefill too --
+  // otherwise a match-detail "Simulate Match" for a men's match would still
+  // fetch women's rosters if the toggle was last left on "Women".
+  useEffect(() => {
+    if (prefill) setGender(prefill.gender);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefill]);
 
   const tabs = useMemo(() => ([
     { id: "simulate" as const, label: "Simulate Match", icon: PlayCircle },
@@ -602,7 +492,7 @@ export function SimulationPage() {
 
       <AnimatePresence mode="wait">
         <motion.div key={tab} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
-          {tab === "simulate" && <SimulateTab gender={gender} prefill={tab === "simulate" ? prefill : undefined} />}
+          {tab === "simulate" && <SimulateTab key={prefillKey} gender={gender} prefill={tab === "simulate" ? prefill : undefined} />}
           {tab === "optimize-bowling" && <OptimizeBowlingTab gender={gender} />}
           {tab === "optimize-batting" && <OptimizeBattingTab gender={gender} />}
         </motion.div>

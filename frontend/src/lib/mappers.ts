@@ -165,5 +165,6 @@ export function mapApiMatch(api: any): Match {
     venue: api.venue || api.venue_raw || "TBC", date: fmtDate(api.date), time: "TBC",
     format: api.format || "T20I", status, result: api.result || undefined,
     opponentForm: toFormArray(api.team2_last5 || api.team1_last5 || ""),
+    gender: api.gender === "male" ? "male" : "female",
   };
 }

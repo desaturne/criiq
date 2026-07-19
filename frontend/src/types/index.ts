@@ -43,6 +43,7 @@ export interface Match {
   status: "Upcoming" | "Live" | "Completed";
   result?: string;
   opponentForm: ("W" | "L")[];
+  gender: "female" | "male";
 }
 
 export interface AppUser {

@@ -1,9 +1,10 @@
 import { useState, useEffect } from "react";
 import { useNavigate, useParams } from "react-router";
-import { Zap, ChevronLeft, MapPin, PlayCircle } from "lucide-react";
+import { ChevronLeft, MapPin } from "lucide-react";
 import * as api from "../lib/api";
 import { mapApiMatch } from "../lib/mappers";
 import { Match } from "../types/index";
+import { RealMatchScorecard, RealInningsCard } from "../components/match/Scorecard";
 
 export function MatchDetailPage() {
   const { id: matchId } = useParams<{ id: string }>();
@@ -11,6 +12,13 @@ export function MatchDetailPage() {
   const [match, setMatch] = useState<Match | null>(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
+
+  // Scorecard only exists for a match that's actually been played -- a
+  // fixture "f<n>" has no deliveries on file yet, so it's fetched separately
+  // (and allowed to fail quietly) rather than blocking the page on data that
+  // genuinely doesn't exist for upcoming fixtures.
+  const [innings, setInnings] = useState<RealInningsCard[] | null>(null);
+  const [resultLoading, setResultLoading] = useState(false);
 
   useEffect(() => {
     if (!matchId) return;
@@ -21,6 +29,18 @@ export function MatchDetailPage() {
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [matchId]);
+
+  useEffect(() => {
+    if (!matchId || !match || match.status === "Upcoming") return;
+    let cancelled = false;
+    setResultLoading(true);
+    api.getMatchScorecard(matchId)
+      .then(res => { if (!cancelled) setInnings(res.innings); })
+      .catch(() => { /* allowed to fail quietly -- no ball-by-ball data on file */ })
+      .finally(() => { if (!cancelled) setResultLoading(false); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [matchId, match?.status]);
 
   if (loading) {
     return <div className="p-5 max-w-screen-xl mx-auto py-16 text-center text-sm text-muted-foreground">Loading match…</div>;
@@ -39,7 +59,11 @@ export function MatchDetailPage() {
         <ChevronLeft size={14} /> Back to Matches
       </button>
 
-      {/* Hero */}
+      {/* Hero -- read-only summary of an already-played match. No Simulate/AI
+          Selection actions here: this page shows what actually happened
+          (real scorecard + win-probability below), it doesn't set up a
+          hypothetical trial -- that's what the standalone Simulator page is
+          for. */}
       <div className="bg-card border border-border rounded-xl p-6 mb-5">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
@@ -52,14 +76,6 @@ export function MatchDetailPage() {
               <span className="flex items-center gap-1"><MapPin size={12} /> {match.venue}</span>
               <span>{match.date} · {match.time}</span>
             </div>
-          </div>
-          <div className="flex items-center gap-3">
-            <button onClick={() => navigate("/simulator")} className="flex items-center gap-2 border border-border text-foreground px-4 py-2 rounded-lg text-sm font-medium hover:border-[#AAFF57]/40 hover:text-[#AAFF57] transition-colors">
-              <PlayCircle size={14} /> Simulate Match
-            </button>
-            <button onClick={() => navigate("/recommendations")} className="flex items-center gap-2 bg-[#AAFF57] text-[#0D0D06] px-4 py-2 rounded-lg text-sm font-semibold hover:opacity-90 transition-opacity">
-              <Zap size={14} /> Get AI Selection
-            </button>
           </div>
         </div>
       </div>
@@ -80,6 +96,20 @@ export function MatchDetailPage() {
           </div>
         </div>
       </div>
+
+      {/* Real ball-by-ball scorecard -- only exists once this match has
+          actually been played (a fixture has none yet). */}
+      {match.status !== "Upcoming" && (
+        <div className="space-y-5 mt-5">
+          {resultLoading && !innings && (
+            <div className="py-10 text-center text-sm text-muted-foreground">Loading match result…</div>
+          )}
+          {innings && innings.length > 0 && <RealMatchScorecard innings={innings} />}
+          {!resultLoading && (!innings || innings.length === 0) && (
+            <p className="text-[12px] text-muted-foreground text-center py-4">No ball-by-ball data on file for this match.</p>
+          )}
+        </div>
+      )}
     </div>
   );
 }
