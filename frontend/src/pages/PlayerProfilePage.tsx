@@ -13,9 +13,14 @@ export function PlayerProfilePage() {
   const { id: playerId } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [player, setPlayer] = useState<Player | null>(null);
+  // Real per-opponent record (player_vs_opponent) and full advanced profile
+  // (player_advanced.profile_json) — kept outside the shared Player type
+  // since they're specific to this page, not needed anywhere else the type
+  // is used.
+  const [opponents, setOpponents] = useState<any[]>([]);
+  const [advanced, setAdvanced] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
-  const opposition = "Australia";
 
   useEffect(() => {
     if (!playerId) return;
@@ -27,9 +32,14 @@ export function PlayerProfilePage() {
         if (cancelled) return;
         const mapped = mapApiPlayerDetail(detail);
         setPlayer(mapped);
-        api.getPlayerVsOpponent(playerId, opposition)
-          .then(vs => { if (!cancelled) setPlayer(p => p && applyVsOpponent(p, vs, opposition)); })
-          .catch(() => { /* no head-to-head record vs this opponent — keep the default */ });
+        setOpponents(detail.opponents || []);
+        setAdvanced(detail.advanced || null);
+        const firstOpponent = detail.opponents?.[0]?.opponent;
+        if (firstOpponent) {
+          api.getPlayerVsOpponent(playerId, firstOpponent)
+            .then(vs => { if (!cancelled) setPlayer(p => p && applyVsOpponent(p, vs, firstOpponent)); })
+            .catch(() => { /* no head-to-head record vs this opponent — keep the default */ });
+        }
       })
       .catch(() => { if (!cancelled) setNotFound(true); })
       .finally(() => { if (!cancelled) setLoading(false); });
@@ -75,7 +85,7 @@ export function PlayerProfilePage() {
               <Star size={13} className="text-amber-400" />
               <span className="text-[11px] font-medium text-amber-400 uppercase tracking-wider">Scouting Note</span>
             </div>
-            <p className="text-[13px] text-foreground leading-relaxed">{player.vsInsight}. Phase analysis shows exceptional middle-over performance — a key asset in chasing targets above 170.</p>
+            <p className="text-[13px] text-foreground leading-relaxed">{player.vsInsight}</p>
           </div>
         </div>
 
@@ -113,18 +123,70 @@ export function PlayerProfilePage() {
             <PhaseBar powerplay={player.powerplay} middle={player.middle} death={player.death} />
           </div>
 
-          {/* vs opponent radial gauges */}
+          {/* vs opponent — real player_vs_opponent records, win% as the gauge value */}
           <div className="bg-card border border-border rounded-xl p-5">
             <h3 className="font-display text-base font-semibold text-foreground mb-4">Opposition Record</h3>
-            <div className="flex flex-wrap gap-6">
-              {[["Australia", player.vsOpponent], ["England", Math.round(player.vsOpponent * 0.9)], ["South Africa", Math.round(player.vsOpponent * 1.05)], ["New Zealand", Math.round(player.vsOpponent * 0.95)]].map(([opp, val]) => (
-                <div key={String(opp)} className="flex flex-col items-center gap-2">
-                  <RadialGauge value={Number(val)} size={64} strokeWidth={4} color={player.color} />
-                  <span className="text-[11px] text-muted-foreground">{opp}</span>
-                </div>
-              ))}
-            </div>
+            {opponents.length === 0 ? (
+              <p className="text-[12px] text-muted-foreground">No opposition record on file for this player yet.</p>
+            ) : (
+              <div className="flex flex-wrap gap-6">
+                {opponents.map(o => (
+                  <div key={o.opponent} className="flex flex-col items-center gap-2">
+                    <RadialGauge value={Math.round(o.win_pct ?? 0)} size={64} strokeWidth={4} color={player.color} label={`${Math.round(o.win_pct ?? 0)}%`} />
+                    <span className="text-[11px] text-muted-foreground">{o.opponent}</span>
+                    <span className="text-[10px] text-muted-foreground/70">{o.matches}m{player.isBatsman ? `, avg ${o.bat_average ?? "—"}` : `, ${o.wickets ?? 0}w`}</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
+
+          {/* Advanced profile — player_advanced.profile_json: phase splits, vs-pace/vs-spin, six rate */}
+          {advanced && (
+            <div className="bg-card border border-border rounded-xl p-5">
+              <h3 className="font-display text-base font-semibold text-foreground mb-4">Advanced Profile</h3>
+              {advanced.batting?.vs_bowling_type && (
+                <div className="mb-4">
+                  <p className="text-[11px] text-muted-foreground uppercase tracking-wider mb-2">Vs Pace / Vs Spin (strike rate)</p>
+                  <div className="flex gap-4">
+                    {["pace", "spin"].map(style => {
+                      const s = advanced.batting.vs_bowling_type[style];
+                      if (!s) return null;
+                      return (
+                        <div key={style} className="flex-1 border border-border rounded-lg p-3 text-center">
+                          <div className="font-mono text-lg font-bold text-foreground">{s.strike_rate}</div>
+                          <div className="text-[10px] text-muted-foreground uppercase mt-0.5">vs {style} ({s.balls} balls)</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+              {advanced.bowling?.by_phase && (
+                <div className="mb-4">
+                  <p className="text-[11px] text-muted-foreground uppercase tracking-wider mb-2">Economy by Phase</p>
+                  <div className="flex gap-4">
+                    {Object.entries(advanced.bowling.by_phase).map(([phase, s]: [string, any]) => (
+                      <div key={phase} className="flex-1 border border-border rounded-lg p-3 text-center">
+                        <div className="font-mono text-lg font-bold text-foreground">{s.economy}</div>
+                        <div className="text-[10px] text-muted-foreground uppercase mt-0.5 capitalize">{phase} ({s.wickets}w)</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {advanced.strengths?.length > 0 && (
+                <div>
+                  <p className="text-[11px] text-muted-foreground uppercase tracking-wider mb-2">Strengths</p>
+                  <ul className="space-y-1">
+                    {advanced.strengths.map((s: string, i: number) => (
+                      <li key={i} className="text-[12px] text-foreground">• {s}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Recent form detail */}
           <div className="bg-card border border-border rounded-xl p-5">
@@ -132,7 +194,7 @@ export function PlayerProfilePage() {
             <div className="space-y-2">
               {player.recentForm.map((v, i) => (
                 <div key={i} className="flex items-center gap-3 p-2.5 rounded-lg bg-secondary/40">
-                  <span className="text-[11px] text-muted-foreground w-14">Match {5 - i}</span>
+                  <span className="text-[11px] text-muted-foreground w-14">Match {player.recentForm.length - i}</span>
                   <div className="flex-1 h-1.5 rounded-full bg-border overflow-hidden">
                     <motion.div initial={{ width: 0 }} animate={{ width: `${(v / Math.max(...player.recentForm)) * 100}%` }} transition={{ delay: i * 0.1 + 0.3, duration: 0.8 }}
                       className="h-full rounded-full" style={{ backgroundColor: player.color }} />

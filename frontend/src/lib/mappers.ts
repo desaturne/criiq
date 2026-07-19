@@ -42,12 +42,17 @@ function clamp01to100(n: number | null | undefined, fallback = 50): number {
   return Math.max(0, Math.min(100, Math.round(n)));
 }
 
-/** GET /players list item -> Player. Leaner than the detail response: no
- * career/phase/vs-opponent breakdown, since /players doesn't compute those
- * per row (only /players/{id} and /players/{id}/vs/{opponent} do). */
+/** GET /players list item -> Player. Leaner than the detail response (no
+ * phase/vs-opponent breakdown — only /players/{id} and /players/{id}/vs/
+ * {opponent} compute those), but career is the same real card_json.career
+ * nested shape the detail endpoint returns, so PlayerCard's Stats expander
+ * shows real matches/runs/avg/SR (or wkts/econ/best), not zeroes. */
 export function mapApiPlayerListItem(api: any): Player {
   const role = displayRole(api.role);
   const last5: number[] = Array.isArray(api.last5_scores) ? api.last5_scores : [];
+  const career = api.career || {};
+  const bat = career.batting || {};
+  const bowl = career.bowling || {};
   return {
     id: String(api.id), name: api.name, role, archetype: role,
     battingHand: normalizeHand(api.batting_hand), bowlingStyle: api.bowling_style || "—",
@@ -59,9 +64,15 @@ export function mapApiPlayerListItem(api: any): Player {
     // endpoints compute these) — neutral defaults, not fabricated numbers.
     vsOpponent: 0, vsInsight: "Open the player profile for a full breakdown.",
     powerplay: 0, middle: 0, death: 0,
-    career: { matches: 0, innings: 0 },
+    career: {
+      matches: bat.innings ?? bowl.innings ?? 0,
+      innings: bat.innings ?? 0, runs: bat.runs, avg: bat.average, sr: bat.strike_rate,
+      fifties: bat.fifties, hundreds: bat.hundreds,
+      wickets: bowl.wickets, economy: bowl.economy, bowlingAvg: bowl.average, best: bowl.best_bowling,
+    },
     score: clamp01to100(api.form_score, 0),
     breakdown: { form: clamp01to100(api.form_score, 0), vsOpponent: 0, venueFit: 0, matchupAdvantage: 0 },
+    position: api.position || "—", isKeeper: !!api.is_keeper,
   };
 }
 
@@ -70,7 +81,11 @@ export function mapApiPlayerListItem(api: any): Player {
 export function mapApiPlayerDetail(api: any): Player {
   const identity = api.identity || {};
   const role = displayRole(identity.role);
-  const lastInnings: number[] = api.form?.last_innings || [];
+  // Both trimmed to the same last-5 window as api.recent_matches (real
+  // per-match player_match_impact rows, oldest -> newest) so recentForm[i]
+  // and recentSR[i] describe the same match.
+  const lastInnings: number[] = (api.form?.last_innings || []).slice(-5);
+  const recentMatches: any[] = api.recent_matches || [];
   const career = api.career || {};
   const bat = career.batting || {};
   const bowl = career.bowling || {};
@@ -92,7 +107,8 @@ export function mapApiPlayerDetail(api: any): Player {
     team: identity.nationality || "—",
     initials: initialsFor(identity.name || "?"), color: colorFor(String(api.id)),
     isBatsman: isBattingRole(role),
-    recentForm: lastInnings, recentSR: [],
+    recentForm: lastInnings,
+    recentSR: recentMatches.map((m: any) => (isBattingRole(role) ? m.bat_strike_rate : m.economy) ?? 0),
     // vs-opponent is a separate endpoint (GET /players/{id}/vs/{opponent});
     // this default is replaced once that call resolves.
     vsOpponent: 0, vsInsight: (api.strengths_summary || [])[0] || "No scouting note yet.",
@@ -105,9 +121,10 @@ export function mapApiPlayerDetail(api: any): Player {
     },
     score: clamp01to100(api.importance_score, 50),
     breakdown: {
-      form: clamp01to100(api.form?.rfi, 50), vsOpponent: 0,
+      form: clamp01to100(api.form_percentile, 50), vsOpponent: 0,
       venueFit: 0, matchupAdvantage: clamp01to100(api.importance_score, 50),
     },
+    position: api.position || "—", isKeeper: !!api.is_keeper,
   };
 }
 
@@ -139,9 +156,7 @@ const fmtDate = (iso: string): string => {
 const toFormArray = (last5: string): ("W" | "L")[] =>
   last5.split("").filter(c => c === "W" || c === "L") as ("W" | "L")[];
 
-/** Both /matches list entries and /matches/{id} detail map through here.
- * Weather/pitch-support fields have no backend source yet — fixed neutral
- * placeholders, not fabricated numbers. */
+/** Both /matches list entries and /matches/{id} detail map through here. */
 export function mapApiMatch(api: any): Match {
   const status: Match["status"] =
     api.status === "upcoming" ? "Upcoming" : api.status === "completed" || api.result ? "Completed" : "Upcoming";
@@ -149,8 +164,6 @@ export function mapApiMatch(api: any): Match {
     id: String(api.id ?? api.match_id), team1: api.team1, team2: api.team2,
     venue: api.venue || api.venue_raw || "TBC", date: fmtDate(api.date), time: "TBC",
     format: api.format || "T20I", status, result: api.result || undefined,
-    paceSupport: 50, spinSupport: 50, battingAnchors: 50, finishersFit: 50,
-    weatherDesc: "Forecast unavailable", rainProb: 0, windSpeed: 0, temp: 0,
     opponentForm: toFormArray(api.team2_last5 || api.team1_last5 || ""),
   };
 }

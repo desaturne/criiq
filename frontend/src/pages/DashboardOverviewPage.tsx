@@ -1,62 +1,48 @@
 import { useEffect, useState } from "react";
 import { motion } from "motion/react";
 import { useNavigate } from "react-router";
-import { Users, Calendar, Zap, FileText, MapPin, Cloud, TrendingUp, TrendingDown, AlertTriangle, ArrowRight, Star, Shield, BarChart2, Wind } from "lucide-react";
+import { Users, Calendar, Zap, FileText, TrendingUp, TrendingDown, AlertTriangle, Shield, BarChart2, Database } from "lucide-react";
 import { AnimatedStat } from "../components/common/AnimatedStat";
-import { CountdownTimer } from "../components/common/CountdownTimer";
-import { CricketBall } from "../components/common/CricketBall";
-import { RadialGauge } from "../components/common/RadialGauge";
 import { useApp } from "../context/AppContext";
 import * as api from "../lib/api";
-import { mapApiMatch, mapApiPlayerListItem } from "../lib/mappers";
-import { Match, Player } from "../types/index";
 
 export function DashboardOverviewPage() {
   const { selections } = useApp();
   const navigate = useNavigate();
-  const setPage = (p: string) => {
-    const map: Record<string, string> = { playerform: "players", match: "matches/m1" };
-    navigate("/" + (map[p] ?? p));
-  };
+  const setPage = (p: string) => navigate("/" + p);
 
-  const [nextMatch, setNextMatch] = useState<Match | null>(null);
-  const [players, setPlayers] = useState<Player[]>([]);
   const [totalPlayers, setTotalPlayers] = useState(0);
   const [winProb, setWinProb] = useState(50);
   const [formAlerts, setFormAlerts] = useState<{ player: string; msg: string; type: string }[]>([]);
-  const [targetDate, setTargetDate] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
     Promise.all([
       api.dashboardSummary(),
-      api.listPlayers({ limit: 100 }),
+      api.listPlayers({ limit: 1 }),
       api.dashboardAlerts(),
     ]).then(([summary, playerRes, alerts]) => {
       if (cancelled) return;
-      setNextMatch(summary.next_match ? mapApiMatch(summary.next_match) : null);
-      setTargetDate(summary.next_match ? `${summary.next_match.date}T00:00:00` : null);
       setWinProb(Math.round((summary.win_probability?.win_probability_batting ?? 0.5) * 100));
-      setPlayers(playerRes.players.map(mapApiPlayerListItem));
       setTotalPlayers(playerRes.total);
+      // Real, rule-based alerts (backend/matches.py's dashboard_alerts): last
+      // 3 innings all 50+ (positive) or all <=10 (warning), computed from
+      // each ACTIVE player's real recent-innings history -- not fabricated.
       setFormAlerts(alerts.map((a: any) => ({ player: a.player, msg: a.message, type: a.type })));
     }).finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, []);
 
-  const selectedCount  = Object.values(selections).filter(s => s === "select").length;
-  const reserveCount   = Object.values(selections).filter(s => s === "reserve").length;
-  const batters        = players.filter(p => selections[p.id] === "select" && p.isBatsman).length;
-  const bowlers        = players.filter(p => selections[p.id] === "select" && !p.isBatsman && p.role === "Bowler").length;
-  const allRounders    = players.filter(p => selections[p.id] === "select" && p.role === "All-rounder").length;
+  const selectedCount = Object.values(selections).filter(s => s === "select").length;
+  const reserveCount  = Object.values(selections).filter(s => s === "reserve").length;
 
   const alertColor = (t: string) =>
     t === "positive" ? "#AAFF57" : t === "warning" ? "#F59E0B" : "#FF5C5C";
   const alertIcon  = (t: string) =>
     t === "positive" ? <TrendingUp size={11} /> : t === "warning" ? <AlertTriangle size={11} /> : <TrendingDown size={11} />;
 
-  if (loading || !nextMatch) {
+  if (loading) {
     return <div className="p-5 max-w-screen-xl mx-auto py-16 text-center text-sm text-muted-foreground">Loading dashboard…</div>;
   }
 
@@ -76,17 +62,16 @@ export function DashboardOverviewPage() {
 
       {/* ── 4 Stat Tiles ── */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-        {/* Squad size */}
-        <div className="bg-card border border-border rounded-2xl p-5">
+        <div className="bg-card border border-border rounded-2xl p-5" title="Every player CRIIQ has real data for, across all nations and both genders.">
           <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-[0.12em] mb-3">Squad</div>
           <div className="font-mono text-4xl font-bold text-foreground tabular-nums leading-none">
             <AnimatedStat value={totalPlayers} />
           </div>
           <div className="text-[11px] text-muted-foreground mt-2">Players registered</div>
         </div>
-        {/* XI Selected — live */}
         <div className="bg-card rounded-2xl p-5 transition-all duration-300"
-             style={{ border: `1.5px solid ${selectedCount > 0 ? "#AAFF57" : "var(--border)"}` }}>
+             style={{ border: `1.5px solid ${selectedCount > 0 ? "#AAFF57" : "var(--border)"}` }}
+             title="Players you've marked 'Select' for the next fixture, on the Squads page's Build XI tab.">
           <div className="text-[10px] font-semibold uppercase tracking-[0.12em] mb-3" style={{ color: "#AAFF57" }}>XI Selected</div>
           <div className="font-mono text-4xl font-bold tabular-nums leading-none" style={{ color: "#AAFF57" }}>
             {selectedCount}<span className="text-2xl text-muted-foreground">/11</span>
@@ -96,163 +81,109 @@ export function DashboardOverviewPage() {
               className="h-full rounded-full bg-[#AAFF57]" />
           </div>
         </div>
-        {/* Reserves */}
-        <div className="bg-card border border-border rounded-2xl p-5">
+        <div className="bg-card border border-border rounded-2xl p-5" title="Players marked 'Reserve' — not in the XI, but available to step in.">
           <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-[0.12em] mb-3">Reserves</div>
           <div className="font-mono text-4xl font-bold text-foreground tabular-nums leading-none">{reserveCount}</div>
           <div className="text-[11px] text-muted-foreground mt-2">Ready to step in</div>
         </div>
-        {/* Win probability */}
-        <div className="bg-card border border-border rounded-2xl p-5">
-          <div className="text-[10px] font-semibold uppercase tracking-[0.12em] mb-3" style={{ color: "#3ADCFF" }}>Win Probability</div>
+        {/* Win probability — a generic pre-XI baseline, not a real per-match
+            prediction: the model only reads game state, never team identity,
+            so it can't reflect who's actually playing before an XI exists. */}
+        <div className="bg-card border border-border rounded-2xl p-5" title="Generic baseline from match-state only, not team-specific. Pick both XIs on the Simulator page for a real win probability.">
+          <div className="text-[10px] font-semibold uppercase tracking-[0.12em] mb-3" style={{ color: "#3ADCFF" }}>Win Probability (baseline)</div>
           <div className="font-mono text-4xl font-bold tabular-nums leading-none" style={{ color: "#3ADCFF" }}>
             <AnimatedStat value={winProb} suffix="%" />
           </div>
-          <div className="text-[11px] text-muted-foreground mt-2">vs {nextMatch.team2}</div>
-        </div>
-      </div>
-
-      {/* ── Upcoming Match Hero Card ── */}
-      <div className="relative rounded-2xl overflow-hidden"
-           style={{ background: "linear-gradient(135deg, #1a2744 0%, #111827 55%, #0c1a10 100%)", border: "1px solid rgba(255,255,255,0.1)" }}>
-            {/* Grid texture */}
-            <div className="absolute inset-0 pointer-events-none"
-                 style={{ backgroundImage: "linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px)", backgroundSize: "48px 48px" }} />
-            {/* Lime glow */}
-            <div className="absolute -top-24 -left-24 w-72 h-72 rounded-full pointer-events-none"
-                 style={{ background: "radial-gradient(circle, rgba(170,255,87,0.07) 0%, transparent 70%)" }} />
-
-            <div className="relative z-10 p-7 lg:p-10">
-              <div className="flex flex-col xl:flex-row xl:items-center gap-8 xl:gap-12">
-
-                {/* Left: match details */}
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-5">
-                    <span className="text-[10px] font-semibold px-2.5 py-1 rounded-full border"
-                          style={{ background: "rgba(96,165,250,0.2)", color: "#93C5FD", borderColor: "rgba(96,165,250,0.25)" }}>Upcoming</span>
-                    <span className="text-[10px] font-semibold px-2.5 py-1 rounded-full border"
-                          style={{ borderColor: "rgba(255,255,255,0.15)", color: "rgba(255,255,255,0.55)" }}>T20I</span>
-                  </div>
-
-                  {/* Teams */}
-                  <div className="flex items-center gap-5 mb-5">
-                    <div>
-                      <div className="font-display font-bold tracking-tight" style={{ fontSize: "clamp(2rem, 5vw, 3.5rem)", lineHeight: 1, color: "#FFFFFF" }}>{nextMatch.team1.toUpperCase()}</div>
-                      <div className="text-[11px] mt-1.5" style={{ color: "rgba(255,255,255,0.55)" }}>Home</div>
-                    </div>
-                    <div className="flex flex-col items-center gap-1.5 flex-shrink-0">
-                      <CricketBall size={26} className="text-[#AAFF57]" />
-                      <span className="text-xs font-bold" style={{ color: "rgba(255,255,255,0.55)" }}>VS</span>
-                    </div>
-                    <div>
-                      <div className="font-display font-bold tracking-tight" style={{ fontSize: "clamp(2rem, 5vw, 3.5rem)", lineHeight: 1, color: "#FFFFFF" }}>{nextMatch.team2.toUpperCase()}</div>
-                      <div className="text-[11px] mt-1.5" style={{ color: "rgba(255,255,255,0.55)" }}>Away</div>
-                    </div>
-                  </div>
-
-                  {/* Venue + date */}
-                  <div className="flex items-center flex-wrap gap-x-5 gap-y-1.5 text-[13px] mb-4" style={{ color: "rgba(255,255,255,0.6)" }}>
-                    <span className="flex items-center gap-1.5"><MapPin size={13} style={{ color: "#3ADCFF" }} /> {nextMatch.venue}</span>
-                    <span className="hidden sm:inline opacity-30">·</span>
-                    <span>{nextMatch.date}</span>
-                  </div>
-
-                  {/* Condition chips — no weather/pitch API yet, neutral placeholders */}
-                  <div className="flex flex-wrap gap-2 mb-5">
-                    {[
-                      { label: nextMatch.weatherDesc,             icon: Cloud,    color: "#3ADCFF" },
-                      { label: `Wind ${nextMatch.windSpeed} km/h`, icon: Wind,     color: "#3ADCFF" },
-                      { label: `Pace ${nextMatch.paceSupport}%`,   icon: BarChart2, color: "#AAFF57" },
-                      { label: `Spin ${nextMatch.spinSupport}%`,   icon: Shield,   color: "#A78BFA" },
-                    ].map(c => (
-                      <div key={c.label} className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-medium"
-                           style={{ background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.12)" }}>
-                        <c.icon size={11} style={{ color: c.color }} />
-                        <span style={{ color: "rgba(255,255,255,0.85)" }}>{c.label}</span>
-                      </div>
-                    ))}
-                  </div>
-
-                  {/* Opposition form */}
-                  <div className="flex items-center gap-3">
-                    <span className="text-[11px] flex-shrink-0" style={{ color: "rgba(255,255,255,0.6)" }}>{nextMatch.team2.slice(0, 3).toUpperCase()} last 5:</span>
-                    <div className="flex gap-1.5">
-                      {nextMatch.opponentForm.map((r, i) => (
-                        <motion.div key={i}
-                          initial={{ scale: 0, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} transition={{ delay: 0.5 + i * 0.07 }}
-                          className="w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold"
-                          style={{ background: r === "W" ? "rgba(74,222,128,0.2)" : "rgba(248,113,113,0.2)", color: r === "W" ? "#4ADE80" : "#F87171", border: `1px solid ${r === "W" ? "rgba(74,222,128,0.35)" : "rgba(248,113,113,0.35)"}` }}>
-                          {r}
-                        </motion.div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Right: countdown + CTAs */}
-                <div className="flex flex-col items-start xl:items-center gap-7 xl:flex-shrink-0">
-                  <div>
-                    <div className="text-[10px] font-semibold uppercase tracking-[0.15em] mb-4" style={{ color: "rgba(255,255,255,0.55)" }}>Match begins in</div>
-                    {targetDate && <CountdownTimer targetDate={new Date(targetDate).toISOString()} />}
-                  </div>
-                  <div className="flex flex-col gap-2.5 w-full xl:min-w-[220px]">
-                    <motion.button
-                      whileHover={{ scale: 1.03, boxShadow: "0 0 40px rgba(170,255,87,0.5)" }}
-                      whileTap={{ scale: 0.97 }}
-                      onClick={() => setPage("recommendations")}
-                      className="w-full py-3.5 px-6 rounded-xl font-bold text-sm flex items-center justify-center gap-2 transition-all"
-                      style={{ background: "#AAFF57", color: "#0D0D06", boxShadow: "0 0 24px rgba(170,255,87,0.35)" }}
-                    >
-                      <Star size={15} /> Run AI Recommendation
-                    </motion.button>
-                    <button onClick={() => setPage("match")}
-                      className="w-full py-2.5 px-6 rounded-xl text-sm font-medium flex items-center justify-center gap-1.5 transition-colors"
-                      style={{ border: "1px solid rgba(255,255,255,0.15)", color: "rgba(255,255,255,0.6)" }}
-                      onMouseEnter={e => { e.currentTarget.style.color = "#fff"; e.currentTarget.style.borderColor = "rgba(255,255,255,0.3)"; }}
-                      onMouseLeave={e => { e.currentTarget.style.color = "rgba(255,255,255,0.6)"; e.currentTarget.style.borderColor = "rgba(255,255,255,0.15)"; }}
-                    >
-                      Match Details <ArrowRight size={13} />
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-      </div>
-
-      {/* ── Secondary 3-column section ── */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-
-        {/* Squad Readiness */}
-        <div className="bg-card border border-border rounded-2xl p-5">
-          <div className="flex items-center justify-between mb-5">
-            <h3 className="font-display text-[15px] font-semibold text-foreground">Squad Readiness</h3>
-            <span className="text-[11px] text-muted-foreground">{selectedCount}/11 set</span>
-          </div>
-          <div className="flex justify-around mb-5">
-            {[
-              { label: "Batters",   val: batters,    max: 7, color: "#60A5FA" },
-              { label: "Bowlers",   val: bowlers,    max: 4, color: "#AAFF57" },
-              { label: "All-round", val: allRounders, max: 2, color: "#A78BFA" },
-            ].map(g => (
-              <div key={g.label} className="flex flex-col items-center gap-2">
-                <RadialGauge value={g.max > 0 ? Math.round((g.val / g.max) * 100) : 0} size={68} strokeWidth={5} color={g.color} />
-                <div className="text-center">
-                  <div className="text-[13px] font-semibold text-foreground">{g.val}/{g.max}</div>
-                  <div className="text-[10px] text-muted-foreground">{g.label}</div>
-                </div>
-              </div>
-            ))}
-          </div>
-          <button onClick={() => setPage("playerform")}
-            className="w-full py-2.5 text-[12px] font-medium text-muted-foreground hover:text-foreground border border-border rounded-xl transition-colors flex items-center justify-center gap-1.5">
-            <Users size={12} /> Select Playing XI
+          <button onClick={() => navigate("/simulator")} className="text-[11px] text-[#3ADCFF] hover:underline mt-2">
+            Get a real number on the Simulator →
           </button>
         </div>
+      </div>
 
-        {/* Form Alerts */}
+      {/* ── Main content (left) + Form Alerts (right) ── */}
+      <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4 items-start">
+        <div className="space-y-4">
+          {/* How AI scoring works — real components from criiq_models'
+              RecommendationScorer (recommend/score.py), not a simplified guess. */}
+          <div className="bg-card border border-border rounded-2xl p-5">
+            <h3 className="font-display text-[15px] font-semibold text-foreground mb-1">How AI Scoring Works</h3>
+            <p className="text-[12px] text-muted-foreground mb-4">
+              Every player score on Recommendations is a transparent sum of six real, computed parts — never a black box.
+            </p>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+              {[
+                { label: "Model Impact", range: "0–45", color: "#AAFF57", desc: "A trained model's prediction of win-probability-added, from recent form." },
+                { label: "Matchup", range: "±21", color: "#60A5FA", desc: "Real history vs this specific opponent's bowlers/batters, plus style fit." },
+                { label: "Phase Fit", range: "0–8", color: "#A78BFA", desc: "How strong this player is in the powerplay, middle, or death overs." },
+                { label: "Team Need", range: "0–5", color: "#FB923C", desc: "Bonus for covering this specific squad's weakest phase." },
+                { label: "Track Record", range: "0–20", color: "#3ADCFF", desc: "Career importance score and current ICC ranking." },
+                { label: "Risk", range: "≤0", color: "#F87171", desc: "Deductions for age advisory, inconsistent selection, or recalls." },
+              ].map(c => (
+                <div key={c.label} className="p-3 rounded-xl bg-secondary/40 border border-border">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-[12px] font-semibold text-foreground">{c.label}</span>
+                    <span className="text-[10px] font-mono" style={{ color: c.color }}>{c.range}</span>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground leading-snug">{c.desc}</p>
+                </div>
+              ))}
+            </div>
+            <p className="text-[11px] text-muted-foreground mt-4">
+              The full reasoning behind any player's score is shown on the <button onClick={() => navigate("/recommendations")} className="text-[#AAFF57] hover:underline">Recommendations</button> page.
+            </p>
+          </div>
+
+          {/* Feature overview */}
+          <div className="bg-card border border-border rounded-2xl p-5">
+            <h3 className="font-display text-[15px] font-semibold text-foreground mb-4">What You Can Do Here</h3>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {[
+                { label: "Player Form", page: "players", color: "#60A5FA", icon: BarChart2, desc: "Browse real career stats, form, and role for any team/gender." },
+                { label: "Squads", page: "squads", color: "#AAFF57", icon: Users, desc: "Manage the roster and build a Playing XI, with the AI's own pick pre-filled." },
+                { label: "Matches", page: "matches", color: "#3ADCFF", icon: Calendar, desc: "Upcoming fixtures and opposition form." },
+                { label: "Recommendations", page: "recommendations", color: "#A78BFA", icon: Zap, desc: "The AI's full ranked XI for a specific opponent/venue, with reasoning." },
+                { label: "Simulator", page: "simulator", color: "#FB923C", icon: Shield, desc: "Ball-by-ball Monte Carlo match simulation, plus order optimizers." },
+                { label: "Reports", page: "reports", color: "#F87171", icon: FileText, desc: "Exportable scouting documents for a squad or matchup." },
+              ].map(f => (
+                <button key={f.label} onClick={() => setPage(f.page)}
+                  className="flex items-start gap-3 p-3 rounded-xl border border-border hover:border-border/60 transition-all text-left"
+                  onMouseEnter={e => (e.currentTarget.style.background = f.color + "0D")}
+                  onMouseLeave={e => (e.currentTarget.style.background = "")}
+                >
+                  <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: f.color + "1A" }}>
+                    <f.icon size={14} style={{ color: f.color }} />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-[13px] font-medium text-foreground">{f.label}</div>
+                    <div className="text-[11px] text-muted-foreground leading-snug">{f.desc}</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Data source */}
+          <div className="bg-card border border-border rounded-2xl p-5 flex items-start gap-3">
+            <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: "#60A5FA1A" }}>
+              <Database size={14} style={{ color: "#60A5FA" }} />
+            </div>
+            <div>
+              <div className="text-[13px] font-medium text-foreground">Data source</div>
+              <p className="text-[11px] text-muted-foreground leading-snug mt-0.5">
+                Player and match data is built from <a href="https://cricsheet.org" target="_blank" rel="noreferrer" className="text-[#60A5FA] hover:underline">Cricsheet</a>'s
+                free, public ball-by-ball dataset — women's and men's T20I plus major domestic T20 leagues (WBBL, WPL, The Hundred, and others).
+                Everything you see (career stats, form, phase splits, recommendations) is computed from those real match records, not sample or placeholder data.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Form Alerts — real, rule-based (see effect above) */}
         <div className="bg-card border border-border rounded-2xl p-5">
-          <h3 className="font-display text-[15px] font-semibold text-foreground mb-4">Form Alerts</h3>
+          <h3 className="font-display text-[15px] font-semibold text-foreground mb-1">Form Alerts</h3>
+          <p className="text-[11px] text-muted-foreground mb-4">Real rule: last 3 innings all 50+ or all ≤10, for ACTIVE players.</p>
           <div className="space-y-2.5">
+            {formAlerts.length === 0 && <p className="text-[12px] text-muted-foreground">No form alerts right now.</p>}
             {formAlerts.map((alert, i) => {
               const c = alertColor(alert.type);
               return (
@@ -273,37 +204,6 @@ export function DashboardOverviewPage() {
                 </motion.div>
               );
             })}
-          </div>
-        </div>
-
-        {/* Quick Actions */}
-        <div className="bg-card border border-border rounded-2xl p-5">
-          <h3 className="font-display text-[15px] font-semibold text-foreground mb-4">Quick Actions</h3>
-          <div className="space-y-2">
-            {([
-              { label: "Select Playing XI",    sub: "Pick players for vs Australia", page: "players",         color: "#AAFF57", icon: Users         },
-              { label: "View Matches",          sub: "Upcoming fixtures & details",   page: "matches",         color: "#3ADCFF", icon: Calendar       },
-              { label: "AI Recommendations",   sub: "Generate ranked player list",   page: "recommendations", color: "#A78BFA", icon: Zap            },
-              { label: "Scouting Reports",      sub: "Pre-match documents",           page: "reports",         color: "#FB923C", icon: FileText       },
-            ] as const).map((action, i) => (
-              <motion.button key={action.label}
-                initial={{ opacity: 0, x: 12 }} animate={{ opacity: 1, x: 0 }}
-                transition={{ delay: 0.1 + i * 0.07 }}
-                onClick={() => setPage(action.page)}
-                className="w-full flex items-center gap-3 p-3 rounded-xl border border-border hover:border-border/60 transition-all group text-left"
-                onMouseEnter={e => (e.currentTarget.style.background = action.color + "0D")}
-                onMouseLeave={e => (e.currentTarget.style.background = "")}
-              >
-                <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: action.color + "1A" }}>
-                  <action.icon size={14} style={{ color: action.color }} />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="text-[13px] font-medium text-foreground truncate">{action.label}</div>
-                  <div className="text-[11px] text-muted-foreground truncate">{action.sub}</div>
-                </div>
-                <ArrowRight size={13} className="text-muted-foreground group-hover:text-foreground transition-colors flex-shrink-0" />
-              </motion.button>
-            ))}
           </div>
         </div>
       </div>
