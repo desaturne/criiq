@@ -42,7 +42,8 @@ from .simulate.ga_batting import optimize_batting_order
 from .simulate.ga_bowling import optimize_bowling_rotation
 from .simulate.keymoments import detect_key_moments
 from .simulate.outcomes import build_outcome_model, build_player_profiles
-from .simulate.report import SIMULATION_ARTIFACTS_DIR, aggregate_win_probability, plot_win_probability, save_simulation_artifacts
+from .simulate.report import (SIMULATION_ARTIFACTS_DIR, aggregate_win_probability, plot_win_probability,
+                               save_simulation_artifacts)
 from .simulate.scorecard import (batting_scorecard, bowling_phase_summary, bowling_rotation, bowling_scorecard,
                                   coach_perspective, render_bowling_rotation_text, render_scorecard_text)
 from .simulate.winprob_reader import WinProbLookup
@@ -147,6 +148,36 @@ def cmd_teams(args):
     conn = connect()
     _pp(known_teams(conn, args.format, args.gender))
     conn.close()
+
+
+def cmd_winprob(args):
+    """Win probability for a single game state, straight from data-collection's
+    persisted empirical grids (`simulate.winprob_reader.WinProbLookup`) -- the
+    same lookup `simulate` uses per-ball, exposed standalone so a caller (e.g.
+    a live-scoring UI) can get one number without running a full match
+    simulation. Mirrors the shape of the backend's `ai_stub.get_win_probability`
+    stub (innings/wickets/balls_remaining/runs_required) so it's a drop-in
+    real replacement.
+    """
+    try:
+        lookup = WinProbLookup.load(args.format, args.gender)
+    except FileNotFoundError as exc:
+        print(str(exc))
+        return
+    balls_bowled = (120 - args.balls_remaining) if args.balls_remaining is not None else None
+    wp = lookup.predict_one(innings=args.innings, wickets=args.wickets,
+                             balls_remaining=args.balls_remaining, runs_required=args.runs_required,
+                             balls_bowled=balls_bowled, score=args.score)
+    balls_into_innings = 120 - args.balls_remaining if args.innings == 2 and args.balls_remaining is not None \
+        else (balls_bowled or 0)
+    over = balls_into_innings // 6
+    phase = "powerplay" if over < 6 else ("middle" if over < 16 else "death")
+    _pp({
+        "win_probability_batting": wp,
+        "win_probability_bowling": round(1 - wp, 4),
+        "phase": phase,
+        "model": f"criiq_models/winprob_{args.format}_{args.gender}",
+    })
 
 
 def cmd_recommend(args):
@@ -513,6 +544,67 @@ def cmd_simulate(args):
                               ignore_index=True)
     key_moments = detect_key_moments(combined_log, name_map=names)
 
+    if args.json:
+        first_bat = batting_scorecard(representative["first_innings_log"], names)
+        first_bowl = bowling_scorecard(representative["first_innings_log"], names)
+        second_bat = batting_scorecard(representative["second_innings_log"], names)
+        second_bowl = bowling_scorecard(representative["second_innings_log"], names)
+        first_rotation = bowling_rotation(representative["first_innings_log"], names)
+        second_rotation = bowling_rotation(representative["second_innings_log"], names)
+
+        scenario_out = None
+        if forced:
+            try:
+                scenario_reps = simulate_match(team1, team2, batting_first, outcome_model, batter_profiles,
+                                                bowler_profiles, winprob, forced_dismissal=forced,
+                                                n_reps=args.n_simulations, rng_seed=args.seed)
+                scenario_rep = scenario_reps[0]
+                scenario_out = {
+                    "forced_dismissal": forced,
+                    "first_innings_score": scenario_rep["first_innings_score"],
+                    "first_innings_wickets": scenario_rep["first_innings_wickets"],
+                    "second_innings_score": scenario_rep["second_innings_score"],
+                    "second_innings_wickets": scenario_rep["second_innings_wickets"],
+                    "winner": scenario_rep["winner"],
+                }
+            except ValueError as exc:
+                scenario_out = {"error": str(exc)}
+
+        win_probability_pct = None
+        win_prob_timeline = None
+        if len(reps) > 1:
+            win_counts = pd.Series([r["winner"] for r in reps]).value_counts(normalize=True) * 100
+            win_probability_pct = {k: round(v, 1) for k, v in win_counts.items()}
+            win_prob_timeline = aggregate_win_probability(reps).to_dict(orient="records")
+
+        _pp({
+            "team1": team1["name"], "team2": team2["name"],
+            "batting_first_team": representative["batting_first_team"],
+            "bowling_first_team": representative["bowling_first_team"],
+            "first_innings": {"team": representative["batting_first_team"],
+                               "score": representative["first_innings_score"],
+                               "wickets": representative["first_innings_wickets"]},
+            "second_innings": {"team": representative["bowling_first_team"],
+                                "score": representative["second_innings_score"],
+                                "wickets": representative["second_innings_wickets"],
+                                "target": representative["target"]},
+            "winner": representative["winner"],
+            "super_over_rounds": representative.get("super_over_rounds"),
+            "n_simulations": args.n_simulations,
+            "win_probability_pct": win_probability_pct,
+            "win_prob_timeline": win_prob_timeline,
+            "key_moments": key_moments,
+            "first_innings_scorecard": {"batting": first_bat, "bowling": first_bowl},
+            "second_innings_scorecard": {"batting": second_bat, "bowling": second_bowl},
+            "first_innings_bowling_rotation": {"overs": first_rotation,
+                                                "phase_summary": bowling_phase_summary(first_rotation)},
+            "second_innings_bowling_rotation": {"overs": second_rotation,
+                                                 "phase_summary": bowling_phase_summary(second_rotation)},
+            "scenario": scenario_out,
+        })
+        conn.close()
+        return
+
     print(f"{team1['name']} vs {team2['name']} -- {args.n_simulations} simulation(s)")
     print(f"  {representative['batting_first_team']}: {representative['first_innings_score']}/"
           f"{representative['first_innings_wickets']}")
@@ -626,6 +718,21 @@ def cmd_optimize_bowling(args):
         return
 
     names = _name_map(conn, bowling_ids + batting_ids)
+
+    if args.json:
+        _pp({
+            "bowling_team": args.bowling_team, "batting_team": args.batting_team,
+            "rotation": [{"over": i + 1, "player_id": b, "name": names.get(b, b)}
+                         for i, b in enumerate(result["rotation"])],
+            "overs_per_bowler": [{"player_id": b, "name": names.get(b, b), "overs": n}
+                                  for b, n in result["overs_per_bowler"].items()],
+            "expected_runs_conceded": result["expected_runs_conceded"],
+            "primary_bowlers": [{"player_id": b, "name": names.get(b, b)} for b in (primary_bowlers or [])],
+            "fitness_history": result.get("fitness_history"),
+        })
+        conn.close()
+        return
+
     if primary_bowlers:
         print(f"recognized bowlers (default full quota): {[names.get(b, b) for b in primary_bowlers]}")
     print(f"best bowling rotation vs {args.batting_team} "
@@ -679,6 +786,23 @@ def cmd_optimize_batting(args):
 
     names = _name_map(conn, batting_ids + bowling_ids)
     metric_name = "win_probability" if args.target else "expected_score"
+
+    if args.json:
+        _pp({
+            "batting_team": args.batting_team, "bowling_team": args.bowling_team,
+            "batting_order": [{"position": i + 1, "player_id": pid, "name": names.get(pid, pid)}
+                               for i, pid in enumerate(result["batting_order"])],
+            "metric_name": metric_name, "metric_value": result[metric_name],
+            "target": args.target,
+            "batting_groups": None if args.no_role_bands else [
+                {"label": label, "player_ids": [{"player_id": p, "name": names.get(p, p)} for p in group]}
+                for label, group in zip(["openers", "top/middle order", "tail"], batting_groups)
+            ],
+            "fitness_history": result.get("fitness_history"),
+        })
+        conn.close()
+        return
+
     if not args.no_role_bands:
         band_names = ["openers", "top/middle order", "tail"]
         for label, group in zip(band_names, batting_groups):
@@ -795,6 +919,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="which side to narrate the match from (must equal --team1 or --team2); "
                          "defaults to --team1")
     s.add_argument("--out-dir", dest="out_dir", default=str(SIMULATION_ARTIFACTS_DIR / "latest"))
+    s.add_argument("--json", action="store_true",
+                    help="print one structured JSON result (scores, scorecards, bowling rotation, key "
+                         "moments, win-probability timeline) instead of the human-readable report; skips "
+                         "the chart/artifact files since a caller consuming JSON reads the timeline directly")
     s.set_defaults(func=cmd_simulate)
 
     ob = sub.add_parser("optimize-bowling", help="genetic-algorithm search over legal bowler-to-over "
@@ -820,6 +948,9 @@ def build_parser() -> argparse.ArgumentParser:
                      help="RNG seed -- omit for a genuinely different GA search every run (the default); "
                           "pass a fixed integer to reproduce the exact same run again")
     ob.add_argument("--out-dir", dest="out_dir", default=str(SIMULATION_ARTIFACTS_DIR / "latest"))
+    ob.add_argument("--json", action="store_true",
+                     help="print the rotation result as structured JSON instead of the human-readable "
+                          "report; skips writing bowling_rotation.json to --out-dir")
     ob.set_defaults(func=cmd_optimize_bowling)
 
     obat = sub.add_parser("optimize-batting", help="genetic-algorithm search over the batting order to "
@@ -848,7 +979,25 @@ def build_parser() -> argparse.ArgumentParser:
                        help="RNG seed -- omit for a genuinely different GA search every run (the default); "
                             "pass a fixed integer to reproduce the exact same run again")
     obat.add_argument("--out-dir", dest="out_dir", default=str(SIMULATION_ARTIFACTS_DIR / "latest"))
+    obat.add_argument("--json", action="store_true",
+                       help="print the batting order result as structured JSON instead of the "
+                            "human-readable report; skips writing batting_order.json to --out-dir")
     obat.set_defaults(func=cmd_optimize_batting)
+
+    wp = sub.add_parser("winprob", help="win probability for a single game state, from the persisted "
+                                         "empirical grids (fast -- no match simulation)")
+    wp.add_argument("--innings", type=int, required=True, choices=[1, 2])
+    wp.add_argument("--wickets", type=int, default=0)
+    wp.add_argument("--balls-remaining", dest="balls_remaining", type=int, default=None,
+                     help="balls left in the innings (second innings: balls left to chase in; "
+                          "first innings: used to derive balls bowled so far)")
+    wp.add_argument("--runs-required", dest="runs_required", type=int, default=None,
+                     help="second innings only -- runs still needed to win")
+    wp.add_argument("--score", type=int, default=None,
+                     help="first innings only -- current score, for a more precise lookup")
+    wp.add_argument("--format", default=SETTINGS.format)
+    wp.add_argument("--gender", default=SETTINGS.gender)
+    wp.set_defaults(func=cmd_winprob)
 
     return p
 

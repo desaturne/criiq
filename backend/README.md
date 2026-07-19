@@ -73,28 +73,43 @@ Everything returns `{"data": ..., "error": null}` (or `{"data": null, "error": "
 
 **Phase 4 — selection & AI**
 - `GET /selection/{match_id}` · `PUT /selection/{match_id}` — body `{"xi": [], "extra": [], "excluded": []}`, max 11 in the XI
-- `POST /recommendations` — body `{"opponent": "...", "venue": "...", "team": "India", "gender": "female"}` (only `opponent` required)
-- `GET /winprob?innings=2&balls_remaining=30&wickets=4&runs_required=40`
+- `POST /recommendations` — body `{"opponent": "...", "venue": "...", "team": "India", "gender": "female"}` (`team`/`gender` optional, default `India`/`female`)
+- `GET /winprob?innings=2&balls_remaining=30&wickets=4&runs_required=40&gender=female`
 
-## The AI — real model, wired in
+**Phase 5 — simulation & optimization** (calls `model-training` directly, no fake fallback — errors come back as the engine's own message)
+- `POST /analyze-xi` — body `{"team", "opponent", "players": [11 names], "venue?", "format?", "gender?"}` — scores a coach's own hand-picked XI and compares it to the AI's optimal pick
+- `POST /simulate` — body `{"team1", "team2", "team1_players": [11], "team2_players": [11], "toss_winner", "n_simulations?": 1-200, "force_dismissal?", "venue?", "format?", "gender?"}` — ball-by-ball Monte Carlo match simulation: scores, scorecards, bowling rotation, key moments, win-probability timeline
+- `POST /optimize-bowling` — body `{"bowling_team", "batting_team", "bowling_players": [11], "batting_players": [11], "venue?", "format?", "gender?"}` — GA-searched bowler-to-over rotation
+- `POST /optimize-batting` — body `{"batting_team", "bowling_team", "batting_players": [11], "bowling_players": [11], "target?", "venue?", "format?", "gender?"}` — GA-searched batting order
 
-`ai_model.py` is the live wiring. It calls the two real models as subprocesses
-(each has its own folder + virtualenv + heavy deps, so we don't merge them into
-the backend's env):
+## The real AI model — model-training / criiq_models
 
-- **Recommendations** → `model-training/criiq_models` (trained per gender). Run
-  once after any data change: `cd model-training && python -m criiq_models.cli
-  train --gender female` and `--gender male`.
-- **Win probability** → `data-collection`'s empirical model (`criiq_data.cli
-  winprob --state ...`).
+`ai_stub.py` fakes `get_recommendations(match_context)` and
+`get_win_probability(state)` **only as a fallback** — both now call the real
+engine in `../model-training` (`criiq_models`) first, through `model_bridge.py`,
+which shells out to `python -m criiq_models.cli ... --json` rather than
+importing it directly (that package's pandas/numpy/scikit-learn/scipy
+dependencies are intentionally kept out of this backend's venv). If the real
+engine errors (models not trained yet, win-prob grids missing), `ai_stub.py`
+logs a warning and serves the original hand-written fake data instead of
+breaking the response — the same function names/arguments as before, so no
+other file needed to change for that swap.
 
-If a subprocess fails (model not trained, timeout, bad arg), `ai_model.py`
-falls back to `ai_stub.py` so the API always answers. `winprob` responses now
-report `"model": "empirical"` when the real model answered, `"stub"` otherwise.
+`simulation.py`'s four endpoints (`/simulate`, `/optimize-bowling`,
+`/optimize-batting`, `/analyze-xi`) are new capabilities with nothing to fall
+back to, so a `model_bridge` failure there becomes a 422 with the engine's own
+error text.
 
-**Prerequisite:** the recommendation model needs the WPA + role tables, which
-`refresh` does NOT build. After `python run.py refresh`, also run:
-`python run.py wpa` and `python run.py role-finalize`, then train the models.
+**Setup**: `model-training` has its own, separate dependencies — install them
+in its own venv (`cd ../model-training && pip install -r requirements.txt`),
+then train the models it needs at least once per gender:
+`python -m criiq_models.cli train --gender female` and `--gender male`. Win
+probability additionally needs data-collection's grids
+(`cd ../data-collection && python -m criiq_data.cli winprob`).
+
+Two env vars point this backend at that other venv:
+- `MODEL_TRAINING_DIR` — path to the `model-training` directory (default: `../model-training`)
+- `MODEL_TRAINING_PYTHON` — path to the Python interpreter inside model-training's venv (default: this backend's own `sys.executable`, which only works if you installed both sets of dependencies into the same environment)
 
 ## File map
 
