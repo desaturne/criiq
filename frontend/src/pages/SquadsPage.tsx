@@ -62,7 +62,6 @@ export function SquadsPage() {
   const setSelection = (id: string, s: SelectionState) =>
     setSelections(prev => ({ ...prev, [id]: s }));
   const selectedCount = Object.values(selections).filter(s => s === "select").length;
-  const reserveCount = Object.values(selections).filter(s => s === "reserve").length;
 
   const openAdd = () => {
     setEditingId(null);
@@ -179,10 +178,28 @@ export function SquadsPage() {
           </>
         )}
         {tab === "build" && (
-          <select value={opposition} onChange={e => setOpposition(e.target.value)} title="Opponent"
-            className="text-sm bg-secondary border border-border rounded-lg px-3 py-1.5 text-foreground focus:outline-none focus:ring-2 focus:ring-[#AAFF57]/40">
-            {["Australia", "England", "South Africa", "New Zealand", "Pakistan", "India"].filter(t => t !== team).map(t => <option key={t}>{t}</option>)}
-          </select>
+          <>
+            <select value={opposition} onChange={e => setOpposition(e.target.value)} title="Opponent"
+              className="text-sm bg-secondary border border-border rounded-lg px-3 py-1.5 text-foreground focus:outline-none focus:ring-2 focus:ring-[#AAFF57]/40">
+              {["Australia", "England", "South Africa", "New Zealand", "Pakistan", "India"].filter(t => t !== team).map(t => <option key={t}>{t}</option>)}
+            </select>
+            {/* Inline actions (previously a floating bar) */}
+            <div className="ml-auto flex items-center gap-2">
+              {compareIds.length >= 2 && (
+                <button onClick={() => setShowCompare(true)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg text-[#0D0D06]" style={{ background: "#3ADCFF" }}>
+                  <GitCompare size={14} /> Compare {compareIds.length}
+                </button>
+              )}
+              {selectedCount > 0 && (
+                <button onClick={() => setShowSquadPanel(true)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold rounded-lg text-white" style={{ background: "#5FA800" }}>
+                  <Users size={14} /> View Squad · {selectedCount}/11
+                  {selectedCount === 11 && <CheckCircle size={14} />}
+                </button>
+              )}
+            </div>
+          </>
         )}
       </div>
 
@@ -225,34 +242,6 @@ export function SquadsPage() {
                 onViewProfile={() => navigate("/players/" + p.id)}
               />
             ))}
-          </div>
-
-          <div className="fixed bottom-6 right-6 flex flex-col items-end gap-2.5">
-            <AnimatePresence>
-              {compareIds.length >= 2 && (
-                <motion.button key="compare" initial={{ scale: 0.8, opacity: 0, y: 10 }} animate={{ scale: 1, opacity: 1, y: 0 }} exit={{ scale: 0.8, opacity: 0, y: 10 }}
-                  whileHover={{ scale: 1.04 }} whileTap={{ scale: 0.96 }} onClick={() => setShowCompare(true)}
-                  className="flex items-center gap-2 px-5 py-3 rounded-full font-semibold text-sm shadow-xl"
-                  style={{ background: "#3ADCFF", color: "#0D0D06", boxShadow: "0 8px 28px rgba(58,220,255,0.3)" }}>
-                  <GitCompare size={15} /> Compare {compareIds.length} Players
-                </motion.button>
-              )}
-              {selectedCount > 0 && (
-                <motion.button key="view-squad" initial={{ scale: 0.8, opacity: 0, y: 10 }} animate={{ scale: 1, opacity: 1, y: 0 }} exit={{ scale: 0.8, opacity: 0, y: 10 }}
-                  whileHover={{ scale: 1.04 }} whileTap={{ scale: 0.96 }} onClick={() => setShowSquadPanel(true)}
-                  className="flex items-center gap-2 px-5 py-3 rounded-full font-semibold text-sm shadow-xl"
-                  style={{ background: "#5FA800", color: "#fff", boxShadow: "0 8px 32px rgba(95,168,0,0.35)" }}>
-                  <Users size={15} /> View Squad · {selectedCount}/11
-                  {selectedCount === 11 && <CheckCircle size={14} />}
-                </motion.button>
-              )}
-            </AnimatePresence>
-            {reserveCount > 0 && (
-              <button onClick={() => setShowSquadPanel(true)}
-                className="text-[12px] bg-card border border-border text-muted-foreground px-3 py-1.5 rounded-full shadow-lg">
-                Reserve: {reserveCount}
-              </button>
-            )}
           </div>
 
           <AnimatePresence>

@@ -7,25 +7,37 @@
 export interface BattingRow { player_id: string; name: string; runs: number; balls: number; strike_rate: number | null; status: string; highlight: string | null; }
 export interface BowlingRow { player_id: string; name: string; overs: string; runs_conceded: number; wickets: number; economy: number | null; highlight: string | null; }
 
+// A real cricket scorecard: a header row of column labels, then one row per
+// player with runs / balls / strike-rate in their own aligned columns.
+const TH = "px-2 py-1.5 font-semibold text-[10px] uppercase tracking-wider text-muted-foreground";
+
 function BattingTable({ team, rows }: { team: string; rows: BattingRow[] }) {
   return (
-    <div>
-      <h5 className="text-[11px] font-semibold text-foreground mb-1.5">{team} batting</h5>
-      <table className="w-full text-[11px] border-collapse">
-        <colgroup><col /><col className="w-16" /><col className="w-14" /></colgroup>
+    <div className="overflow-x-auto">
+      <table className="w-full text-[12px] border-collapse">
+        <thead>
+          <tr className="border-b border-border">
+            <th className={`${TH} text-left`}>{team} — Batting</th>
+            <th className={`${TH} text-right w-12`}>R</th>
+            <th className={`${TH} text-right w-12`}>B</th>
+            <th className={`${TH} text-right w-16`}>SR</th>
+          </tr>
+        </thead>
         <tbody>
           {rows.map(b => (
-            <tr key={b.player_id} className="odd:bg-secondary/30">
-              <td className="px-2 py-1 align-top">
-                <div className="text-foreground truncate">{b.name}</div>
+            <tr key={b.player_id} className="border-b border-border/40">
+              <td className="px-2 py-1.5 align-top">
+                <div className="text-foreground font-medium">
+                  {b.name}{b.status === "not out" ? <span className="text-[#AAFF57]"> *</span> : ""}
+                </div>
+                {b.status && b.status !== "not out" && b.status !== "out" && (
+                  <div className="text-muted-foreground text-[10px] leading-tight italic">{b.status}</div>
+                )}
                 {b.highlight && <div className="text-[#AAFF57] text-[10px] leading-tight">{b.highlight}</div>}
               </td>
-              <td className="px-2 py-1 font-mono text-foreground text-right whitespace-nowrap align-top">
-                {b.runs} ({b.balls}){b.status === "not out" ? "*" : ""}
-              </td>
-              <td className="px-2 py-1 font-mono text-muted-foreground text-right whitespace-nowrap align-top">
-                {b.strike_rate ?? "-"}
-              </td>
+              <td className="px-2 py-1.5 font-mono font-bold text-foreground text-right align-top">{b.runs}</td>
+              <td className="px-2 py-1.5 font-mono text-muted-foreground text-right align-top">{b.balls}</td>
+              <td className="px-2 py-1.5 font-mono text-muted-foreground text-right align-top">{b.strike_rate ?? "-"}</td>
             </tr>
           ))}
         </tbody>
@@ -36,20 +48,28 @@ function BattingTable({ team, rows }: { team: string; rows: BattingRow[] }) {
 
 function BowlingTable({ team, rows }: { team: string; rows: BowlingRow[] }) {
   return (
-    <div>
-      <h5 className="text-[11px] font-semibold text-foreground mb-1.5">{team} bowling</h5>
-      <table className="w-full text-[11px] border-collapse">
-        <colgroup><col /><col className="w-10" /><col className="w-14" /><col className="w-12" /></colgroup>
+    <div className="overflow-x-auto">
+      <table className="w-full text-[12px] border-collapse">
+        <thead>
+          <tr className="border-b border-border">
+            <th className={`${TH} text-left`}>{team} — Bowling</th>
+            <th className={`${TH} text-right w-12`}>O</th>
+            <th className={`${TH} text-right w-12`}>R</th>
+            <th className={`${TH} text-right w-10`}>W</th>
+            <th className={`${TH} text-right w-16`}>Econ</th>
+          </tr>
+        </thead>
         <tbody>
           {rows.map(b => (
-            <tr key={b.player_id} className="odd:bg-secondary/30">
-              <td className="px-2 py-1 align-top">
-                <div className="text-foreground truncate">{b.name}</div>
+            <tr key={b.player_id} className="border-b border-border/40">
+              <td className="px-2 py-1.5 align-top">
+                <div className="text-foreground font-medium">{b.name}</div>
                 {b.highlight && <div className="text-[#AAFF57] text-[10px] leading-tight">{b.highlight}</div>}
               </td>
-              <td className="px-2 py-1 font-mono text-foreground text-right whitespace-nowrap align-top">{b.overs}</td>
-              <td className="px-2 py-1 font-mono text-foreground text-right whitespace-nowrap align-top">{b.wickets}/{b.runs_conceded}</td>
-              <td className="px-2 py-1 font-mono text-muted-foreground text-right whitespace-nowrap align-top">{b.economy ?? "-"}</td>
+              <td className="px-2 py-1.5 font-mono text-muted-foreground text-right align-top">{b.overs}</td>
+              <td className="px-2 py-1.5 font-mono text-muted-foreground text-right align-top">{b.runs_conceded}</td>
+              <td className="px-2 py-1.5 font-mono font-bold text-foreground text-right align-top">{b.wickets}</td>
+              <td className="px-2 py-1.5 font-mono text-muted-foreground text-right align-top">{b.economy ?? "-"}</td>
             </tr>
           ))}
         </tbody>

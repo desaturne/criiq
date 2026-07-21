@@ -11,7 +11,6 @@ import { MatchDetailPage } from "../pages/MatchDetailPage";
 import { MatchesPage } from "../pages/MatchesPage";
 import { PlayerProfilePage } from "../pages/PlayerProfilePage";
 import { RecommendationsPage } from "../pages/RecommendationsPage";
-import { ReportsPage } from "../pages/ReportsPage";
 import { SettingsPage } from "../pages/SettingsPage";
 import { SimulationPage } from "../pages/SimulationPage";
 import { SquadsPage } from "../pages/SquadsPage";
@@ -40,7 +39,6 @@ const router = createBrowserRouter([
       { path: "matches/:id",     Component: MatchDetailPage },
       { path: "recommendations", Component: RecommendationsPage },
       { path: "simulator",       Component: SimulationPage },
-      { path: "reports",         Component: ReportsPage },
       { path: "settings",        Component: SettingsPage },
       { path: "*",               element: <Navigate to="/dashboard" replace /> },
     ],

@@ -126,6 +126,66 @@ export function RecommendationsPage() {
     }
   };
 
+  // Group the ranked pool into role buckets, mirroring the CLI's role_pools
+  // (batters / all-rounders / bowlers, each already score-ordered because
+  // `ranked` is score-ranked), plus a catch-all "Others" for anything the
+  // model couldn't classify. Same players — just the coach's mental grouping.
+  const topScore = ranked.length ? Math.max(...ranked.map(r => r.score), 1) : 1;
+  const POOL_DEFS: { key: string; label: string; match: (role: string) => boolean }[] = [
+    { key: "batters",      label: "Batters",      match: r => r === "batter" },
+    { key: "all_rounders", label: "All-rounders", match: r => r === "all-rounder" },
+    { key: "bowlers",      label: "Bowlers",      match: r => r === "bowler" },
+    { key: "others",       label: "Others",       match: r => !["batter", "all-rounder", "bowler"].includes(r) },
+  ];
+
+  const renderCard = (rec: Recommendation, i: number) => {
+    const color = colorFor(rec.player_name);
+    const relative = rec.score / topScore;
+    const gaugeColor = relative >= 0.75 ? "#AAFF57" : relative >= 0.4 ? "#60A5FA" : "#FB923C";
+    return (
+      <motion.div key={rec.rank} initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.03 }}
+        className="bg-card border border-border rounded-xl overflow-hidden">
+        <div className="p-3 flex items-center gap-3">
+          <span className="font-mono text-[11px] text-muted-foreground w-5 text-right flex-shrink-0">#{rec.rank}</span>
+          <div className="w-8 h-8 rounded-full flex items-center justify-center text-[10px] font-bold flex-shrink-0" style={{ backgroundColor: color + "33", color }}>{initialsFor(rec.player_name)}</div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-1.5">
+              <span className="text-[13px] font-semibold text-foreground truncate">{rec.player_name}</span>
+              {rec.in_xi && (
+                <span className="flex items-center gap-0.5 text-[9px] font-medium text-[#AAFF57] bg-[#AAFF57]/10 border border-[#AAFF57]/30 rounded-full px-1.5 py-0.5 flex-shrink-0">
+                  <CheckCircle2 size={9} /> In XI
+                </span>
+              )}
+            </div>
+            <div className="text-[10px] text-muted-foreground capitalize">{rec.role}</div>
+          </div>
+          <RadialGauge value={rec.score} decimals={1} size={44} strokeWidth={3.5} color={gaugeColor} />
+          <button onClick={() => setExpandedId(expandedId === rec.player_name ? null : rec.player_name)} className="text-[11px] text-muted-foreground hover:text-foreground flex items-center gap-0.5 px-2">
+            Explain <ChevronDown size={10} className={`transition-transform ${expandedId === rec.player_name ? "rotate-180" : ""}`} />
+          </button>
+          <SelectionControl state={selections[rec.player_id] || "undecided"} onChange={s => setSelections(prev => ({ ...prev, [rec.player_id]: s }))} />
+        </div>
+        <AnimatePresence>
+          {expandedId === rec.player_name && (
+            <motion.div initial={{ height: 0 }} animate={{ height: "auto" }} exit={{ height: 0 }} className="overflow-hidden border-t border-border">
+              <div className="p-4 bg-secondary/30">
+                <p className="text-[12px] text-muted-foreground mb-2 font-medium">Why this recommendation</p>
+                <ul className="space-y-1.5">
+                  {rec.reasons.map((r, ri) => (
+                    <li key={ri} className="text-[12px] text-muted-foreground leading-relaxed flex gap-2">
+                      <span className="text-[#AAFF57] flex-shrink-0">•</span>
+                      <span><Highlighted text={r} /></span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </motion.div>
+    );
+  };
+
   return (
     <div className="p-5 max-w-screen-xl mx-auto">
       <div className="mb-5">
@@ -242,58 +302,23 @@ export function RecommendationsPage() {
             {generated && (
               <motion.div key="results" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-2">
                 <div className="flex items-center justify-between mb-3">
-                  <p className="text-[13px] text-muted-foreground">Top {ranked.length} ranked for <strong className="text-foreground">vs {opponent}</strong> at <strong className="text-foreground">{venue}</strong> — <span className="text-[#AAFF57]">green tag</span> marks the AI's constrained 11-player XI</p>
+                  <p className="text-[13px] text-muted-foreground">Top {ranked.length} for <strong className="text-foreground">vs {opponent}</strong> at <strong className="text-foreground">{venue}</strong>, grouped by role — <span className="text-[#AAFF57]">green tag</span> marks the AI's constrained 11-player XI</p>
                   <span className="text-[12px] font-medium text-[#AAFF57]">{selectedCount}/11 selected</span>
                 </div>
-                {ranked.map((rec, i) => {
-                  const color = colorFor(rec.player_name);
-                  // Real model scores don't sit in a fixed 0-100 "good" band the
-                  // way a percentage would -- band relative to this result set's
-                  // own top score instead of hardcoded absolute thresholds.
-                  const topScore = Math.max(...ranked.map(r => r.score), 1);
-                  const relative = rec.score / topScore;
-                  const gaugeColor = relative >= 0.75 ? "#AAFF57" : relative >= 0.4 ? "#60A5FA" : "#FB923C";
+                {POOL_DEFS.map(pool => {
+                  const members = ranked.filter(r => pool.match(r.role));
+                  if (!members.length) return null;
+                  const inXi = members.filter(m => m.in_xi).length;
                   return (
-                  <motion.div key={rec.rank} initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.03 }}
-                    className="bg-card border border-border rounded-xl overflow-hidden">
-                    <div className="p-3 flex items-center gap-3">
-                      <span className="font-mono text-[11px] text-muted-foreground w-5 text-right flex-shrink-0">#{rec.rank}</span>
-                      <div className="w-8 h-8 rounded-full flex items-center justify-center text-[10px] font-bold flex-shrink-0" style={{ backgroundColor: color + "33", color }}>{initialsFor(rec.player_name)}</div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-[13px] font-semibold text-foreground truncate">{rec.player_name}</span>
-                          {rec.in_xi && (
-                            <span className="flex items-center gap-0.5 text-[9px] font-medium text-[#AAFF57] bg-[#AAFF57]/10 border border-[#AAFF57]/30 rounded-full px-1.5 py-0.5 flex-shrink-0">
-                              <CheckCircle2 size={9} /> In XI
-                            </span>
-                          )}
-                        </div>
-                        <div className="text-[10px] text-muted-foreground capitalize">{rec.role}</div>
+                    <div key={pool.key} className="space-y-2">
+                      <div className="flex items-center gap-2 mt-4 first:mt-0">
+                        <h4 className="text-[12px] font-bold uppercase tracking-wider text-foreground">{pool.label}</h4>
+                        <span className="text-[11px] text-muted-foreground">({members.length})</span>
+                        <div className="flex-1 h-px bg-border" />
+                        {inXi > 0 && <span className="text-[10px] text-[#AAFF57]">{inXi} in XI</span>}
                       </div>
-                      <RadialGauge value={rec.score} decimals={1} size={44} strokeWidth={3.5} color={gaugeColor} />
-                      <button onClick={() => setExpandedId(expandedId === rec.player_name ? null : rec.player_name)} className="text-[11px] text-muted-foreground hover:text-foreground flex items-center gap-0.5 px-2">
-                        Explain <ChevronDown size={10} className={`transition-transform ${expandedId === rec.player_name ? "rotate-180" : ""}`} />
-                      </button>
-                      <SelectionControl state={selections[rec.player_id] || "undecided"} onChange={s => setSelections(prev => ({ ...prev, [rec.player_id]: s }))} />
+                      {members.map((rec, i) => renderCard(rec, i))}
                     </div>
-                    <AnimatePresence>
-                      {expandedId === rec.player_name && (
-                        <motion.div initial={{ height: 0 }} animate={{ height: "auto" }} exit={{ height: 0 }} className="overflow-hidden border-t border-border">
-                          <div className="p-4 bg-secondary/30">
-                            <p className="text-[12px] text-muted-foreground mb-2 font-medium">Why this recommendation</p>
-                            <ul className="space-y-1.5">
-                              {rec.reasons.map((r, ri) => (
-                                <li key={ri} className="text-[12px] text-muted-foreground leading-relaxed flex gap-2">
-                                  <span className="text-[#AAFF57] flex-shrink-0">•</span>
-                                  <span><Highlighted text={r} /></span>
-                                </li>
-                              ))}
-                            </ul>
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </motion.div>
                   );
                 })}
               </motion.div>
