@@ -12,6 +12,8 @@ intentional.)
 """
 from __future__ import annotations
 
+from ..config import SETTINGS
+
 _PHASE_LABEL = {
     "powerplay": "powerplay (overs 1-6)",
     "middle": "middle overs (7-15)",
@@ -19,7 +21,8 @@ _PHASE_LABEL = {
 }
 
 
-def explain(scored: dict, alternative: dict | None = None, slot: str | None = None) -> dict:
+def explain(scored: dict, alternative: dict | None = None, slot: str | None = None,
+            h2h_batting: dict | None = None, h2h_bowling: dict | None = None) -> dict:
     """`alternative`/`slot`: the best-scoring player NOT selected for the
     same team-sheet slot (opener / core batting / bowling tail, see
     `selection/optimize.slot_category`), if any, lets the explanation say
@@ -78,7 +81,7 @@ def explain(scored: dict, alternative: dict | None = None, slot: str | None = No
     # that explicitly so a low rating on a genuine finisher (the recurring
     # "she's our best finisher but isn't recommended" case) reads as "low
     # recent win-impact", not "can't hit", and points a coach at a manual call.
-    if archetype in ("finisher", "power hitter") and c["model_part"] <= 0:
+    if archetype in ("finisher", "power hitter") and c["model_part"] <= SETTINGS.finisher_low_impact_threshold:
         lines.append(
             f"The batting profile above is strong, but this rating is driven by win-probability-added "
             f"(impact on results), not raw hitting, so a {archetype} with modest recent win-impact "
@@ -130,6 +133,26 @@ def explain(scored: dict, alternative: dict | None = None, slot: str | None = No
             f"Has bowled {inp['bowl_matchup_balls_vs_opponent_batters']} balls at "
             f"{scored['opponent']}'s specific batters (wicket rate {round(rate, 3) if rate is not None else 'n/a'}): "
             f"{direction} matchup for them with the ball ({inp['bowl_matchup_part']:+} pts).")
+
+    if h2h_batting and (h2h_batting.get("best") or h2h_batting.get("bogey")):
+        bits = []
+        best = h2h_batting.get("best")
+        if best:
+            bits.append(f"best to target is {best['opponent']} (SR {best['strike_rate']} in {best['balls']} balls)")
+        bogey = h2h_batting.get("bogey")
+        if bogey:
+            bits.append(f"bogey bowler is {bogey['opponent']} ({bogey['dismissals']} dismissals in {bogey['balls']} balls)")
+        lines.append(f"Specific matchups vs {scored['opponent']}'s named XI: {'; '.join(bits)}.")
+
+    if h2h_bowling and (h2h_bowling.get("best") or h2h_bowling.get("most_expensive")):
+        bits = []
+        best = h2h_bowling.get("best")
+        if best:
+            bits.append(f"has {best['opponent']}'s number ({best['dismissals']} in {best['balls']} balls)")
+        expensive = h2h_bowling.get("most_expensive")
+        if expensive:
+            bits.append(f"{expensive['opponent']} counters well (economy {expensive['economy']} in {expensive['balls']} balls)")
+        lines.append(f"Specific matchups vs {scored['opponent']}'s named XI: {'; '.join(bits)}.")
 
     if c["phase_fit_part"] > 0:
         lines.append(f"Stands out among teammates in their strongest phase of the innings "

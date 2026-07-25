@@ -259,7 +259,10 @@ def cmd_recommend(args):
         for p in result["xi"]:
             category = slot_category(p, SETTINGS.opener_position_threshold)
             alt = _best_alternative(category)
-            xi_out.append({**_brief(p), "reasoning": explain(p, alternative=alt, slot=category)["summary"]})
+            h2h_bat = (h2h or {}).get("batting", {}).get(p["name"])
+            h2h_bowl = (h2h or {}).get("bowling", {}).get(p["name"])
+            xi_out.append({**_brief(p), "reasoning": explain(p, alternative=alt, slot=category,
+                                                              h2h_batting=h2h_bat, h2h_bowling=h2h_bowl)["summary"]})
 
         # Top-`pool_size` recommended players, ranked by raw score -- this is
         # a *shortlist* view (no slot/alternative framing, since "picked
@@ -267,7 +270,11 @@ def cmd_recommend(args):
         # actually happened), independent of who made the final constrained
         # XI: a top-ranked keeper-less specialist can rank highly here and
         # still not make the XI if the MILP needed her slot for a keeper.
-        pool_out = [{**_brief(p), "reasoning": explain(p)["summary"]} for p in result["pool"]]
+        pool_out = []
+        for p in result["pool"]:
+            h2h_bat = (h2h or {}).get("batting", {}).get(p["name"])
+            h2h_bowl = (h2h or {}).get("bowling", {}).get(p["name"])
+            pool_out.append({**_brief(p), "reasoning": explain(p, h2h_batting=h2h_bat, h2h_bowling=h2h_bowl)["summary"]})
     else:
         xi_out = [_brief(p) for p in result["xi"]]
         pool_out = [_brief(p) for p in result["pool"]]
