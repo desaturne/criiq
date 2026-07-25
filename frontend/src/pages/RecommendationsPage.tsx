@@ -47,6 +47,8 @@ export function RecommendationsPage() {
   const [confirming, setConfirming] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [ranked, setRanked] = useState<Recommendation[]>([]);
+  const [opponentXi, setOpponentXi] = useState<{ player_id: string; player_name: string; role: string; score: number }[] | null>(null);
+  const [showOpponentXi, setShowOpponentXi] = useState(false);
   const selectedCount = Object.values(selections).filter(s => s === "select").length;
   // Snapshot of whichever params actually produced `ranked` -- compared
   // against the live dropdowns below so changing Team/Opponent/Venue/Format
@@ -65,8 +67,9 @@ export function RecommendationsPage() {
     setLoading(true);
     setError(null);
     try {
-      const recRes = await api.recommendations({ team, opponent, venue, format, gender });
+      const recRes = await api.recommendations({ team, opponent, venue, format, gender, auto_opponent_xi: true });
       setRanked(recRes.recommendations);
+      setOpponentXi(recRes.opponent_xi);
       setGeneratedParams({ team, opponent, venue, format, gender });
       setGenerated(true);
     } catch (err) {
@@ -305,6 +308,29 @@ export function RecommendationsPage() {
                   <p className="text-[13px] text-muted-foreground">Top {ranked.length} for <strong className="text-foreground">vs {opponent}</strong> at <strong className="text-foreground">{venue}</strong>, grouped by role — <span className="text-[#AAFF57]">green tag</span> marks the AI's constrained 11-player XI</p>
                   <span className="text-[12px] font-medium text-[#AAFF57]">{selectedCount}/11 selected</span>
                 </div>
+                {opponentXi && (
+                  <div className="bg-card border border-border rounded-xl overflow-hidden mb-3">
+                    <button onClick={() => setShowOpponentXi(v => !v)}
+                      className="w-full p-3 flex items-center justify-between text-[12px] text-muted-foreground hover:text-foreground">
+                      <span>vs probable {opponent} XI ({opponentXi.length})</span>
+                      <ChevronDown size={12} className={`transition-transform ${showOpponentXi ? "rotate-180" : ""}`} />
+                    </button>
+                    <AnimatePresence>
+                      {showOpponentXi && (
+                        <motion.div initial={{ height: 0 }} animate={{ height: "auto" }} exit={{ height: 0 }} className="overflow-hidden border-t border-border">
+                          <ul className="p-3 space-y-1 text-[12px] text-muted-foreground">
+                            {opponentXi.map(p => (
+                              <li key={p.player_id} className="flex justify-between">
+                                <span className="text-foreground">{p.player_name}</span>
+                                <span className="capitalize">{p.role} · {p.score.toFixed(1)}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
+                )}
                 {POOL_DEFS.map(pool => {
                   const members = ranked.filter(r => pool.match(r.role));
                   if (!members.length) return null;
