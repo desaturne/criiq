@@ -74,13 +74,15 @@ class RecommendationBody(BaseModel):
     team: str = "India"        # which side we are picking for
     gender: str = "female"     # "female" | "male"
     format: str = "T20I"
+    auto_opponent_xi: bool = False   # also recommend the opponent's probable XI, and use it to activate player-vs-player head-to-head matchups
 
 
 @router.post("/recommendations")
 def recommendations(body: RecommendationBody):
     result = ai_stub.get_recommendations(body.model_dump())
     return {"data": {"match_context": body.model_dump(),
-                     "recommendations": result}, "error": None}
+                     "recommendations": result["recommendations"],
+                     "opponent_xi": result.get("opponent_xi")}, "error": None}
 
 
 # --------------------------------------------------------------------------

@@ -54,9 +54,12 @@ def _opt(flag: str, value) -> list[str]:
 
 
 def recommend(team: str, opponent: str, venue: str | None = None,
-              fmt: str = DEFAULT_FORMAT, gender: str = DEFAULT_GENDER) -> dict:
+              fmt: str = DEFAULT_FORMAT, gender: str = DEFAULT_GENDER,
+              opponent_player_ids: list[str] | None = None) -> dict:
     args = ["recommend", "--team", team, "--opponent", opponent, "--format", fmt, "--gender", gender,
             "--explain", *_opt("--venue", venue)]
+    if opponent_player_ids:
+        args += ["--opponent-player-ids", ",".join(opponent_player_ids)]
     return run_cli(args)
 
 

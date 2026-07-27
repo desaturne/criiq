@@ -26,18 +26,35 @@ def _fallback_recommendations(match_context: dict) -> list[dict]:
     ]
 
 
-def get_recommendations(match_context: dict) -> list[dict]:
-    """Returns the model's full ranked pool (~20 players), each tagged in_xi."""
+def get_recommendations(match_context: dict) -> dict:
+    """Returns the model's full ranked pool (~20 players), each tagged in_xi,
+    plus (when `auto_opponent_xi` is set) the opponent's own probable XI, used
+    to activate real player-vs-player head-to-head matchup data instead of
+    only team-level aggregates.
+    """
     team = match_context.get("team") or "India"
     opponent = match_context.get("opponent", "the opposition")
     gender = match_context.get("gender") or "female"
+    fmt = model_bridge.DEFAULT_FORMAT
+    venue = match_context.get("venue")
+    auto_opponent_xi = bool(match_context.get("auto_opponent_xi"))
+
+    opponent_xi_out, opponent_player_ids = None, None
+    if auto_opponent_xi:
+        try:
+            opp = model_bridge.recommend(team=opponent, opponent=team, venue=venue, fmt=fmt, gender=gender)
+            opponent_player_ids = [p["player_id"] for p in opp["xi"]]
+            opponent_xi_out = [{"player_id": p["player_id"], "player_name": p["name"],
+                                 "role": p["role_bucket"], "score": p["score"]} for p in opp["xi"]]
+        except model_bridge.ModelBridgeError as exc:
+            log.warning("opponent auto-XI unavailable (%s) -- proceeding without named-opponent matchups", exc)
 
     try:
-        result = model_bridge.recommend(team=team, opponent=opponent,
-                                         venue=match_context.get("venue"), gender=gender)
+        result = model_bridge.recommend(team=team, opponent=opponent, venue=venue, fmt=fmt, gender=gender,
+                                         opponent_player_ids=opponent_player_ids)
     except model_bridge.ModelBridgeError as exc:
         log.warning("recommend engine unavailable (%s) -- serving stub data", exc)
-        return _fallback_recommendations(match_context)
+        return {"recommendations": _fallback_recommendations(match_context), "opponent_xi": None}
 
     def _reasons(p: dict) -> list[str]:
         reasoning = p.get("reasoning") or []
@@ -45,11 +62,12 @@ def get_recommendations(match_context: dict) -> list[dict]:
 
     xi_ids = {p["player_id"] for p in result["xi"]}
 
-    return [
+    recs = [
         {"rank": i + 1, "player_id": p["player_id"], "player_name": p["name"], "role": p["role_bucket"],
          "score": p["score"], "reasons": _reasons(p), "in_xi": p["player_id"] in xi_ids}
         for i, p in enumerate(result["pool"])
     ]
+    return {"recommendations": recs, "opponent_xi": opponent_xi_out}
 
 
 def _fallback_win_probability(state: dict) -> dict:

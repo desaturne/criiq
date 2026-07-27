@@ -118,6 +118,8 @@ class Settings:
     # once real domestic data exists -- see model_comparison_robust.ipynb.
     domestic_form_max_effective_matches: int = 10
 
+    finisher_low_impact_threshold: float = 5.0
+
 
 SETTINGS = Settings()
 

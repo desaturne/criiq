@@ -98,10 +98,11 @@ export const getSelection = (matchId: string) => apiFetch(`/selection/${encodeUR
 export const saveSelection = (matchId: string, body: { xi: string[]; extra: string[]; excluded: string[] }) =>
   apiFetch(`/selection/${encodeURIComponent(matchId)}`, { method: "PUT", body: JSON.stringify(body) });
 
-export const recommendations = (body: { opponent: string; venue?: string; format?: string; team?: string; gender?: string }) =>
+export const recommendations = (body: { opponent: string; venue?: string; format?: string; team?: string; gender?: string; auto_opponent_xi?: boolean }) =>
   apiFetch("/recommendations", { method: "POST", body: JSON.stringify(body) }) as Promise<{
     match_context: any;
     recommendations: { rank: number; player_id: string; player_name: string; role: string; score: number; reasons: string[]; in_xi: boolean }[];
+    opponent_xi: { player_id: string; player_name: string; role: string; score: number }[] | null;
   }>;
 
 export const winProb = (params: { innings?: number; balls_remaining?: number; wickets?: number; runs_required?: number; gender?: string } = {}) =>
