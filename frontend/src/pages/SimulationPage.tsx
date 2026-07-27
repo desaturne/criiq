@@ -43,6 +43,10 @@ function XIPicker({ label, players, loading, selectedIds, onChange, onUseRecomme
 }) {
   const [search, setSearch] = useState("");
   const filtered = players.filter(p => p.name.toLowerCase().includes(search.toLowerCase()));
+  // Each picker auto-fills the AI's recommended XI, so it sits at 11/11 by
+  // default. Adding a 12th is (correctly) refused, but silently -- surface
+  // that state so a manual "tap to add" click doesn't look like a dead list.
+  const atCap = selectedIds.length >= 11;
   const toggle = (id: string) => {
     if (selectedIds.includes(id)) onChange(selectedIds.filter(x => x !== id));
     else if (selectedIds.length < 11) onChange([...selectedIds, id]);
@@ -53,11 +57,22 @@ function XIPicker({ label, players, loading, selectedIds, onChange, onUseRecomme
         <h4 className="text-[13px] font-semibold text-foreground">{label}</h4>
         <span className={`text-[11px] font-medium ${selectedIds.length === 11 ? "text-[#AAFF57]" : "text-muted-foreground"}`}>{selectedIds.length}/11</span>
       </div>
-      {onUseRecommended && (
-        <button onClick={onUseRecommended} disabled={recommendedLoading}
-          className="text-[10px] text-[#AAFF57] hover:underline mb-2 disabled:opacity-50 disabled:no-underline">
-          {recommendedLoading ? "Scoring squad vs this opponent… (~15-20s)" : "↺ Reset to AI's recommended XI"}
-        </button>
+      <div className="flex items-center gap-3 mb-2">
+        {onUseRecommended && (
+          <button onClick={onUseRecommended} disabled={recommendedLoading}
+            className="text-[10px] text-[#AAFF57] hover:underline disabled:opacity-50 disabled:no-underline">
+            {recommendedLoading ? "Scoring squad vs this opponent… (~15-20s)" : "↺ Reset to AI's recommended XI"}
+          </button>
+        )}
+        {selectedIds.length > 0 && (
+          <button onClick={() => onChange([])}
+            className="text-[10px] text-muted-foreground hover:text-foreground hover:underline">
+            ✕ Clear XI (pick your own)
+          </button>
+        )}
+      </div>
+      {atCap && (
+        <p className="text-[10px] text-amber-400 mb-2">XI full (11/11) — tap a highlighted player to remove one before adding another.</p>
       )}
       <div className="relative mb-2">
         <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
@@ -70,8 +85,8 @@ function XIPicker({ label, players, loading, selectedIds, onChange, onUseRecomme
         ) : filtered.map(p => {
           const isSel = selectedIds.includes(p.id);
           return (
-            <button key={p.id} onClick={() => toggle(p.id)}
-              className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left transition-colors ${isSel ? "bg-[#AAFF57]/10 border border-[#AAFF57]/30" : "hover:bg-secondary border border-transparent"}`}>
+            <button key={p.id} onClick={() => toggle(p.id)} disabled={atCap && !isSel}
+              className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left transition-colors ${isSel ? "bg-[#AAFF57]/10 border border-[#AAFF57]/30" : atCap ? "border border-transparent opacity-40 cursor-not-allowed" : "hover:bg-secondary border border-transparent"}`}>
               <div className="w-5 h-5 rounded-full flex items-center justify-center text-[8px] font-bold flex-shrink-0" style={{ backgroundColor: p.color + "33", color: p.color }}>{p.initials}</div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-1.5">

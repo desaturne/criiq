@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { useNavigate } from "react-router";
-import { Zap, ChevronDown, RefreshCw, CheckCircle2, AlertTriangle, PlayCircle } from "lucide-react";
+import { Zap, ChevronDown, RefreshCw, CheckCircle2, AlertTriangle, PlayCircle, Sparkles } from "lucide-react";
 import { RadialGauge } from "../components/common/RadialGauge";
 import { SelectionControl } from "../components/common/SelectionControl";
 import * as api from "../lib/api";
@@ -74,6 +74,17 @@ export function RecommendationsPage() {
     } finally {
       setLoading(false);
     }
+  };
+
+  // Adopt the AI's constrained XI as the manual selection: mark every in_xi
+  // player "select" and the rest of this pool "undecided", leaving any
+  // selections for players outside this pool untouched.
+  const resetToAiXi = () => {
+    setSelections(prev => {
+      const next = { ...prev };
+      ranked.forEach(r => { next[r.player_id] = r.in_xi ? "select" : "undecided"; });
+      return next;
+    });
   };
 
   // "Simulate This XI" -- the coach's constrained 11 is already known
@@ -217,7 +228,8 @@ export function RecommendationsPage() {
                 // strings) silently fails to match anything and venue conditioning
                 // has zero effect, even though the request "succeeds".
                 { label: "Venue", value: venue, set: setVenue, opts: ["Melbourne Cricket Ground", "Lord's", "Eden Gardens", "Wankhede Stadium", "Nassau County International Cricket Stadium"] },
-                { label: "Format", value: format, set: setFormat, opts: ["T20I", "ODI", "Test"] },
+                // T20I is the only supported format -- keep the field, drop ODI/Test.
+                { label: "Format", value: format, set: setFormat, opts: ["T20I"] },
               ].map(field => (
                 <div key={field.label} className="space-y-1">
                   <label className="text-[12px] text-muted-foreground">{field.label}</label>
@@ -261,6 +273,10 @@ export function RecommendationsPage() {
                     : `${selectedCount}/11 selected${selectedCount > 11 ? " — remove " + (selectedCount - 11) : ""}`}
                 </p>
               </div>
+              <button onClick={resetToAiXi}
+                className="w-full mb-2 py-2 border border-[#AAFF57]/40 text-[#AAFF57] text-[12px] rounded-lg hover:bg-[#AAFF57]/10 active:scale-[0.98] transition-all flex items-center justify-center gap-1.5">
+                <Sparkles size={13} /> Reset to AI's recommended XI
+              </button>
               {selectedCount > 0 && (
                 <button onClick={handleConfirm} disabled={confirming || selectedCount > 11}
                   className="w-full mb-2 py-2.5 bg-[#5FA800] text-white font-semibold text-[13px] rounded-lg hover:opacity-90 active:scale-[0.98] transition-all flex items-center justify-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed">
