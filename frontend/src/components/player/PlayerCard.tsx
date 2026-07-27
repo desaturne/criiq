@@ -9,9 +9,9 @@ import { SparkLine } from "../common/SparkLine";
 import { StatusBadge } from "../common/StatusBadge";
 import { Player, SelectionState } from "../../types/index";
 
-export function PlayerCard({ player, index, opposition, selection, onSelect, comparing, onToggleCompare, onViewProfile }: {
+export function PlayerCard({ player, index, opposition, selection = "undecided", onSelect, comparing, onToggleCompare, onViewProfile }: {
   player: Player; index: number; opposition: string;
-  selection: SelectionState; onSelect: (s: SelectionState) => void;
+  selection?: SelectionState; onSelect?: (s: SelectionState) => void;
   comparing: boolean; onToggleCompare: () => void;
   onViewProfile?: () => void;
 }) {
@@ -103,7 +103,7 @@ export function PlayerCard({ player, index, opposition, selection, onSelect, com
             <Scale size={10} /> {comparing ? "Comparing" : "Compare"}
           </motion.button>
         </div>
-        <SelectionControl state={selection} onChange={onSelect} />
+        {onSelect && <SelectionControl state={selection} onChange={onSelect} />}
       </div>
 
       <AnimatePresence>

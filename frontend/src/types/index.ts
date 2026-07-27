@@ -32,14 +32,16 @@ export interface Player {
   career: { matches: number; innings: number; runs?: number; avg?: number; sr?: number; fifties?: number; hundreds?: number; wickets?: number; economy?: number; bowlingAvg?: number; best?: string };
   score: number;
   breakdown: { form: number; vsOpponent: number; venueFit: number; matchupAdvantage: number };
+  // Real batting-position/role data (player_role_final) -- the same signal
+  // the recommendation engine itself uses to order a team sheet, not a guess.
+  position: string; isKeeper: boolean;
 }
 
 export interface Match {
   id: string; team1: string; team2: string; venue: string;
   date: string; time: string; format: string;
   status: "Upcoming" | "Live" | "Completed";
-  result?: string; paceSupport: number; spinSupport: number; battingAnchors: number; finishersFit: number;
-  weatherDesc: string; rainProb: number; windSpeed: number; temp: number;
+  result?: string;
   opponentForm: ("W" | "L")[];
 }
 

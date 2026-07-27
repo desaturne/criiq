@@ -3,7 +3,7 @@ import { motion } from "motion/react";
 import { Send, Plus } from "lucide-react";
 import { CricketBall } from "../components/common/CricketBall";
 import { RadialGauge } from "../components/common/RadialGauge";
-import { CHAT_HISTORY } from "../data/chat";
+import { CHAT_HISTORY, ChatMessage } from "../data/chat";
 
 export function AssistantPage() {
   const [messages, setMessages] = useState(CHAT_HISTORY);
@@ -14,13 +14,14 @@ export function AssistantPage() {
 
   const send = () => {
     if (!input.trim()) return;
-    const userMsg = { id: `u${Date.now()}`, role: "user", text: input, richCard: null };
+    const userMsg: ChatMessage = { id: `u${Date.now()}`, role: "user", text: input, richCard: null };
     setMessages(prev => [...prev, userMsg]);
     setInput("");
     setTyping(true);
     setTimeout(() => {
       setTyping(false);
-      setMessages(prev => [...prev, { id: `a${Date.now()}`, role: "assistant", text: "Based on the current data, I can see a strong case for that selection. The form metrics and venue history both support this choice. Would you like me to run a specific matchup analysis or generate the full XI recommendation?", richCard: null }]);
+      const reply: ChatMessage = { id: `a${Date.now()}`, role: "assistant", text: "Based on the current data, I can see a strong case for that selection. The form metrics and venue history both support this choice. Would you like me to run a specific matchup analysis or generate the full XI recommendation?", richCard: null };
+      setMessages(prev => [...prev, reply]);
     }, 2000);
   };
 

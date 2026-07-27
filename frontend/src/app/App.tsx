@@ -14,6 +14,7 @@ import { PlayerProfilePage } from "../pages/PlayerProfilePage";
 import { RecommendationsPage } from "../pages/RecommendationsPage";
 import { ReportsPage } from "../pages/ReportsPage";
 import { SettingsPage } from "../pages/SettingsPage";
+import { SimulationPage } from "../pages/SimulationPage";
 import { SquadsPage } from "../pages/SquadsPage";
 import { AdminLoginPage } from "../pages/auth/AdminLoginPage";
 import { LoginPage } from "../pages/auth/LoginPage";
@@ -98,6 +99,7 @@ export function AppWithAuth() {
         { path: "matches",         Component: MatchesPage },
         { path: "matches/:id",     Component: MatchDetailPage },
         { path: "recommendations", Component: RecommendationsPage },
+        { path: "simulator",       Component: SimulationPage },
         { path: "assistant",       Component: AssistantPage },
         { path: "reports",         Component: ReportsPage },
         { path: "settings",        Component: SettingsPage },

@@ -219,6 +219,19 @@ optionally overlaying a forced-dismissal scenario against the baseline for
 direct comparison, plus a Monte-Carlo mean/10th-90th-percentile band
 (`aggregate_win_probability`) across `--n-simulations` reps.
 
+**Bowling rotation analysis** (`simulate/scorecard.py`'s `bowling_rotation`/
+`bowling_phase_summary`): distinct from the scorecard's per-bowler *match*
+totals, this is the actual over-by-over sequence -- which bowler bowled each
+specific over, its phase, and that over's own runs/wickets -- plus a
+per-phase (powerplay/middle/death) aggregation of each bowler's figures.
+This is the concrete basis for judging whether a simulated rotation actually
+matched real captaincy (specialists bowling their own phase) rather than an
+arbitrary spread, and is what surfaced the phase-aware scheduling working
+correctly in practice: a real run showed Australia's two new-ball bowlers
+alternating the powerplay, two different bowlers sharing almost the whole
+middle phase, and two more closing out the death overs -- not an even spread
+across everyone bowling-capable.
+
 **Two genetic algorithms**, hand-rolled with numpy (no new dependency --
 `scipy`/`numpy` already cover it, consistent with keeping every optimizer in
 this repo self-contained): the exact-MILP squad selector

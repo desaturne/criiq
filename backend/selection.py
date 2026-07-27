@@ -72,6 +72,8 @@ class RecommendationBody(BaseModel):
     opponent: str = Field(min_length=2)
     venue: str | None = None
     format: str = "T20I"
+    team: str = "India"
+    gender: str = "female"
 
 
 @router.post("/recommendations")
@@ -86,13 +88,13 @@ def recommendations(body: RecommendationBody):
 # --------------------------------------------------------------------------
 @router.get("/winprob")
 def winprob(innings: int = 1, balls_remaining: int = 120,
-            wickets: int = 0, runs_required: int | None = None):
+            wickets: int = 0, runs_required: int | None = None, gender: str = "female"):
     if not 1 <= innings <= 2:
         raise HTTPException(400, "innings must be 1 or 2")
     if not 0 <= wickets <= 10:
         raise HTTPException(400, "wickets must be 0–10")
     result = ai_stub.get_win_probability({
         "innings": innings, "balls_remaining": balls_remaining,
-        "wickets": wickets, "runs_required": runs_required,
+        "wickets": wickets, "runs_required": runs_required, "gender": gender,
     })
     return {"data": result, "error": None}

@@ -124,32 +124,54 @@ def _random_valid_rotation(bowler_pool: list, rng: np.random.Generator,
 
 def _repair(rotation: list, bowler_pool: list, rng: np.random.Generator,
             primary_bowlers: list | None = None) -> list:
-    """Preserves as much of `rotation` (post crossover/mutation) as is
-    already legal; any slot that violates the 4-overs-cap or no-consecutive
-    rule is replaced with an eligible bowler, preferring a recognized
-    `primary_bowlers` option (most overs remaining) and only falling back to
-    a non-primary bowler when no primary option is currently eligible --
-    mirrors a real captain reaching for a part-timer only once the
-    frontline attack is genuinely unavailable. Always terminates in a legal
-    rotation for a pool that can legally bowl 20 overs at all.
+    """Rebuilds a possibly-illegal post-crossover/mutation rotation into a
+    guaranteed-legal one. A naive left-to-right patch (walk the rotation,
+    swap in any *currently* eligible bowler wherever a slot is illegal) is
+    NOT safe in general: crossover recombines two 20-length parents without
+    any regard for the resulting per-bowler over-counts, and with a
+    razor-tight pool (exactly 5 bowlers at 4 overs each, zero slack -- a
+    real case, not hypothetical: confirmed live with a men's T20I side that
+    had only 5 bowling-capable players) that can skew several bowlers past
+    4 overs before repair even starts, painting a left-to-right walk into a
+    corner with no eligible bowler left for a later slot even though the
+    *pool as a whole* can legally cover 20 overs.
+
+    Instead: count how many overs each bowler already has in the candidate
+    (capped at the legal maximum), reassign any overs lost to that cap (or
+    to a bowler no longer in `bowler_pool`) to whichever bowler has spare
+    capacity -- preferring a recognized `primary_bowlers` option, mirroring
+    a real captain reaching for a part-timer only once the frontline attack
+    is exhausted -- and then re-derive the actual over-by-over sequence with
+    `_sequence`, the same provably-safe "most overs remaining, excluding the
+    previous over's bowler" algorithm a fresh rotation is built with. This
+    preserves crossover's real genetic content (which bowlers survive, and
+    roughly how many overs each), just not the exact original slot
+    positions, and can never fail for a pool that can legally bowl 20 overs
+    at all.
     """
-    primary_set = set(b for b in (primary_bowlers or []) if b in bowler_pool)
-    balls_bowled = {b: 0 for b in bowler_pool}
-    last = None
-    fixed = list(rotation)
-    for i, bowler in enumerate(fixed):
-        legal = (bowler in bowler_pool and bowler != last
-                 and balls_bowled[bowler] < MAX_OVERS_PER_BOWLER * 6)
-        if not legal:
-            eligible = [b for b in bowler_pool if b != last and balls_bowled[b] < MAX_OVERS_PER_BOWLER * 6]
-            if not eligible:
-                raise ValueError("bowler pool cannot legally complete 20 overs during GA repair")
-            eligible.sort(key=lambda b: (b not in primary_set, balls_bowled[b]))
-            bowler = eligible[0]
-            fixed[i] = bowler
-        balls_bowled[bowler] += 6
-        last = bowler
-    return fixed
+    total_overs = len(rotation)
+    counts: dict = {}
+    for b in rotation:
+        if b in bowler_pool:
+            counts[b] = counts.get(b, 0) + 1
+
+    quotas = {b: min(n, MAX_OVERS_PER_BOWLER) for b, n in counts.items()}
+    shortfall = total_overs - sum(quotas.values())
+    if shortfall > 0:
+        primary_set = set(b for b in (primary_bowlers or []) if b in bowler_pool)
+        candidates = sorted(bowler_pool, key=lambda b: (b not in primary_set, quotas.get(b, 0)))
+        for b in candidates:
+            if shortfall <= 0:
+                break
+            room = MAX_OVERS_PER_BOWLER - quotas.get(b, 0)
+            take = min(room, shortfall)
+            if take > 0:
+                quotas[b] = quotas.get(b, 0) + take
+                shortfall -= take
+    if shortfall > 0:
+        raise ValueError("bowler pool cannot legally complete 20 overs during GA repair")
+
+    return _sequence({b: q for b, q in quotas.items() if q > 0}, rng)
 
 
 def _fitness(rotation: list, batting_order: list, outcome_model, batter_profiles: dict,
