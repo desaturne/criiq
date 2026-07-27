@@ -1,4 +1,4 @@
-import { LayoutDashboard, Users, Calendar, FileText, MessageSquare, Star, Activity, Zap } from "lucide-react";
+import { LayoutDashboard, Users, Calendar, Star, Activity, Zap } from "lucide-react";
 
 export const NAV_ITEMS = [
   { id: "dashboard",       path: "dashboard",       label: "Dashboard",       icon: LayoutDashboard },
@@ -7,6 +7,4 @@ export const NAV_ITEMS = [
   { id: "matches",         path: "matches",         label: "Matches",         icon: Calendar },
   { id: "recommendations", path: "recommendations", label: "Recommendations", icon: Star },
   { id: "simulator",       path: "simulator",       label: "Simulator",       icon: Zap },
-  { id: "reports",         path: "reports",         label: "Reports",         icon: FileText },
-  { id: "assistant",       path: "assistant",       label: "AI Assistant",    icon: MessageSquare },
 ];

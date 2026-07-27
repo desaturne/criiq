@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { motion } from "motion/react";
 import { useNavigate } from "react-router";
-import { Users, Calendar, Zap, FileText, TrendingUp, TrendingDown, AlertTriangle, Shield, BarChart2, Database } from "lucide-react";
+import { Users, Calendar, Zap, TrendingUp, TrendingDown, AlertTriangle, Shield, BarChart2, Database } from "lucide-react";
 import { AnimatedStat } from "../components/common/AnimatedStat";
 import { useApp } from "../context/AppContext";
 import * as api from "../lib/api";
@@ -143,7 +143,6 @@ export function DashboardOverviewPage() {
                 { label: "Matches", page: "matches", color: "#3ADCFF", icon: Calendar, desc: "Upcoming fixtures and opposition form." },
                 { label: "Recommendations", page: "recommendations", color: "#A78BFA", icon: Zap, desc: "The AI's full ranked XI for a specific opponent/venue, with reasoning." },
                 { label: "Simulator", page: "simulator", color: "#FB923C", icon: Shield, desc: "Ball-by-ball Monte Carlo match simulation, plus order optimizers." },
-                { label: "Reports", page: "reports", color: "#F87171", icon: FileText, desc: "Exportable scouting documents for a squad or matchup." },
               ].map(f => (
                 <button key={f.label} onClick={() => setPage(f.page)}
                   className="flex items-start gap-3 p-3 rounded-xl border border-border hover:border-border/60 transition-all text-left"

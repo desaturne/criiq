@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { useNavigate } from "react-router";
+import { useNavigate, useLocation } from "react-router";
 import { Search, CheckCircle, X, Eye, Download, UserPlus, Edit, Trash2, Users, GitCompare, ClipboardList } from "lucide-react";
 import { PlayerCard } from "../components/player/PlayerCard";
 import { PlayerCompareModal } from "../components/player/PlayerCompareModal";
@@ -30,6 +30,7 @@ export function SquadsPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [newPlayer, setNewPlayer] = useState({ name: "", role: "Batsman", battingHand: "Right", bowlingStyle: "", status: "ACTIVE" as PlayerStatus });
   const [showSquadPanel, setShowSquadPanel] = useState(false);
+  const location = useLocation();
   const [compareIds, setCompareIds] = useState<string[]>([]);
   const [showCompare, setShowCompare] = useState(false);
 
@@ -42,6 +43,14 @@ export function SquadsPage() {
 
   useEffect(() => { loadPlayers(); }, [team, gender]);
 
+  // Arriving from Recommendations' "Confirm Selection" -> open straight onto
+  // the Playing XI panel so the confirmed picks are shown, not left to a click.
+  useEffect(() => {
+    if ((location.state as { openSquad?: boolean } | null)?.openSquad) {
+      setShowSquadPanel(true);
+    }
+  }, [location.state]);
+
   const filtered = players.filter(p =>
     p.name.toLowerCase().includes(search.toLowerCase()) &&
     (filterStatus === "All" || p.status === filterStatus)
@@ -53,7 +62,6 @@ export function SquadsPage() {
   const setSelection = (id: string, s: SelectionState) =>
     setSelections(prev => ({ ...prev, [id]: s }));
   const selectedCount = Object.values(selections).filter(s => s === "select").length;
-  const reserveCount = Object.values(selections).filter(s => s === "reserve").length;
 
   const openAdd = () => {
     setEditingId(null);
@@ -170,10 +178,28 @@ export function SquadsPage() {
           </>
         )}
         {tab === "build" && (
-          <select value={opposition} onChange={e => setOpposition(e.target.value)} title="Opponent"
-            className="text-sm bg-secondary border border-border rounded-lg px-3 py-1.5 text-foreground focus:outline-none focus:ring-2 focus:ring-[#AAFF57]/40">
-            {["Australia", "England", "South Africa", "New Zealand", "Pakistan", "India"].filter(t => t !== team).map(t => <option key={t}>{t}</option>)}
-          </select>
+          <>
+            <select value={opposition} onChange={e => setOpposition(e.target.value)} title="Opponent"
+              className="text-sm bg-secondary border border-border rounded-lg px-3 py-1.5 text-foreground focus:outline-none focus:ring-2 focus:ring-[#AAFF57]/40">
+              {["Australia", "England", "South Africa", "New Zealand", "Pakistan", "India"].filter(t => t !== team).map(t => <option key={t}>{t}</option>)}
+            </select>
+            {/* Inline actions (previously a floating bar) */}
+            <div className="ml-auto flex items-center gap-2">
+              {compareIds.length >= 2 && (
+                <button onClick={() => setShowCompare(true)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg text-[#0D0D06]" style={{ background: "#3ADCFF" }}>
+                  <GitCompare size={14} /> Compare {compareIds.length}
+                </button>
+              )}
+              {selectedCount > 0 && (
+                <button onClick={() => setShowSquadPanel(true)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold rounded-lg text-white" style={{ background: "#5FA800" }}>
+                  <Users size={14} /> View Squad · {selectedCount}/11
+                  {selectedCount === 11 && <CheckCircle size={14} />}
+                </button>
+              )}
+            </div>
+          </>
         )}
       </div>
 
@@ -188,6 +214,23 @@ export function SquadsPage() {
         <div className="py-16 text-center text-sm text-muted-foreground">Loading squad…</div>
       ) : tab === "build" ? (
         <>
+          {/* Empty-state prompt shown before the coach has picked anyone --
+              tells them how the XI gets built and where it shows up. */}
+          {selectedCount === 0 && (
+            <motion.div initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }}
+              className="mb-4 flex items-center gap-3 bg-[#AAFF57]/[0.08] border border-[#AAFF57]/25 rounded-2xl px-4 py-3.5">
+              <div className="w-10 h-10 rounded-full bg-[#AAFF57]/15 flex items-center justify-center flex-shrink-0">
+                <Users size={18} className="text-[#AAFF57]" />
+              </div>
+              <div>
+                <p className="text-[13px] font-semibold text-foreground">Build your Playing XI</p>
+                <p className="text-[12px] text-muted-foreground">
+                  Tap <span className="text-[#AAFF57] font-medium">Select</span> on any player below to add them — your XI builds up in{" "}
+                  <span className="text-foreground font-medium">View Squad</span> as you go, up to 11.
+                </p>
+              </div>
+            </motion.div>
+          )}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             {players.map((p, i) => (
               <PlayerCard
@@ -199,34 +242,6 @@ export function SquadsPage() {
                 onViewProfile={() => navigate("/players/" + p.id)}
               />
             ))}
-          </div>
-
-          <div className="fixed bottom-6 right-6 flex flex-col items-end gap-2.5">
-            <AnimatePresence>
-              {compareIds.length >= 2 && (
-                <motion.button key="compare" initial={{ scale: 0.8, opacity: 0, y: 10 }} animate={{ scale: 1, opacity: 1, y: 0 }} exit={{ scale: 0.8, opacity: 0, y: 10 }}
-                  whileHover={{ scale: 1.04 }} whileTap={{ scale: 0.96 }} onClick={() => setShowCompare(true)}
-                  className="flex items-center gap-2 px-5 py-3 rounded-full font-semibold text-sm shadow-xl"
-                  style={{ background: "#3ADCFF", color: "#0D0D06", boxShadow: "0 8px 28px rgba(58,220,255,0.3)" }}>
-                  <GitCompare size={15} /> Compare {compareIds.length} Players
-                </motion.button>
-              )}
-              {selectedCount > 0 && (
-                <motion.button key="view-squad" initial={{ scale: 0.8, opacity: 0, y: 10 }} animate={{ scale: 1, opacity: 1, y: 0 }} exit={{ scale: 0.8, opacity: 0, y: 10 }}
-                  whileHover={{ scale: 1.04 }} whileTap={{ scale: 0.96 }} onClick={() => setShowSquadPanel(true)}
-                  className="flex items-center gap-2 px-5 py-3 rounded-full font-semibold text-sm shadow-xl"
-                  style={{ background: "#5FA800", color: "#fff", boxShadow: "0 8px 32px rgba(95,168,0,0.35)" }}>
-                  <Users size={15} /> View Squad · {selectedCount}/11
-                  {selectedCount === 11 && <CheckCircle size={14} />}
-                </motion.button>
-              )}
-            </AnimatePresence>
-            {reserveCount > 0 && (
-              <button onClick={() => setShowSquadPanel(true)}
-                className="text-[12px] bg-card border border-border text-muted-foreground px-3 py-1.5 rounded-full shadow-lg">
-                Reserve: {reserveCount}
-              </button>
-            )}
           </div>
 
           <AnimatePresence>

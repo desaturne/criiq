@@ -6,8 +6,9 @@ import { RadialGauge } from "../components/common/RadialGauge";
 import { SelectionControl } from "../components/common/SelectionControl";
 import * as api from "../lib/api";
 import { colorFor, initialsFor } from "../lib/mappers";
-import { SelectionState } from "../types/index";
 import { SimulatorPrefill } from "./SimulationPage";
+import { useApp } from "../context/AppContext";
+import { SelectionState } from "../types/index";
 
 interface Recommendation { rank: number; player_id: string; player_name: string; role: string; score: number; reasons: string[]; in_xi: boolean; }
 
@@ -40,9 +41,14 @@ export function RecommendationsPage() {
   const [format, setFormat] = useState("T20I");
   const [gender, setGender] = useState<"female" | "male">("female");
   const [simulating, setSimulating] = useState(false);
-  const [selections, setSelections] = useState<Record<string, SelectionState>>({});
+  // Shared with the Squads page (keyed by player_id) so a pick made here shows
+  // up in the squad's Playing XI. Local component state would strand it here.
+  const { selections, setSelections } = useApp();
+  const [confirming, setConfirming] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [ranked, setRanked] = useState<Recommendation[]>([]);
+  const [opponentXi, setOpponentXi] = useState<{ player_id: string; player_name: string; role: string; score: number }[] | null>(null);
+  const [showOpponentXi, setShowOpponentXi] = useState(false);
   const selectedCount = Object.values(selections).filter(s => s === "select").length;
   // Snapshot of whichever params actually produced `ranked` -- compared
   // against the live dropdowns below so changing Team/Opponent/Venue/Format
@@ -61,8 +67,9 @@ export function RecommendationsPage() {
     setLoading(true);
     setError(null);
     try {
-      const recRes = await api.recommendations({ team, opponent, venue, format, gender });
+      const recRes = await api.recommendations({ team, opponent, venue, format, gender, auto_opponent_xi: true });
       setRanked(recRes.recommendations);
+      setOpponentXi(recRes.opponent_xi);
       setGeneratedParams({ team, opponent, venue, format, gender });
       setGenerated(true);
     } catch (err) {
@@ -91,6 +98,95 @@ export function RecommendationsPage() {
     } finally {
       setSimulating(false);
     }
+  };
+
+  // "Confirm Selection" -- persist whatever the coach has picked as the Playing
+  // XI (plus reserves/excluded) to the backend for the next fixture, then hand
+  // off to the Squads page, which reads the same shared `selections` and opens
+  // straight onto the XI panel.
+  const handleConfirm = async () => {
+    const idsFor = (state: SelectionState) =>
+      Object.entries(selections).filter(([, s]) => s === state).map(([id]) => id);
+    const xi = idsFor("select");
+    if (xi.length === 0) return;
+    if (xi.length > 11) {
+      setError(`You've selected ${xi.length} players — a Playing XI can have at most 11. Remove ${xi.length - 11}.`);
+      return;
+    }
+    setConfirming(true);
+    setError(null);
+    try {
+      const matches = await api.listMatches();
+      const matchId = matches.upcoming[0]?.id;
+      if (matchId) {
+        await api.saveSelection(matchId, { xi, extra: idsFor("reserve"), excluded: idsFor("exclude") });
+      }
+      navigate("/squads", { state: { openSquad: true } });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't save the selection");
+    } finally {
+      setConfirming(false);
+    }
+  };
+
+  // Group the ranked pool into role buckets, mirroring the CLI's role_pools
+  // (batters / all-rounders / bowlers, each already score-ordered because
+  // `ranked` is score-ranked), plus a catch-all "Others" for anything the
+  // model couldn't classify. Same players — just the coach's mental grouping.
+  const topScore = ranked.length ? Math.max(...ranked.map(r => r.score), 1) : 1;
+  const POOL_DEFS: { key: string; label: string; match: (role: string) => boolean }[] = [
+    { key: "batters",      label: "Batters",      match: r => r === "batter" },
+    { key: "all_rounders", label: "All-rounders", match: r => r === "all-rounder" },
+    { key: "bowlers",      label: "Bowlers",      match: r => r === "bowler" },
+    { key: "others",       label: "Others",       match: r => !["batter", "all-rounder", "bowler"].includes(r) },
+  ];
+
+  const renderCard = (rec: Recommendation, i: number) => {
+    const color = colorFor(rec.player_name);
+    const relative = rec.score / topScore;
+    const gaugeColor = relative >= 0.75 ? "#AAFF57" : relative >= 0.4 ? "#60A5FA" : "#FB923C";
+    return (
+      <motion.div key={rec.rank} initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.03 }}
+        className="bg-card border border-border rounded-xl overflow-hidden">
+        <div className="p-3 flex items-center gap-3">
+          <span className="font-mono text-[11px] text-muted-foreground w-5 text-right flex-shrink-0">#{rec.rank}</span>
+          <div className="w-8 h-8 rounded-full flex items-center justify-center text-[10px] font-bold flex-shrink-0" style={{ backgroundColor: color + "33", color }}>{initialsFor(rec.player_name)}</div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-1.5">
+              <span className="text-[13px] font-semibold text-foreground truncate">{rec.player_name}</span>
+              {rec.in_xi && (
+                <span className="flex items-center gap-0.5 text-[9px] font-medium text-[#AAFF57] bg-[#AAFF57]/10 border border-[#AAFF57]/30 rounded-full px-1.5 py-0.5 flex-shrink-0">
+                  <CheckCircle2 size={9} /> In XI
+                </span>
+              )}
+            </div>
+            <div className="text-[10px] text-muted-foreground capitalize">{rec.role}</div>
+          </div>
+          <RadialGauge value={rec.score} decimals={1} size={44} strokeWidth={3.5} color={gaugeColor} />
+          <button onClick={() => setExpandedId(expandedId === rec.player_name ? null : rec.player_name)} className="text-[11px] text-muted-foreground hover:text-foreground flex items-center gap-0.5 px-2">
+            Explain <ChevronDown size={10} className={`transition-transform ${expandedId === rec.player_name ? "rotate-180" : ""}`} />
+          </button>
+          <SelectionControl state={selections[rec.player_id] || "undecided"} onChange={s => setSelections(prev => ({ ...prev, [rec.player_id]: s }))} />
+        </div>
+        <AnimatePresence>
+          {expandedId === rec.player_name && (
+            <motion.div initial={{ height: 0 }} animate={{ height: "auto" }} exit={{ height: 0 }} className="overflow-hidden border-t border-border">
+              <div className="p-4 bg-secondary/30">
+                <p className="text-[12px] text-muted-foreground mb-2 font-medium">Why this recommendation</p>
+                <ul className="space-y-1.5">
+                  {rec.reasons.map((r, ri) => (
+                    <li key={ri} className="text-[12px] text-muted-foreground leading-relaxed flex gap-2">
+                      <span className="text-[#AAFF57] flex-shrink-0">•</span>
+                      <span><Highlighted text={r} /></span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </motion.div>
+    );
   };
 
   return (
@@ -162,8 +258,20 @@ export function RecommendationsPage() {
                 <RadialGauge value={squadStrength} decimals={1} size={100} strokeWidth={7} color="#AAFF57" label="Score" />
               </div>
               <div className="space-y-2 text-[12px] mb-4">
-                <p className="text-muted-foreground text-center">Select {Math.max(0, 11 - selectedCount)} more players from the list to build your own XI</p>
+                <p className="text-muted-foreground text-center">
+                  {selectedCount === 0
+                    ? "Tap Select on players below to build your own XI"
+                    : `${selectedCount}/11 selected${selectedCount > 11 ? " — remove " + (selectedCount - 11) : ""}`}
+                </p>
               </div>
+              {selectedCount > 0 && (
+                <button onClick={handleConfirm} disabled={confirming || selectedCount > 11}
+                  className="w-full mb-2 py-2.5 bg-[#5FA800] text-white font-semibold text-[13px] rounded-lg hover:opacity-90 active:scale-[0.98] transition-all flex items-center justify-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed">
+                  {confirming
+                    ? <><RefreshCw size={14} className="animate-spin" /> Saving…</>
+                    : <><CheckCircle2 size={14} /> Confirm Selection ({selectedCount}/11) → Squad</>}
+                </button>
+              )}
               <button onClick={handleSimulateXI} disabled={simulating}
                 className="w-full py-2 border border-border text-foreground text-[12px] rounded-lg hover:border-[#AAFF57]/40 hover:text-[#AAFF57] transition-all flex items-center justify-center gap-1.5 disabled:opacity-60">
                 {simulating
@@ -197,58 +305,46 @@ export function RecommendationsPage() {
             {generated && (
               <motion.div key="results" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-2">
                 <div className="flex items-center justify-between mb-3">
-                  <p className="text-[13px] text-muted-foreground">Top {ranked.length} ranked for <strong className="text-foreground">vs {opponent}</strong> at <strong className="text-foreground">{venue}</strong> — <span className="text-[#AAFF57]">green tag</span> marks the AI's constrained 11-player XI</p>
+                  <p className="text-[13px] text-muted-foreground">Top {ranked.length} for <strong className="text-foreground">vs {opponent}</strong> at <strong className="text-foreground">{venue}</strong>, grouped by role — <span className="text-[#AAFF57]">green tag</span> marks the AI's constrained 11-player XI</p>
                   <span className="text-[12px] font-medium text-[#AAFF57]">{selectedCount}/11 selected</span>
                 </div>
-                {ranked.map((rec, i) => {
-                  const color = colorFor(rec.player_name);
-                  // Real model scores don't sit in a fixed 0-100 "good" band the
-                  // way a percentage would -- band relative to this result set's
-                  // own top score instead of hardcoded absolute thresholds.
-                  const topScore = Math.max(...ranked.map(r => r.score), 1);
-                  const relative = rec.score / topScore;
-                  const gaugeColor = relative >= 0.75 ? "#AAFF57" : relative >= 0.4 ? "#60A5FA" : "#FB923C";
-                  return (
-                  <motion.div key={rec.rank} initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.03 }}
-                    className="bg-card border border-border rounded-xl overflow-hidden">
-                    <div className="p-3 flex items-center gap-3">
-                      <span className="font-mono text-[11px] text-muted-foreground w-5 text-right flex-shrink-0">#{rec.rank}</span>
-                      <div className="w-8 h-8 rounded-full flex items-center justify-center text-[10px] font-bold flex-shrink-0" style={{ backgroundColor: color + "33", color }}>{initialsFor(rec.player_name)}</div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-[13px] font-semibold text-foreground truncate">{rec.player_name}</span>
-                          {rec.in_xi && (
-                            <span className="flex items-center gap-0.5 text-[9px] font-medium text-[#AAFF57] bg-[#AAFF57]/10 border border-[#AAFF57]/30 rounded-full px-1.5 py-0.5 flex-shrink-0">
-                              <CheckCircle2 size={9} /> In XI
-                            </span>
-                          )}
-                        </div>
-                        <div className="text-[10px] text-muted-foreground capitalize">{rec.role}</div>
-                      </div>
-                      <RadialGauge value={rec.score} decimals={1} size={44} strokeWidth={3.5} color={gaugeColor} />
-                      <button onClick={() => setExpandedId(expandedId === rec.player_name ? null : rec.player_name)} className="text-[11px] text-muted-foreground hover:text-foreground flex items-center gap-0.5 px-2">
-                        Explain <ChevronDown size={10} className={`transition-transform ${expandedId === rec.player_name ? "rotate-180" : ""}`} />
-                      </button>
-                      <SelectionControl state={selections[rec.player_name] || "undecided"} onChange={s => setSelections(prev => ({ ...prev, [rec.player_name]: s }))} />
-                    </div>
+                {opponentXi && (
+                  <div className="bg-card border border-border rounded-xl overflow-hidden mb-3">
+                    <button onClick={() => setShowOpponentXi(v => !v)}
+                      className="w-full p-3 flex items-center justify-between text-[12px] text-muted-foreground hover:text-foreground">
+                      <span>vs probable {opponent} XI ({opponentXi.length})</span>
+                      <ChevronDown size={12} className={`transition-transform ${showOpponentXi ? "rotate-180" : ""}`} />
+                    </button>
                     <AnimatePresence>
-                      {expandedId === rec.player_name && (
+                      {showOpponentXi && (
                         <motion.div initial={{ height: 0 }} animate={{ height: "auto" }} exit={{ height: 0 }} className="overflow-hidden border-t border-border">
-                          <div className="p-4 bg-secondary/30">
-                            <p className="text-[12px] text-muted-foreground mb-2 font-medium">Why this recommendation</p>
-                            <ul className="space-y-1.5">
-                              {rec.reasons.map((r, ri) => (
-                                <li key={ri} className="text-[12px] text-muted-foreground leading-relaxed flex gap-2">
-                                  <span className="text-[#AAFF57] flex-shrink-0">•</span>
-                                  <span><Highlighted text={r} /></span>
-                                </li>
-                              ))}
-                            </ul>
-                          </div>
+                          <ul className="p-3 space-y-1 text-[12px] text-muted-foreground">
+                            {opponentXi.map(p => (
+                              <li key={p.player_id} className="flex justify-between">
+                                <span className="text-foreground">{p.player_name}</span>
+                                <span className="capitalize">{p.role} · {p.score.toFixed(1)}</span>
+                              </li>
+                            ))}
+                          </ul>
                         </motion.div>
                       )}
                     </AnimatePresence>
-                  </motion.div>
+                  </div>
+                )}
+                {POOL_DEFS.map(pool => {
+                  const members = ranked.filter(r => pool.match(r.role));
+                  if (!members.length) return null;
+                  const inXi = members.filter(m => m.in_xi).length;
+                  return (
+                    <div key={pool.key} className="space-y-2">
+                      <div className="flex items-center gap-2 mt-4 first:mt-0">
+                        <h4 className="text-[12px] font-bold uppercase tracking-wider text-foreground">{pool.label}</h4>
+                        <span className="text-[11px] text-muted-foreground">({members.length})</span>
+                        <div className="flex-1 h-px bg-border" />
+                        {inXi > 0 && <span className="text-[10px] text-[#AAFF57]">{inXi} in XI</span>}
+                      </div>
+                      {members.map((rec, i) => renderCard(rec, i))}
+                    </div>
                   );
                 })}
               </motion.div>

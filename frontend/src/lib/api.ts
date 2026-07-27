@@ -71,10 +71,24 @@ export const updatePlayer = (id: string, body: {
 export const deletePlayer = (id: string) => apiFetch(`/players/${encodeURIComponent(id)}`, { method: "DELETE" });
 
 // --- matches / dashboard ---------------------------------------------------
-export const listMatches = (completedLimit?: number) =>
-  apiFetch(`/matches${qs({ completed_limit: completedLimit })}`) as Promise<{ upcoming: any[]; completed: any[] }>;
+export const listMatches = (params: { completedLimit?: number; gender?: string; country?: string; team1?: string; team2?: string } = {}) =>
+  apiFetch(`/matches${qs({
+    completed_limit: params.completedLimit, gender: params.gender, country: params.country,
+    team1: params.team1, team2: params.team2,
+  })}`) as Promise<{ upcoming: any[]; completed: any[] }>;
+
+export const listTeams = (gender?: string) => apiFetch(`/teams${qs({ gender })}`) as Promise<string[]>;
 
 export const getMatch = (id: string) => apiFetch(`/matches/${encodeURIComponent(id)}`);
+
+// Real per-player batting/bowling figures built from ball-by-ball `deliveries`
+// -- only exists for a completed match (a fixture "f<n>" hasn't been played).
+export const getMatchScorecard = (id: string) =>
+  apiFetch(`/matches/${encodeURIComponent(id)}/scorecard`) as Promise<{
+    match_id: string; team1: string; team2: string;
+    innings: { innings: number; batting_team: string; bowling_team: string; batting: any[]; bowling: any[] }[];
+  }>;
+
 export const dashboardSummary = () => apiFetch("/dashboard/summary");
 export const dashboardAlerts = (limit?: number) => apiFetch(`/dashboard/alerts${qs({ limit })}`) as Promise<any[]>;
 export const ticker = (matches?: number) => apiFetch(`/ticker${qs({ matches })}`);
@@ -84,10 +98,11 @@ export const getSelection = (matchId: string) => apiFetch(`/selection/${encodeUR
 export const saveSelection = (matchId: string, body: { xi: string[]; extra: string[]; excluded: string[] }) =>
   apiFetch(`/selection/${encodeURIComponent(matchId)}`, { method: "PUT", body: JSON.stringify(body) });
 
-export const recommendations = (body: { opponent: string; venue?: string; format?: string; team?: string; gender?: string }) =>
+export const recommendations = (body: { opponent: string; venue?: string; format?: string; team?: string; gender?: string; auto_opponent_xi?: boolean }) =>
   apiFetch("/recommendations", { method: "POST", body: JSON.stringify(body) }) as Promise<{
     match_context: any;
     recommendations: { rank: number; player_id: string; player_name: string; role: string; score: number; reasons: string[]; in_xi: boolean }[];
+    opponent_xi: { player_id: string; player_name: string; role: string; score: number }[] | null;
   }>;
 
 export const winProb = (params: { innings?: number; balls_remaining?: number; wickets?: number; runs_required?: number; gender?: string } = {}) =>

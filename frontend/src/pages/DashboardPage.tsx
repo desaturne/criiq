@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { useNavigate } from "react-router";
-import { FileText, Search, GitCompare } from "lucide-react";
+import { Search, GitCompare } from "lucide-react";
 import { AnimatedStat } from "../components/common/AnimatedStat";
 import { PlayerCard } from "../components/player/PlayerCard";
 import { PlayerCompareModal } from "../components/player/PlayerCompareModal";
@@ -149,11 +149,6 @@ export function DashboardPage() {
             </motion.button>
           )}
         </AnimatePresence>
-        <motion.button whileHover={{ scale: 1.04 }} whileTap={{ scale: 0.97 }}
-          onClick={() => navigate("/reports")}
-          className="flex items-center gap-2 bg-card border border-border text-foreground px-4 py-2.5 rounded-full text-sm shadow-lg">
-          <FileText size={14} /> Generate Report
-        </motion.button>
       </div>
 
       {/* Player Compare Modal */}

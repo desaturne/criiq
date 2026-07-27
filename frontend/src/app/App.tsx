@@ -5,20 +5,45 @@ import { AdminShell } from "../admin/AdminShell";
 import { Root } from "../components/layout/Root";
 import { AppContext } from "../context/AppContext";
 import * as api from "../lib/api";
-import { AssistantPage } from "../pages/AssistantPage";
 import { DashboardOverviewPage } from "../pages/DashboardOverviewPage";
 import { DashboardPage } from "../pages/DashboardPage";
 import { MatchDetailPage } from "../pages/MatchDetailPage";
 import { MatchesPage } from "../pages/MatchesPage";
 import { PlayerProfilePage } from "../pages/PlayerProfilePage";
 import { RecommendationsPage } from "../pages/RecommendationsPage";
-import { ReportsPage } from "../pages/ReportsPage";
 import { SettingsPage } from "../pages/SettingsPage";
 import { SimulationPage } from "../pages/SimulationPage";
 import { SquadsPage } from "../pages/SquadsPage";
 import { AdminLoginPage } from "../pages/auth/AdminLoginPage";
 import { LoginPage } from "../pages/auth/LoginPage";
 import { AuthMode, AuthUser, SelectionState } from "../types/index";
+
+// Defined once at module scope, not inside AppWithAuth's render body -- a
+// fresh createBrowserRouter() on every render hands RouterProvider a new
+// router *instance* each time, which it treats as a brand new router and
+// remounts the whole route tree from scratch, discarding any state a page
+// had just set (e.g. SimulationPage's prefill from a query-param effect
+// calling navigate() -- that re-render was enough to wipe it straight back
+// to its initial defaults).
+const router = createBrowserRouter([
+  {
+    path: "/",
+    Component: Root,
+    children: [
+      { index: true, element: <Navigate to="/dashboard" replace /> },
+      { path: "dashboard",       Component: DashboardOverviewPage },
+      { path: "players",         Component: DashboardPage },
+      { path: "players/:id",     Component: PlayerProfilePage },
+      { path: "squads",          Component: SquadsPage },
+      { path: "matches",         Component: MatchesPage },
+      { path: "matches/:id",     Component: MatchDetailPage },
+      { path: "recommendations", Component: RecommendationsPage },
+      { path: "simulator",       Component: SimulationPage },
+      { path: "settings",        Component: SettingsPage },
+      { path: "*",               element: <Navigate to="/dashboard" replace /> },
+    ],
+  },
+]);
 
 export function AppWithAuth() {
   const [authMode, setAuthMode] = useState<AuthMode>(api.getToken() ? "user-app" : "user-login");
@@ -85,29 +110,7 @@ export function AppWithAuth() {
     );
   }
 
-  // User app — react-router, no admin routes
-  const router = createBrowserRouter([
-    {
-      path: "/",
-      Component: Root,
-      children: [
-        { index: true, element: <Navigate to="/dashboard" replace /> },
-        { path: "dashboard",       Component: DashboardOverviewPage },
-        { path: "players",         Component: DashboardPage },
-        { path: "players/:id",     Component: PlayerProfilePage },
-        { path: "squads",          Component: SquadsPage },
-        { path: "matches",         Component: MatchesPage },
-        { path: "matches/:id",     Component: MatchDetailPage },
-        { path: "recommendations", Component: RecommendationsPage },
-        { path: "simulator",       Component: SimulationPage },
-        { path: "assistant",       Component: AssistantPage },
-        { path: "reports",         Component: ReportsPage },
-        { path: "settings",        Component: SettingsPage },
-        { path: "*",               element: <Navigate to="/dashboard" replace /> },
-      ],
-    },
-  ]);
-
+  // User app — react-router, no admin routes (router defined at module scope above)
   return (
     <AppContext.Provider value={{ dark, setDark, selections, setSelections, token, user, login, register, logout }}>
       <RouterProvider router={router} />

@@ -11,7 +11,7 @@ import json
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-import ai_stub
+import ai_stub  # calls the real model via model_bridge, falls back to stub data
 from auth import require_user
 from database import app_db
 
@@ -71,16 +71,18 @@ def save_selection(match_id: str, body: SelectionBody):
 class RecommendationBody(BaseModel):
     opponent: str = Field(min_length=2)
     venue: str | None = None
+    team: str = "India"        # which side we are picking for
+    gender: str = "female"     # "female" | "male"
     format: str = "T20I"
-    team: str = "India"
-    gender: str = "female"
+    auto_opponent_xi: bool = False   # also recommend the opponent's probable XI, and use it to activate player-vs-player head-to-head matchups
 
 
 @router.post("/recommendations")
 def recommendations(body: RecommendationBody):
     result = ai_stub.get_recommendations(body.model_dump())
     return {"data": {"match_context": body.model_dump(),
-                     "recommendations": result}, "error": None}
+                     "recommendations": result["recommendations"],
+                     "opponent_xi": result.get("opponent_xi")}, "error": None}
 
 
 # --------------------------------------------------------------------------
