@@ -112,6 +112,16 @@ auth_db.executescript(
     """
 )
 
+
+def _ensure_column(connection, table: str, column: str, ddl: str) -> None:
+    columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+    if column not in columns:
+        connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
+
+_ensure_column(auth_db, "users", "status", "TEXT NOT NULL DEFAULT 'Inactive'")
+_ensure_column(auth_db, "users", "country", "TEXT NOT NULL DEFAULT 'India'")
+
 # --- 4. Seed data (only inserted the first time) -----------------------------
 
 def seed():
@@ -120,8 +130,8 @@ def seed():
     if not has_users:
         pw_hash = bcrypt.hashpw(b"coach1234", bcrypt.gensalt()).decode()
         auth_db.execute(
-            "INSERT INTO users (email, password_hash, name, role) VALUES (?,?,?,?)",
-            ("rahul@criiq.local", pw_hash, "Rahul Coach", "coach"),
+            "INSERT INTO users (email, password_hash, name, role, status, country) VALUES (?,?,?,?,?,?)",
+            ("rahul@criiq.local", pw_hash, "Rahul Coach", "coach", "Active", "India"),
         )
         auth_db.commit()
 

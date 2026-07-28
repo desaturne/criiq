@@ -36,18 +36,27 @@ function qs(params: Record<string, string | number | undefined>): string {
 }
 
 // --- auth --------------------------------------------------------------
-export const register = (name: string, email: string, password: string) =>
-  apiFetch("/auth/register", { method: "POST", body: JSON.stringify({ name, email, password }) }) as Promise<{
-    token: string; user: { id: number; name: string; role: string };
+export const register = (name: string, email: string, password: string, country: string) =>
+  apiFetch("/auth/register", { method: "POST", body: JSON.stringify({ name, email, password, country }) }) as Promise<{
+    message: string; user: { id: number; name: string; role: string; country: string; status: string };
   }>;
 
 export const login = (email: string, password: string) =>
   apiFetch("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }) as Promise<{
-    token: string; user: { id: number; name: string; role: string };
+    token: string; user: { id: number; name: string; role: string; country: string; status: string };
   }>;
 
 export const logout = () => apiFetch("/auth/logout", { method: "POST" });
-export const me = () => apiFetch("/auth/me");
+export const me = () => apiFetch("/auth/me") as Promise<{ name: string; role: string; country: string; status: string }>;
+
+export const pendingCoachRegistrations = () =>
+  apiFetch("/auth/admin/pending-coaches") as Promise<{ id: number; name: string; email: string; role: string; status: string; country: string }[]>;
+
+export const reviewCoachRegistration = (userId: number, status: "Active" | "Inactive" | "Suspended") =>
+  apiFetch(`/auth/admin/pending-coaches/${encodeURIComponent(userId)}`, {
+    method: "POST",
+    body: JSON.stringify({ status }),
+  }) as Promise<{ id: number; status: string }>;
 
 // --- players -------------------------------------------------------------
 export const listPlayers = (params: { search?: string; role?: string; status?: string; country?: string; gender?: string; page?: number; limit?: number } = {}) =>

@@ -6,9 +6,10 @@ import { CricketBall } from "../common/CricketBall";
 import { useApp } from "../../context/AppContext";
 
 export function Navbar({ sidebarOpen, setSidebarOpen }: { sidebarOpen: boolean; setSidebarOpen: (v: boolean) => void }) {
-  const { dark, setDark, logout } = useApp();
+  const { dark, setDark, logout, user } = useApp();
   const navigate = useNavigate();
   const [userOpen, setUserOpen] = useState(false);
+  const initials = (user?.name || "Coach").split(/\s+/).map(part => part[0]).join("").slice(0, 2).toUpperCase();
   return (
     <header className="h-12 flex-shrink-0 border-b border-border flex items-center px-3 gap-3 bg-sidebar z-30">
       <button onClick={() => setSidebarOpen(!sidebarOpen)} className="p-1.5 rounded hover:bg-sidebar-accent transition-colors text-muted-foreground hover:text-foreground">
@@ -28,10 +29,10 @@ export function Navbar({ sidebarOpen, setSidebarOpen }: { sidebarOpen: boolean; 
         </button>
         <div className="relative">
           <button onClick={() => setUserOpen(!userOpen)} className="flex items-center gap-2 pl-2 pr-1 py-1 rounded hover:bg-sidebar-accent transition-colors">
-            <div className="w-6 h-6 rounded-full bg-[#AAFF57] flex items-center justify-center text-[10px] font-bold text-[#0D0D06]">RC</div>
+            <div className="w-6 h-6 rounded-full bg-[#AAFF57] flex items-center justify-center text-[10px] font-bold text-[#0D0D06]">{initials}</div>
             <div className="hidden sm:flex flex-col items-start">
-              <span className="text-[12px] font-medium text-foreground leading-tight">Rahul Coach</span>
-              <span className="text-[10px] px-1.5 rounded-full leading-tight bg-blue-500/20 text-blue-400">Coach</span>
+              <span className="text-[12px] font-medium text-foreground leading-tight">{user?.name || "Coach"}</span>
+              <span className="text-[10px] px-1.5 rounded-full leading-tight bg-blue-500/20 text-blue-400">{user?.role || "Coach"}</span>
             </div>
             <ChevronDown size={12} className="text-muted-foreground" />
           </button>

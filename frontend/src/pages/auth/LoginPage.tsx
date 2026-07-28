@@ -3,21 +3,25 @@ import { motion } from "motion/react";
 import { Lock, RefreshCw, Mail, User } from "lucide-react";
 import { CricketBall } from "../../components/common/CricketBall";
 
+const COUNTRY_OPTIONS = ["India", "Australia", "England", "South Africa", "New Zealand", "Pakistan"];
+
 export function LoginPage({ onLogin, onRegister, onAdminAccess }: {
   onLogin: (email: string, password: string) => Promise<void>;
-  onRegister: (name: string, email: string, password: string) => Promise<void>;
+  onRegister: (name: string, email: string, password: string, country: string) => Promise<void>;
   onAdminAccess?: () => void;
 }) {
   const [mode, setMode] = useState<"signin" | "signup">("signin");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [country, setCountry] = useState("India");
   const [loading, setLoading] = useState(false);
   const [shake, setShake] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
 
   const switchMode = (next: "signin" | "signup") => {
-    setMode(next); setError(null); setPassword("");
+    setMode(next); setError(null); setSuccess(null); setPassword("");
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -26,9 +30,13 @@ export function LoginPage({ onLogin, onRegister, onAdminAccess }: {
     if (missing) { setShake(true); setTimeout(() => setShake(false), 600); return; }
     setLoading(true);
     setError(null);
+    setSuccess(null);
     try {
       if (mode === "signup") {
-        await onRegister(name, email, password);
+        await onRegister(name, email, password, country);
+        setSuccess("Registration submitted. An admin must approve your coach account before sign in.");
+        setMode("signin");
+        setPassword("");
       } else {
         await onLogin(email, password);
       }
@@ -96,6 +104,7 @@ export function LoginPage({ onLogin, onRegister, onAdminAccess }: {
           </div>
           <motion.form onSubmit={handleSubmit} animate={shake ? { x: [0, -8, 8, -8, 8, 0] } : {}} transition={{ duration: 0.4 }} className="space-y-4">
             {error && <p className="text-[12px] text-red-400">{error}</p>}
+            {success && <p className="text-[12px] text-[#AAFF57]">{success}</p>}
             {mode === "signup" && (
               <div className="space-y-1.5">
                 <label className="text-[13px] font-medium text-foreground">Full name</label>
@@ -104,6 +113,15 @@ export function LoginPage({ onLogin, onRegister, onAdminAccess }: {
                   <input type="text" value={name} onChange={e => setName(e.target.value)} placeholder="Rahul Coach"
                     className="w-full pl-9 pr-4 py-2.5 text-sm bg-input-background border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-[#AAFF57]/40 focus:border-[#AAFF57] text-foreground placeholder:text-muted-foreground transition-all" />
                 </div>
+              </div>
+            )}
+            {mode === "signup" && (
+              <div className="space-y-1.5">
+                <label className="text-[13px] font-medium text-foreground">Country</label>
+                <select value={country} onChange={e => setCountry(e.target.value)}
+                  className="w-full px-3 py-2.5 text-sm bg-input-background border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-[#AAFF57]/40 focus:border-[#AAFF57] text-foreground transition-all">
+                  {COUNTRY_OPTIONS.map(option => <option key={option}>{option}</option>)}
+                </select>
               </div>
             )}
             <div className="space-y-1.5">

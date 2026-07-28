@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Search, X, Eye, Plus, Edit, Trash2 } from "lucide-react";
+import { Search, X, Eye, Plus, Edit, Trash2, CircleCheckBig, CircleX } from "lucide-react";
 import { useAdminCtx } from "../context/AdminContext";
 import { INITIAL_USERS } from "../../data/admin-users";
 import { AppUser, Role } from "../../types/index";
+import * as api from "../../lib/api";
 
 export function AdminUsers() {
   const { users, setUsers } = useAdminCtx();
@@ -13,6 +14,30 @@ export function AdminUsers() {
   const [showPassFor, setShowPassFor] = useState<number | null>(null);
   const [form, setForm] = useState({ name: "", email: "", password: "", role: "Coach" as Role, status: "Active" as AppUser["status"], team: "" });
   const [nextId, setNextId] = useState(INITIAL_USERS.length + 1);
+  const [pending, setPending] = useState<{ id: number; name: string; email: string; country: string; status: string }[]>([]);
+  const [pendingError, setPendingError] = useState<string | null>(null);
+  const [reviewingId, setReviewingId] = useState<number | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.pendingCoachRegistrations()
+      .then(rows => { if (!cancelled) setPending(rows); })
+      .catch(err => { if (!cancelled) setPendingError(err instanceof Error ? err.message : "Could not load pending coach approvals"); });
+    return () => { cancelled = true; };
+  }, []);
+
+  const review = async (id: number, status: "Active" | "Suspended") => {
+    setReviewingId(id);
+    setPendingError(null);
+    try {
+      await api.reviewCoachRegistration(id, status);
+      setPending(prev => prev.filter(item => item.id !== id));
+    } catch (err) {
+      setPendingError(err instanceof Error ? err.message : "Could not update the registration");
+    } finally {
+      setReviewingId(null);
+    }
+  };
 
   const filtered = users.filter(u => u.name.toLowerCase().includes(search.toLowerCase()) || u.email.toLowerCase().includes(search.toLowerCase()));
   const openAdd  = () => { setForm({ name: "", email: "", password: "", role: "Coach", status: "Active", team: "" }); setEditTarget(null); setShowPanel(true); };
@@ -43,6 +68,45 @@ export function AdminUsers() {
           <Plus size={14} /> Add User
         </button>
       </div>
+
+      <div className="rounded-xl p-4 mb-4" style={{ background: "#151515", border: "1px solid #1E1E1E" }}>
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <h3 className="text-[14px] font-semibold text-white">Pending Coach Registrations</h3>
+            <p className="text-[11px] mt-0.5" style={{ color: "#666" }}>Approve a coach here before they can sign in.</p>
+          </div>
+          <span className="text-[11px] px-2 py-0.5 rounded-full" style={{ background: "rgba(59,130,246,0.12)", color: "#60A5FA" }}>{pending.length} waiting</span>
+        </div>
+        {pendingError && <div className="mb-3 text-[12px] text-red-400">{pendingError}</div>}
+        {pending.length === 0 ? (
+          <div className="text-[12px]" style={{ color: "#555" }}>No coach registrations awaiting review.</div>
+        ) : (
+          <div className="space-y-2">
+            {pending.map(item => (
+              <div key={item.id} className="rounded-lg p-3 flex items-start justify-between gap-3" style={{ background: "#111", border: "1px solid #1E1E1E" }}>
+                <div className="min-w-0">
+                  <div className="text-[13px] font-medium text-white truncate">{item.name}</div>
+                  <div className="text-[11px] truncate" style={{ color: "#666" }}>{item.email}</div>
+                  <div className="text-[11px] mt-1" style={{ color: "#888" }}>{item.country} · Coach · {item.status}</div>
+                </div>
+                <div className="flex items-center gap-1.5 flex-shrink-0">
+                  <button onClick={() => review(item.id, "Active")} disabled={reviewingId === item.id}
+                    className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-medium disabled:opacity-60"
+                    style={{ background: "rgba(34,197,94,0.12)", color: "#22C55E" }}>
+                    <CircleCheckBig size={12} /> Approve
+                  </button>
+                  <button onClick={() => review(item.id, "Suspended")} disabled={reviewingId === item.id}
+                    className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md text-[11px] font-medium disabled:opacity-60"
+                    style={{ background: "rgba(239,68,68,0.12)", color: "#F87171" }}>
+                    <CircleX size={12} /> Reject
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
       <div className="relative mb-4">
         <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: "#444" }} />
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search by name or email…" className={IC + " pl-9"} style={S} />

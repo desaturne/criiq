@@ -60,12 +60,8 @@ export function AppWithAuth() {
     setAuthMode("user-app");
   };
 
-  const register = async (name: string, email: string, password: string) => {
-    const result = await api.register(name, email, password);
-    api.setToken(result.token);
-    setToken(result.token);
-    setUser(result.user);
-    setAuthMode("user-app");
+  const register = async (name: string, email: string, password: string, country: string) => {
+    await api.register(name, email, password, country);
   };
 
   const logout = async () => {
@@ -81,7 +77,7 @@ export function AppWithAuth() {
   useEffect(() => {
     if (!token || user) return;
     api.me()
-      .then(me => setUser({ id: 0, name: me.name, role: me.role }))
+        .then(me => setUser({ id: 0, name: me.name, role: me.role, country: me.country, status: me.status }))
       .catch(() => { api.clearToken(); setToken(null); setAuthMode("user-login"); });
   }, [token, user]);
 

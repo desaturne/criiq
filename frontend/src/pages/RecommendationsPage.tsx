@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { useNavigate } from "react-router";
 import { Zap, ChevronDown, RefreshCw, CheckCircle2, AlertTriangle, PlayCircle } from "lucide-react";
@@ -9,6 +10,8 @@ import { colorFor, initialsFor } from "../lib/mappers";
 import { SimulatorPrefill } from "./SimulationPage";
 import { useApp } from "../context/AppContext";
 import { SelectionState } from "../types/index";
+
+const COUNTRY_OPTIONS = ["India", "Australia", "England", "South Africa", "New Zealand", "Pakistan"];
 
 interface Recommendation { rank: number; player_id: string; player_name: string; role: string; score: number; reasons: string[]; in_xi: boolean; }
 
@@ -32,10 +35,11 @@ function Highlighted({ text }: { text: string }) {
 
 export function RecommendationsPage() {
   const navigate = useNavigate();
+  const { user } = useApp();
   const [generated, setGenerated] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [team, setTeam] = useState("India");
+  const [team, setTeam] = useState(user?.country || "India");
   const [opponent, setOpponent] = useState("Australia");
   const [venue, setVenue] = useState("Melbourne Cricket Ground");
   const [format, setFormat] = useState("T20I");
@@ -62,6 +66,12 @@ export function RecommendationsPage() {
     const xi = ranked.filter(r => r.in_xi);
     return xi.length ? xi.reduce((s, r) => s + r.score, 0) / xi.length : 0;
   }, [ranked]);
+
+  const teamLocked = !!user?.country;
+
+  useEffect(() => {
+    if (user?.country) setTeam(user.country);
+  }, [user?.country]);
 
   const handleGenerate = async () => {
     setLoading(true);
@@ -212,7 +222,7 @@ export function RecommendationsPage() {
               </div>
             </div>
             <div className="space-y-3">
-              {[{ label: "Team", value: team, set: setTeam, opts: ["India", "Australia", "England", "South Africa", "New Zealand", "Pakistan"] },
+              {[{ label: "Team", value: team, set: setTeam, opts: COUNTRY_OPTIONS },
                 { label: "Opponent", value: opponent, set: setOpponent, opts: ["Australia", "England", "South Africa", "New Zealand", "Pakistan", "India"] },
                 // Real venues.canonical_name values -- the model fuzzy-matches this
                 // against the DB (criiq_models/venues.py), so a name that isn't a
@@ -224,10 +234,17 @@ export function RecommendationsPage() {
               ].map(field => (
                 <div key={field.label} className="space-y-1">
                   <label className="text-[12px] text-muted-foreground">{field.label}</label>
-                  <select value={field.value} onChange={e => field.set(e.target.value)}
-                    className="w-full text-sm bg-secondary border border-border rounded-lg px-3 py-2 text-foreground focus:outline-none focus:ring-2 focus:ring-[#AAFF57]/40">
-                    {field.opts.map(o => <option key={o}>{o}</option>)}
-                  </select>
+                  {field.label === "Team" && teamLocked ? (
+                    <button type="button" disabled
+                      className="w-full text-sm bg-secondary border border-border rounded-lg px-3 py-2 text-foreground text-left cursor-default">
+                      {team}
+                    </button>
+                  ) : (
+                    <select value={field.value} onChange={e => field.set(e.target.value)}
+                      className="w-full text-sm bg-secondary border border-border rounded-lg px-3 py-2 text-foreground focus:outline-none focus:ring-2 focus:ring-[#AAFF57]/40">
+                      {field.opts.map(o => <option key={o}>{o}</option>)}
+                    </select>
+                  )}
                 </div>
               ))}
             </div>
