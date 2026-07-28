@@ -131,7 +131,7 @@ export function RecommendationsPage() {
       if (matchId) {
         await api.saveSelection(matchId, { xi, extra: idsFor("reserve"), excluded: idsFor("exclude") });
       }
-      navigate("/squads", { state: { openSquad: true } });
+      navigate("/build-xi", { state: { openSquad: true } });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't save the selection");
     } finally {

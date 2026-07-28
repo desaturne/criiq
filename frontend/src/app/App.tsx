@@ -7,6 +7,7 @@ import { AppContext } from "../context/AppContext";
 import * as api from "../lib/api";
 import { DashboardOverviewPage } from "../pages/DashboardOverviewPage";
 import { DashboardPage } from "../pages/DashboardPage";
+import { BuildXiPage } from "../pages/BuildXiPage";
 import { MatchDetailPage } from "../pages/MatchDetailPage";
 import { MatchesPage } from "../pages/MatchesPage";
 import { PlayerProfilePage } from "../pages/PlayerProfilePage";
@@ -35,6 +36,7 @@ const router = createBrowserRouter([
       { path: "players",         Component: DashboardPage },
       { path: "players/:id",     Component: PlayerProfilePage },
       { path: "squads",          Component: SquadsPage },
+      { path: "build-xi",        Component: BuildXiPage },
       { path: "matches",         Component: MatchesPage },
       { path: "matches/:id",     Component: MatchDetailPage },
       { path: "recommendations", Component: RecommendationsPage },
