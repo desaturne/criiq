@@ -103,7 +103,7 @@ export function DashboardPage() {
             className="w-full pl-9 pr-3 py-1.5 text-sm bg-secondary border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-[#AAFF57]/40 text-foreground placeholder:text-muted-foreground" />
         </div>
         <div className="flex gap-1.5 flex-wrap">
-          {["All", "Batsman", "Bowler", "All-rounder"].map(r => (
+          {["All", "Batter", "Bowler", "All-rounder"].map(r => (
             <button key={r} onClick={() => setFilterRole(r)}
               className={`px-3 py-1.5 text-[12px] rounded-lg border transition-colors ${filterRole === r ? "bg-[#AAFF57] text-[#0D0D06] border-[#AAFF57] font-medium" : "border-border text-muted-foreground hover:text-foreground"}`}>
               {r}

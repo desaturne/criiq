@@ -23,18 +23,18 @@ function normalizeHand(raw?: string | null): "Right" | "Left" {
 }
 
 const ROLE_DISPLAY: Record<string, string> = {
-  batter: "Batsman", batsman: "Batsman", bowler: "Bowler",
+  batter: "Batter", batsman: "Batter", bowler: "Bowler",
   "all-rounder": "All-rounder", allrounder: "All-rounder",
   wicketkeeper: "Wicket-keeper", "wicket-keeper": "Wicket-keeper",
 };
 
 function displayRole(raw?: string | null): string {
-  if (!raw) return "Batsman";
+  if (!raw) return "Batter";
   return ROLE_DISPLAY[raw.toLowerCase()] ?? raw;
 }
 
 function isBattingRole(role: string): boolean {
-  return role === "Batsman" || role === "Wicket-keeper";
+  return role === "Batter" || role === "Wicket-keeper";
 }
 
 function clamp01to100(n: number | null | undefined, fallback = 50): number {

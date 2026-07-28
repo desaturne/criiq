@@ -28,7 +28,7 @@ export function SquadsPage() {
   const [showAddPanel, setShowAddPanel] = useState(false);
   const [addSuccess, setAddSuccess] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [newPlayer, setNewPlayer] = useState({ name: "", role: "Batsman", battingHand: "Right", bowlingStyle: "", status: "ACTIVE" as PlayerStatus });
+  const [newPlayer, setNewPlayer] = useState({ name: "", role: "Batter", battingHand: "Right", bowlingStyle: "", status: "ACTIVE" as PlayerStatus });
   const [showSquadPanel, setShowSquadPanel] = useState(false);
   const location = useLocation();
   const [compareIds, setCompareIds] = useState<string[]>([]);
@@ -55,6 +55,34 @@ export function SquadsPage() {
     p.name.toLowerCase().includes(search.toLowerCase()) &&
     (filterStatus === "All" || p.status === filterStatus)
   );
+
+  const roleGroups = React.useMemo(() => {
+    const groups = [
+      { key: "Batter", title: "Batters", players: [] as Player[] },
+      { key: "Bowler", title: "Bowlers", players: [] as Player[] },
+      { key: "All-rounder", title: "All-rounders", players: [] as Player[] },
+      { key: "Wicket-keeper", title: "Wicket-keepers", players: [] as Player[] },
+      { key: "Other", title: "Other Players", players: [] as Player[] },
+    ];
+
+    filtered.forEach(p => {
+      const roleLower = (p.role || "").toLowerCase();
+      if (roleLower.includes("bat")) {
+        groups[0].players.push(p);
+      } else if (roleLower.includes("bowl")) {
+        groups[1].players.push(p);
+      } else if (roleLower.includes("round")) {
+        groups[2].players.push(p);
+      } else if (roleLower.includes("keeper")) {
+        groups[3].players.push(p);
+      } else {
+        groups[4].players.push(p);
+      }
+    });
+
+    return groups.filter(g => g.players.length > 0);
+  }, [filtered]);
+
   const toggleRow = (id: string) => setSelectedRows(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
   const toggleCompare = (id: string) => setCompareIds(prev =>
     prev.includes(id) ? prev.filter(x => x !== id) : prev.length < 3 ? [...prev, id] : prev
@@ -65,7 +93,7 @@ export function SquadsPage() {
 
   const openAdd = () => {
     setEditingId(null);
-    setNewPlayer({ name: "", role: "Batsman", battingHand: "Right", bowlingStyle: "", status: "ACTIVE" });
+    setNewPlayer({ name: "", role: "Batter", battingHand: "Right", bowlingStyle: "", status: "ACTIVE" });
     setShowAddPanel(true);
   };
 
@@ -112,6 +140,76 @@ export function SquadsPage() {
     }
   };
 
+  const exportToCSV = (playersToExport: Player[], filename: string) => {
+    const headers = ["ID", "Name", "Team", "Role", "Batting Hand", "Bowling Style", "Status", "Score"];
+    const rows = playersToExport.map(p => [
+      `"${p.id}"`,
+      `"${p.name.replace(/"/g, '""')}"`,
+      `"${p.team.replace(/"/g, '""')}"`,
+      `"${p.role.replace(/"/g, '""')}"`,
+      `"${p.battingHand}"`,
+      `"${(p.bowlingStyle || "").replace(/"/g, '""')}"`,
+      `"${p.status}"`,
+      p.score
+    ]);
+
+    const csvContent = [headers.join(","), ...rows.map(r => r.join(","))].join("\n");
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", filename);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handleExportSelected = () => {
+    const selectedPlayers = players.filter(p => selectedRows.includes(p.id));
+    if (selectedPlayers.length > 0) {
+      exportToCSV(selectedPlayers, `${team}_selected_players.csv`);
+    }
+  };
+
+  const handleExportAll = () => {
+    if (filtered.length > 0) {
+      exportToCSV(filtered, `${team}_squad_roster.csv`);
+    }
+  };
+
+  const handleDeactivateSelected = async () => {
+    if (selectedRows.length === 0) return;
+    if (!confirm(`Deactivate ${selectedRows.length} selected player(s)?`)) return;
+
+    setPlayers(prev => prev.map(p => {
+      if (selectedRows.includes(p.id)) {
+        return { ...p, status: "INACTIVE" as PlayerStatus };
+      }
+      return p;
+    }));
+
+    for (const id of selectedRows) {
+      if (id.startsWith("m")) {
+        const p = players.find(x => x.id === id);
+        if (p) {
+          try {
+            await api.updatePlayer(id, {
+              name: p.name,
+              role: p.role,
+              country: p.team,
+              batting_hand: p.battingHand,
+              bowling_style: p.bowlingStyle === "—" ? null : p.bowlingStyle,
+              status: "INACTIVE"
+            });
+          } catch (err) {
+            console.error("Failed to deactivate player", id, err);
+          }
+        }
+      }
+    }
+    setSelectedRows([]);
+  };
+
   return (
     <div className="p-5 max-w-screen-xl mx-auto pb-16">
       <div className="flex items-center justify-between mb-5">
@@ -121,7 +219,7 @@ export function SquadsPage() {
         </div>
         {tab === "roster" && (
           <div className="flex gap-2">
-            <button className="flex items-center gap-1.5 px-3 py-1.5 text-xs border border-border rounded-lg text-muted-foreground hover:text-foreground transition-colors">
+            <button onClick={handleExportAll} className="flex items-center gap-1.5 px-3 py-1.5 text-xs border border-border rounded-lg text-muted-foreground hover:text-foreground transition-colors">
               <Download size={12} /> Export
             </button>
             <button onClick={openAdd} className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-[#AAFF57] text-[#0D0D06] rounded-lg font-medium hover:opacity-90 transition-opacity">
@@ -206,8 +304,8 @@ export function SquadsPage() {
       {tab === "roster" && selectedRows.length > 0 && (
         <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} className="mb-3 flex items-center gap-3 bg-[#AAFF57]/10 border border-[#AAFF57]/30 rounded-lg px-4 py-2">
           <span className="text-sm font-medium text-[#AAFF57]">{selectedRows.length} selected</span>
-          <button className="text-xs text-muted-foreground hover:text-destructive transition-colors flex items-center gap-1"><Trash2 size={11} /> Deactivate</button>
-          <button className="text-xs text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1"><Download size={11} /> Export selected</button>
+          <button onClick={handleDeactivateSelected} className="text-xs text-muted-foreground hover:text-destructive transition-colors flex items-center gap-1"><Trash2 size={11} /> Deactivate</button>
+          <button onClick={handleExportSelected} className="text-xs text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1"><Download size={11} /> Export selected</button>
         </motion.div>
       )}
       {loading ? (
@@ -280,34 +378,43 @@ export function SquadsPage() {
             </tr>
           </thead>
           <tbody>
-            {filtered.map((p, i) => (
-              <motion.tr key={p.id} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: i * 0.03 }}
-                className={`border-b border-border hover:bg-secondary/40 transition-colors ${selectedRows.includes(p.id) ? "bg-secondary/60" : ""}`}>
-                <td className="p-3"><input type="checkbox" checked={selectedRows.includes(p.id)} onChange={() => toggleRow(p.id)} className="rounded" /></td>
-                <td className="p-3">
-                  <div className="flex items-center gap-2">
-                    <div className="w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold flex-shrink-0" style={{ backgroundColor: p.color + "33", color: p.color }}>{p.initials}</div>
-                    <div>
-                      <div className="text-[13px] font-medium text-foreground">{p.name}</div>
-                      <div className="text-[10px] text-muted-foreground">{p.team}</div>
-                    </div>
-                  </div>
-                </td>
-                <td className="p-3 text-[12px] text-muted-foreground">{p.role}</td>
-                <td className="p-3 text-[12px] text-muted-foreground">{p.battingHand} / {p.bowlingStyle}</td>
-                <td className="p-3"><StatusBadge status={p.status} /></td>
-                <td className="p-3"><SparkLine values={p.recentForm} color={p.color} width={60} height={22} /></td>
-                <td className="p-3">
-                  <div className="font-mono text-sm font-medium" style={{ color: p.color }}>{p.score}</div>
-                </td>
-                <td className="p-3">
-                  <div className="flex items-center gap-1">
-                    <button onClick={() => navigate("/players/" + p.id)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors"><Eye size={13} /></button>
-                    <button onClick={() => openEdit(p)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors"><Edit size={13} /></button>
-                    <button onClick={() => handleDelete(p.id)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-destructive transition-colors"><Trash2 size={13} /></button>
-                  </div>
-                </td>
-              </motion.tr>
+            {roleGroups.map(group => (
+              <React.Fragment key={group.key}>
+                <tr className="bg-secondary/70 border-y border-border">
+                  <td colSpan={8} className="px-4 py-2 text-[11px] font-bold tracking-wider text-[#AAFF57] uppercase">
+                    {group.title} ({group.players.length})
+                  </td>
+                </tr>
+                {group.players.map((p, i) => (
+                  <motion.tr key={p.id} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: i * 0.02 }}
+                    className={`border-b border-border hover:bg-secondary/40 transition-colors ${selectedRows.includes(p.id) ? "bg-secondary/60" : ""}`}>
+                    <td className="p-3"><input type="checkbox" checked={selectedRows.includes(p.id)} onChange={() => toggleRow(p.id)} className="rounded" /></td>
+                    <td className="p-3">
+                      <div className="flex items-center gap-2">
+                        <div className="w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold flex-shrink-0" style={{ backgroundColor: p.color + "33", color: p.color }}>{p.initials}</div>
+                        <div>
+                          <div className="text-[13px] font-medium text-foreground">{p.name}</div>
+                          <div className="text-[10px] text-muted-foreground">{p.team}</div>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="p-3 text-[12px] text-muted-foreground">{p.role}</td>
+                    <td className="p-3 text-[12px] text-muted-foreground">{p.battingHand} / {p.bowlingStyle}</td>
+                    <td className="p-3"><StatusBadge status={p.status} /></td>
+                    <td className="p-3"><SparkLine values={p.recentForm} color={p.color} width={60} height={22} /></td>
+                    <td className="p-3">
+                      <div className="font-mono text-sm font-medium" style={{ color: p.color }}>{p.score}</div>
+                    </td>
+                    <td className="p-3">
+                      <div className="flex items-center gap-1">
+                        <button onClick={() => navigate("/players/" + p.id)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors"><Eye size={13} /></button>
+                        <button onClick={() => openEdit(p)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors"><Edit size={13} /></button>
+                        <button onClick={() => handleDelete(p.id)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-destructive transition-colors"><Trash2 size={13} /></button>
+                      </div>
+                    </td>
+                  </motion.tr>
+                ))}
+              </React.Fragment>
             ))}
           </tbody>
         </table>
@@ -350,7 +457,7 @@ export function SquadsPage() {
                       <label className="text-[12px] font-medium text-muted-foreground">Role *</label>
                       <select value={newPlayer.role} onChange={e => setNewPlayer(p => ({ ...p, role: e.target.value }))}
                         className="w-full text-sm bg-secondary border border-border rounded-lg px-3 py-2.5 text-foreground focus:outline-none focus:ring-2 focus:ring-[#AAFF57]/40">
-                        {["Batsman", "Bowler", "All-rounder", "Wicket-keeper"].map(r => <option key={r}>{r}</option>)}
+                        {["Batter", "Bowler", "All-rounder", "Wicket-keeper"].map(r => <option key={r}>{r}</option>)}
                       </select>
                     </div>
                     <div className="space-y-1.5">
