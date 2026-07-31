@@ -1,0 +1,42 @@
+# Single-image CRIIQ: API + models + database + UI, one port, one command.
+#
+#   docker run -p 5173:80 dipa126/criiq:demo
+#
+# Everything is inside: FastAPI, the criiq_models CLI and its artifacts, the
+# 450 MB match database, and the built React UI served by nginx. Nothing to
+# mount, configure, or download separately.
+#
+# This deliberately runs two processes in one container, which is not how you
+# would deploy it for real — docker-compose.yml at the repo root keeps the
+# proper service split for development. This variant exists so someone can
+# evaluate the project without any setup.
+ARG BASE=criiq-backend:amd64
+
+# --- build the UI, pointed at the same-origin /api prefix -------------------
+FROM node:24-slim AS web
+WORKDIR /web
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend/ ./
+ENV VITE_API_URL=/api
+RUN npm run build
+
+# --- assemble ----------------------------------------------------------------
+FROM ${BASE}
+
+RUN apt-get update && apt-get install -y --no-install-recommends nginx \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=web /web/dist /usr/share/nginx/html
+COPY backend/nginx-allinone.conf /etc/nginx/sites-available/default
+
+# Baked-in data (bind-mounted in the normal compose setup)
+COPY data-collection/data/criiq.db /data/criiq.db
+COPY model-training/artifacts/ /artifacts/
+
+COPY backend/start-allinone.sh /start.sh
+RUN chmod +x /start.sh
+
+WORKDIR /app/backend
+EXPOSE 80
+CMD ["/start.sh"]

@@ -1,0 +1,16 @@
+# Self-contained handover image: the normal backend PLUS the data baked in.
+#
+# The regular setup bind-mounts criiq.db and the model artifacts from the host
+# (see docker-compose.yml) because they are ~450 MB, untracked, and owned by the
+# data-collection pipeline. That is the right split for development, but it means
+# the image alone cannot run on someone else's machine. This variant copies them
+# in so the image is a complete, runnable system with nothing to set up.
+#
+# Build (see docs/DOCKER-HANDOVER.md):
+#   docker buildx build --platform linux/amd64 -f backend/Dockerfile.bundle \
+#          --build-arg BASE=criiq-backend:amd64 -t <user>/criiq-backend:demo --load .
+ARG BASE=criiq-backend:latest
+FROM ${BASE}
+
+COPY data-collection/data/criiq.db /data/criiq.db
+COPY model-training/artifacts/ /artifacts/
