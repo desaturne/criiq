@@ -14,25 +14,19 @@ import { Player, PlayerStatus, SelectionState } from "../types/index";
 
 export function SquadsPage() {
   const navigate = useNavigate();
-  const { selections, setSelections } = useApp();
-  const [tab, setTab] = useState<"roster" | "build">("roster");
+  const { user } = useApp();
+  const [team, setTeam] = useState(user?.country || "India");
   const [search, setSearch] = useState("");
   const [selectedRows, setSelectedRows] = useState<string[]>([]);
   const [filterStatus, setFilterStatus] = useState("All");
-  const [team, setTeam] = useState("India");
   const [gender, setGender] = useState<"female" | "male">("female");
-  const [opposition, setOpposition] = useState("Australia");
   const [players, setPlayers] = useState<Player[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showAddPanel, setShowAddPanel] = useState(false);
   const [addSuccess, setAddSuccess] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [newPlayer, setNewPlayer] = useState({ name: "", role: "Batsman", battingHand: "Right", bowlingStyle: "", status: "ACTIVE" as PlayerStatus });
-  const [showSquadPanel, setShowSquadPanel] = useState(false);
-  const location = useLocation();
-  const [compareIds, setCompareIds] = useState<string[]>([]);
-  const [showCompare, setShowCompare] = useState(false);
+  const [newPlayer, setNewPlayer] = useState({ name: "", role: "Batter", battingHand: "Right", bowlingStyle: "", status: "ACTIVE" as PlayerStatus });
 
   const loadPlayers = () => {
     setLoading(true);
@@ -43,29 +37,43 @@ export function SquadsPage() {
 
   useEffect(() => { loadPlayers(); }, [team, gender]);
 
-  // Arriving from Recommendations' "Confirm Selection" -> open straight onto
-  // the Playing XI panel so the confirmed picks are shown, not left to a click.
-  useEffect(() => {
-    if ((location.state as { openSquad?: boolean } | null)?.openSquad) {
-      setShowSquadPanel(true);
-    }
-  }, [location.state]);
-
   const filtered = players.filter(p =>
     p.name.toLowerCase().includes(search.toLowerCase()) &&
     (filterStatus === "All" || p.status === filterStatus)
   );
+
+  const roleGroups = React.useMemo(() => {
+    const groups = [
+      { key: "Batter", title: "Batters", players: [] as Player[] },
+      { key: "Bowler", title: "Bowlers", players: [] as Player[] },
+      { key: "All-rounder", title: "All-rounders", players: [] as Player[] },
+      { key: "Wicket-keeper", title: "Wicket-keepers", players: [] as Player[] },
+      { key: "Other", title: "Other Players", players: [] as Player[] },
+    ];
+
+    filtered.forEach(p => {
+      const roleLower = (p.role || "").toLowerCase();
+      if (roleLower.includes("bat")) {
+        groups[0].players.push(p);
+      } else if (roleLower.includes("bowl")) {
+        groups[1].players.push(p);
+      } else if (roleLower.includes("round")) {
+        groups[2].players.push(p);
+      } else if (roleLower.includes("keeper")) {
+        groups[3].players.push(p);
+      } else {
+        groups[4].players.push(p);
+      }
+    });
+
+    return groups.filter(g => g.players.length > 0);
+  }, [filtered]);
+
   const toggleRow = (id: string) => setSelectedRows(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
-  const toggleCompare = (id: string) => setCompareIds(prev =>
-    prev.includes(id) ? prev.filter(x => x !== id) : prev.length < 3 ? [...prev, id] : prev
-  );
-  const setSelection = (id: string, s: SelectionState) =>
-    setSelections(prev => ({ ...prev, [id]: s }));
-  const selectedCount = Object.values(selections).filter(s => s === "select").length;
 
   const openAdd = () => {
     setEditingId(null);
-    setNewPlayer({ name: "", role: "Batsman", battingHand: "Right", bowlingStyle: "", status: "ACTIVE" });
+    setNewPlayer({ name: "", role: "Batter", battingHand: "Right", bowlingStyle: "", status: "ACTIVE" });
     setShowAddPanel(true);
   };
 
@@ -105,51 +113,106 @@ export function SquadsPage() {
       setAddSuccess(true);
       setTimeout(() => {
         setAddSuccess(false); setShowAddPanel(false); setEditingId(null);
-        setNewPlayer({ name: "", role: "Batsman", battingHand: "Right", bowlingStyle: "", status: "ACTIVE" });
+        setNewPlayer({ name: "", role: "Batter", battingHand: "Right", bowlingStyle: "", status: "ACTIVE" });
       }, 1500);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't save this player");
     }
   };
 
+  const exportToCSV = (playersToExport: Player[], filename: string) => {
+    const headers = ["ID", "Name", "Team", "Role", "Batting Hand", "Bowling Style", "Status", "Score"];
+    const rows = playersToExport.map(p => [
+      `"${p.id}"`,
+      `"${p.name.replace(/"/g, '""')}"`,
+      `"${p.team.replace(/"/g, '""')}"`,
+      `"${p.role.replace(/"/g, '""')}"`,
+      `"${p.battingHand}"`,
+      `"${(p.bowlingStyle || "").replace(/"/g, '""')}"`,
+      `"${p.status}"`,
+      p.score
+    ]);
+
+    const csvContent = [headers.join(","), ...rows.map(r => r.join(","))].join("\n");
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", filename);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handleExportSelected = () => {
+    const selectedPlayers = players.filter(p => selectedRows.includes(p.id));
+    if (selectedPlayers.length > 0) {
+      exportToCSV(selectedPlayers, `${team}_selected_players.csv`);
+    }
+  };
+
+  const handleExportAll = () => {
+    if (filtered.length > 0) {
+      exportToCSV(filtered, `${team}_squad_roster.csv`);
+    }
+  };
+
+  const handleDeactivateSelected = async () => {
+    if (selectedRows.length === 0) return;
+    if (!confirm(`Deactivate ${selectedRows.length} selected player(s)?`)) return;
+
+    setPlayers(prev => prev.map(p => {
+      if (selectedRows.includes(p.id)) {
+        return { ...p, status: "INACTIVE" as PlayerStatus };
+      }
+      return p;
+    }));
+
+    for (const id of selectedRows) {
+      if (id.startsWith("m")) {
+        const p = players.find(x => x.id === id);
+        if (p) {
+          try {
+            await api.updatePlayer(id, {
+              name: p.name,
+              role: p.role,
+              country: p.team,
+              batting_hand: p.battingHand,
+              bowling_style: p.bowlingStyle === "—" ? null : p.bowlingStyle,
+              status: "INACTIVE"
+            });
+          } catch (err) {
+            console.error("Failed to deactivate player", id, err);
+          }
+        }
+      }
+    }
+    setSelectedRows([]);
+  };
+
   return (
     <div className="p-5 max-w-screen-xl mx-auto pb-16">
       <div className="flex items-center justify-between mb-5">
         <div>
-          <h1 className="font-display text-2xl font-bold text-foreground">Squads</h1>
+          <h1 className="font-display text-2xl font-bold text-foreground">Squad Roster</h1>
           <p className="text-sm text-muted-foreground mt-0.5">{players.length} players in {team} {gender === "female" ? "Women's" : "Men's"} pool</p>
         </div>
-        {tab === "roster" && (
-          <div className="flex gap-2">
-            <button className="flex items-center gap-1.5 px-3 py-1.5 text-xs border border-border rounded-lg text-muted-foreground hover:text-foreground transition-colors">
-              <Download size={12} /> Export
-            </button>
-            <button onClick={openAdd} className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-[#AAFF57] text-[#0D0D06] rounded-lg font-medium hover:opacity-90 transition-opacity">
-              <UserPlus size={12} /> Add Player
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* Tabs */}
-      <div className="flex gap-2 mb-4 border-b border-border">
-        {[{ id: "roster" as const, label: "Roster", icon: ClipboardList }, { id: "build" as const, label: "Build XI", icon: Users }].map(t => {
-          const Icon = t.icon;
-          return (
-            <button key={t.id} onClick={() => setTab(t.id)}
-              className={`flex items-center gap-1.5 px-3 py-2.5 text-[13px] border-b-2 transition-colors ${tab === t.id ? "border-[#AAFF57] text-foreground font-medium" : "border-transparent text-muted-foreground hover:text-foreground"}`}>
-              <Icon size={13} /> {t.label}
-            </button>
-          );
-        })}
+        <div className="flex gap-2">
+          <button onClick={handleExportAll} className="flex items-center gap-1.5 px-3 py-1.5 text-xs border border-border rounded-lg text-muted-foreground hover:text-foreground transition-colors">
+            <Download size={12} /> Export
+          </button>
+          <button onClick={openAdd} className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-[#AAFF57] text-[#0D0D06] rounded-lg font-medium hover:opacity-90 transition-opacity">
+            <UserPlus size={12} /> Add Player
+          </button>
+        </div>
       </div>
 
       {error && (
         <div className="mb-3 text-[12px] text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">{error}</div>
       )}
 
-      {/* Shared team/gender filters -- drive the same fetched player pool for both tabs */}
-      <div className="flex gap-2 mb-4 flex-wrap">
+      {/* Filters: Fixed Team Badge (no dropdown) & Gender selector & Search */}
+      <div className="flex gap-2 mb-4 flex-wrap items-center">
         <div className="flex rounded-lg border border-border overflow-hidden">
           {(["female", "male"] as const).map(g => (
             <button key={g} onClick={() => setGender(g)}
@@ -158,119 +221,37 @@ export function SquadsPage() {
             </button>
           ))}
         </div>
+        {/* Country Selector Dropdown */}
         <select value={team} onChange={e => setTeam(e.target.value)} title="Squad / nationality"
           className="text-sm bg-secondary border border-border rounded-lg px-3 py-1.5 text-foreground font-medium focus:outline-none focus:ring-2 focus:ring-[#AAFF57]/40">
-          {["India", "Australia", "England", "South Africa", "New Zealand", "Pakistan", "All"].map(t => <option key={t}>{t}</option>)}
+          {["India", "Australia", "England", "South Africa", "New Zealand", "Pakistan", "Sri Lanka", "West Indies", "All"].map(t => <option key={t}>{t}</option>)}
         </select>
-        {tab === "roster" && (
-          <>
-            <div className="relative">
-              <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search…"
-                className="pl-8 pr-3 py-1.5 text-sm bg-secondary border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-[#AAFF57]/40 text-foreground placeholder:text-muted-foreground w-52" />
-            </div>
-            {["All", "ACTIVE", "INCONSISTENT", "INACTIVE"].map(s => (
-              <button key={s} onClick={() => setFilterStatus(s)}
-                className={`px-2.5 py-1.5 text-[11px] rounded-lg border transition-colors ${filterStatus === s ? "bg-[#AAFF57] text-[#0D0D06] border-[#AAFF57] font-medium" : "border-border text-muted-foreground hover:text-foreground"}`}>
-                {s}
-              </button>
-            ))}
-          </>
-        )}
-        {tab === "build" && (
-          <>
-            <select value={opposition} onChange={e => setOpposition(e.target.value)} title="Opponent"
-              className="text-sm bg-secondary border border-border rounded-lg px-3 py-1.5 text-foreground focus:outline-none focus:ring-2 focus:ring-[#AAFF57]/40">
-              {["Australia", "England", "South Africa", "New Zealand", "Pakistan", "India"].filter(t => t !== team).map(t => <option key={t}>{t}</option>)}
-            </select>
-            {/* Inline actions (previously a floating bar) */}
-            <div className="ml-auto flex items-center gap-2">
-              {compareIds.length >= 2 && (
-                <button onClick={() => setShowCompare(true)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg text-[#0D0D06]" style={{ background: "#3ADCFF" }}>
-                  <GitCompare size={14} /> Compare {compareIds.length}
-                </button>
-              )}
-              {selectedCount > 0 && (
-                <button onClick={() => setShowSquadPanel(true)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-semibold rounded-lg text-white" style={{ background: "#5FA800" }}>
-                  <Users size={14} /> View Squad · {selectedCount}/11
-                  {selectedCount === 11 && <CheckCircle size={14} />}
-                </button>
-              )}
-            </div>
-          </>
-        )}
+        <div className="relative">
+          <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search players…"
+            className="pl-8 pr-3 py-1.5 text-sm bg-secondary border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-[#AAFF57]/40 text-foreground placeholder:text-muted-foreground w-52" />
+        </div>
+        {["All", "ACTIVE", "INCONSISTENT", "INACTIVE"].map(s => (
+          <button key={s} onClick={() => setFilterStatus(s)}
+            className={`px-2.5 py-1.5 text-[11px] rounded-lg border transition-colors ${filterStatus === s ? "bg-[#AAFF57] text-[#0D0D06] border-[#AAFF57] font-medium" : "border-border text-muted-foreground hover:text-foreground"}`}>
+            {s}
+          </button>
+        ))}
       </div>
 
-      {tab === "roster" && selectedRows.length > 0 && (
+      {selectedRows.length > 0 && (
         <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} className="mb-3 flex items-center gap-3 bg-[#AAFF57]/10 border border-[#AAFF57]/30 rounded-lg px-4 py-2">
           <span className="text-sm font-medium text-[#AAFF57]">{selectedRows.length} selected</span>
-          <button className="text-xs text-muted-foreground hover:text-destructive transition-colors flex items-center gap-1"><Trash2 size={11} /> Deactivate</button>
-          <button className="text-xs text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1"><Download size={11} /> Export selected</button>
+          <button onClick={handleDeactivateSelected} className="text-xs text-muted-foreground hover:text-destructive transition-colors flex items-center gap-1"><Trash2 size={11} /> Deactivate</button>
+          <button onClick={handleExportSelected} className="text-xs text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1"><Download size={11} /> Export selected</button>
         </motion.div>
       )}
+
       {loading ? (
         <div className="py-16 text-center text-sm text-muted-foreground">Loading squad…</div>
-      ) : tab === "build" ? (
-        <>
-          {/* Empty-state prompt shown before the coach has picked anyone --
-              tells them how the XI gets built and where it shows up. */}
-          {selectedCount === 0 && (
-            <motion.div initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }}
-              className="mb-4 flex items-center gap-3 bg-[#AAFF57]/[0.08] border border-[#AAFF57]/25 rounded-2xl px-4 py-3.5">
-              <div className="w-10 h-10 rounded-full bg-[#AAFF57]/15 flex items-center justify-center flex-shrink-0">
-                <Users size={18} className="text-[#AAFF57]" />
-              </div>
-              <div>
-                <p className="text-[13px] font-semibold text-foreground">Build your Playing XI</p>
-                <p className="text-[12px] text-muted-foreground">
-                  Tap <span className="text-[#AAFF57] font-medium">Select</span> on any player below to add them — your XI builds up in{" "}
-                  <span className="text-foreground font-medium">View Squad</span> as you go, up to 11.
-                </p>
-              </div>
-            </motion.div>
-          )}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            {players.map((p, i) => (
-              <PlayerCard
-                key={p.id} player={p} index={i} opposition={opposition}
-                selection={selections[p.id] ?? "undecided"}
-                onSelect={s => setSelection(p.id, s)}
-                comparing={compareIds.includes(p.id)}
-                onToggleCompare={() => toggleCompare(p.id)}
-                onViewProfile={() => navigate("/players/" + p.id)}
-              />
-            ))}
-          </div>
-
-          <AnimatePresence>
-            {showSquadPanel && (
-              <SquadSelectionPanel
-                players={players} selections={selections} opposition={opposition} format="T20I"
-                onClose={() => setShowSquadPanel(false)}
-                onReset={() => setSelections({})}
-                onChangeSelection={setSelection}
-              />
-            )}
-          </AnimatePresence>
-
-          {showCompare && compareIds.length >= 2 && (
-            <PlayerCompareModal
-              players={players} playerIds={compareIds} opposition={opposition} selections={selections}
-              onSelect={setSelection}
-              onClose={() => setShowCompare(false)}
-              onRemove={id => {
-                const next = compareIds.filter(x => x !== id);
-                setCompareIds(next);
-                if (next.length < 2) setShowCompare(false);
-              }}
-            />
-          )}
-        </>
       ) : (
-      <div className="bg-card border border-border rounded-xl overflow-hidden">
-        <table className="w-full">
+        <div className="bg-card border border-border rounded-xl overflow-hidden">
+          <table className="w-full">
           <thead>
             <tr className="border-b border-border">
               <th className="p-3 w-8"><input type="checkbox" className="rounded" onChange={e => setSelectedRows(e.target.checked ? players.map(p => p.id) : [])} /></th>
@@ -280,34 +261,43 @@ export function SquadsPage() {
             </tr>
           </thead>
           <tbody>
-            {filtered.map((p, i) => (
-              <motion.tr key={p.id} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: i * 0.03 }}
-                className={`border-b border-border hover:bg-secondary/40 transition-colors ${selectedRows.includes(p.id) ? "bg-secondary/60" : ""}`}>
-                <td className="p-3"><input type="checkbox" checked={selectedRows.includes(p.id)} onChange={() => toggleRow(p.id)} className="rounded" /></td>
-                <td className="p-3">
-                  <div className="flex items-center gap-2">
-                    <div className="w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold flex-shrink-0" style={{ backgroundColor: p.color + "33", color: p.color }}>{p.initials}</div>
-                    <div>
-                      <div className="text-[13px] font-medium text-foreground">{p.name}</div>
-                      <div className="text-[10px] text-muted-foreground">{p.team}</div>
-                    </div>
-                  </div>
-                </td>
-                <td className="p-3 text-[12px] text-muted-foreground">{p.role}</td>
-                <td className="p-3 text-[12px] text-muted-foreground">{p.battingHand} / {p.bowlingStyle}</td>
-                <td className="p-3"><StatusBadge status={p.status} /></td>
-                <td className="p-3"><SparkLine values={p.recentForm} color={p.color} width={60} height={22} /></td>
-                <td className="p-3">
-                  <div className="font-mono text-sm font-medium" style={{ color: p.color }}>{p.score}</div>
-                </td>
-                <td className="p-3">
-                  <div className="flex items-center gap-1">
-                    <button onClick={() => navigate("/players/" + p.id)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors"><Eye size={13} /></button>
-                    <button onClick={() => openEdit(p)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors"><Edit size={13} /></button>
-                    <button onClick={() => handleDelete(p.id)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-destructive transition-colors"><Trash2 size={13} /></button>
-                  </div>
-                </td>
-              </motion.tr>
+            {roleGroups.map(group => (
+              <React.Fragment key={group.key}>
+                <tr className="bg-secondary/70 border-y border-border">
+                  <td colSpan={8} className="px-4 py-2 text-[11px] font-bold tracking-wider text-[#AAFF57] uppercase">
+                    {group.title} ({group.players.length})
+                  </td>
+                </tr>
+                {group.players.map((p, i) => (
+                  <motion.tr key={p.id} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: i * 0.02 }}
+                    className={`border-b border-border hover:bg-secondary/40 transition-colors ${selectedRows.includes(p.id) ? "bg-secondary/60" : ""}`}>
+                    <td className="p-3"><input type="checkbox" checked={selectedRows.includes(p.id)} onChange={() => toggleRow(p.id)} className="rounded" /></td>
+                    <td className="p-3">
+                      <div className="flex items-center gap-2">
+                        <div className="w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold flex-shrink-0" style={{ backgroundColor: p.color + "33", color: p.color }}>{p.initials}</div>
+                        <div>
+                          <div className="text-[13px] font-medium text-foreground">{p.name}</div>
+                          <div className="text-[10px] text-muted-foreground">{p.team}</div>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="p-3 text-[12px] text-muted-foreground">{p.role}</td>
+                    <td className="p-3 text-[12px] text-muted-foreground">{p.battingHand} / {p.bowlingStyle}</td>
+                    <td className="p-3"><StatusBadge status={p.status} /></td>
+                    <td className="p-3"><SparkLine values={p.recentForm} color={p.color} width={60} height={22} /></td>
+                    <td className="p-3">
+                      <div className="font-mono text-sm font-medium" style={{ color: p.color }}>{p.score}</div>
+                    </td>
+                    <td className="p-3">
+                      <div className="flex items-center gap-1">
+                        <button onClick={() => navigate("/players/" + p.id)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors"><Eye size={13} /></button>
+                        <button onClick={() => openEdit(p)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors"><Edit size={13} /></button>
+                        <button onClick={() => handleDelete(p.id)} className="p-1.5 rounded hover:bg-secondary text-muted-foreground hover:text-destructive transition-colors"><Trash2 size={13} /></button>
+                      </div>
+                    </td>
+                  </motion.tr>
+                ))}
+              </React.Fragment>
             ))}
           </tbody>
         </table>
@@ -350,7 +340,7 @@ export function SquadsPage() {
                       <label className="text-[12px] font-medium text-muted-foreground">Role *</label>
                       <select value={newPlayer.role} onChange={e => setNewPlayer(p => ({ ...p, role: e.target.value }))}
                         className="w-full text-sm bg-secondary border border-border rounded-lg px-3 py-2.5 text-foreground focus:outline-none focus:ring-2 focus:ring-[#AAFF57]/40">
-                        {["Batsman", "Bowler", "All-rounder", "Wicket-keeper"].map(r => <option key={r}>{r}</option>)}
+                        {["Batter", "Bowler", "All-rounder", "Wicket-keeper"].map(r => <option key={r}>{r}</option>)}
                       </select>
                     </div>
                     <div className="space-y-1.5">

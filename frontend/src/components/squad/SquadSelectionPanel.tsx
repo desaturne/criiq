@@ -48,7 +48,7 @@ export function SquadSelectionPanel({ players, selections, opposition, format, o
   };
 
   const roleTag = (role: string) => {
-    if (role === "Batsman")    return { bg: "bg-blue-500/15",    text: "text-blue-400"  };
+    if (role === "Batter" || role === "Batsman") return { bg: "bg-blue-500/15", text: "text-blue-400" };
     if (role === "Bowler")     return { bg: "bg-orange-500/15",  text: "text-orange-400" };
     if (role === "All-rounder") return { bg: "bg-[#5FA800]/15",  text: "text-[#5FA800]" };
     return { bg: "bg-secondary", text: "text-muted-foreground" };

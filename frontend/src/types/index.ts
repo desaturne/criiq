@@ -8,7 +8,7 @@ export type SelectionState = "select" | "reserve" | "exclude" | "undecided";
 
 export type PlayerStatus = "ACTIVE" | "INCONSISTENT" | "INACTIVE" | "UNKNOWN";
 
-export interface AuthUser { id: number; name: string; role: string; }
+export interface AuthUser { id: number; name: string; role: string; country?: string; status?: string; }
 
 export interface AppContextValue {
   dark: boolean;
@@ -18,7 +18,7 @@ export interface AppContextValue {
   token: string | null;
   user: AuthUser | null;
   login: (email: string, password: string) => Promise<void>;
-  register: (name: string, email: string, password: string) => Promise<void>;
+  register: (name: string, email: string, password: string, country: string) => Promise<void>;
   logout: () => Promise<void>;
 }
 

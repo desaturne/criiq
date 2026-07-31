@@ -1,11 +1,12 @@
 import { useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Bell, Moon, Sun, RefreshCw, Download, ArrowRight, Shield, Trash2, Globe, Database, Palette, Monitor, Key, Smartphone, Clock, Check } from "lucide-react";
+import { Bell, Moon, Sun, RefreshCw, Download, ArrowRight, Shield, Trash2, Globe, Database, Palette, Monitor, Key, Smartphone, Clock, Check, User, Mail, BadgeCheck } from "lucide-react";
+import { useSearchParams } from "react-router";
 import { useApp } from "../context/AppContext";
 
 export function SettingsPage() {
-  const { dark, setDark } = useApp();
-  const [activeTab, setActiveTab] = useState("notifications");
+  const { dark, setDark, user } = useApp();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [notifications, setNotifications] = useState({ matchReminders: true, formAlerts: true, aiUpdates: false, teamChanges: true, reportReady: false });
   const [twoFactor, setTwoFactor] = useState(false);
   const [fontSize, setFontSize] = useState("Medium");
@@ -17,8 +18,14 @@ export function SettingsPage() {
   const [timezone, setTimezone] = useState("Asia/Kolkata");
   const [language, setLanguage] = useState("English");
   const [dateFormat, setDateFormat] = useState("DD/MM/YYYY");
+  const activeTab = searchParams.get("tab") || "notifications";
+
+  const setActiveTab = (tab: string) => {
+    setSearchParams({ tab });
+  };
 
   const tabs = [
+    { id: "profile",      label: "Profile",        icon: User },
     { id: "notifications", label: "Notifications", icon: Bell },
     { id: "security",      label: "Security",       icon: Shield },
     { id: "appearance",    label: "Appearance",     icon: Palette },
@@ -44,6 +51,39 @@ export function SettingsPage() {
 
   const renderContent = () => {
     switch (activeTab) {
+      case "profile":
+        return (
+          <div className="space-y-5">
+            <h2 className="font-display text-xl font-bold text-foreground">Profile</h2>
+            <div className="bg-card border border-border rounded-xl p-5 space-y-5">
+              <div className="flex items-center gap-4">
+                <div className="w-16 h-16 rounded-2xl bg-[#AAFF57] flex items-center justify-center text-2xl font-bold text-[#0D0D06] shadow-sm">
+                  {(user?.name || "RC").split(" ").map(part => part[0]).slice(0, 2).join("")}
+                </div>
+                <div className="min-w-0">
+                  <div className="text-lg font-semibold text-foreground truncate">{user?.name || "Rahul Coach"}</div>
+                  <div className="text-sm text-muted-foreground">{user?.role || "Coach"}</div>
+                </div>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="rounded-xl border border-border bg-secondary/40 p-4">
+                  <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground mb-1">Account</div>
+                  <div className="text-sm font-medium text-foreground flex items-center gap-2"><BadgeCheck size={14} className="text-[#AAFF57]" /> Verified coaching profile</div>
+                  <div className="text-[11px] text-muted-foreground mt-1">This profile is connected to your CRIIQ session.</div>
+                </div>
+                <div className="rounded-xl border border-border bg-secondary/40 p-4">
+                  <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground mb-1">Email</div>
+                  <div className="text-sm font-medium text-foreground flex items-center gap-2"><Mail size={14} className="text-muted-foreground" /> {user ? `${user.name.toLowerCase().replace(/\s+/g, ".")}@criiq.local` : "coach@teamcricket.com"}</div>
+                  <div className="text-[11px] text-muted-foreground mt-1">Update this in the backend auth flow when available.</div>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-3">
+                <button className="px-4 py-2 bg-[#AAFF57] text-[#0D0D06] text-sm font-semibold rounded-lg hover:opacity-90 transition-opacity">Edit Profile</button>
+                <button onClick={() => setActiveTab("security")} className="px-4 py-2 border border-border text-sm font-medium text-foreground rounded-lg hover:bg-secondary transition-colors">Security Settings</button>
+              </div>
+            </div>
+          </div>
+        );
       case "notifications":
         return (
           <div>

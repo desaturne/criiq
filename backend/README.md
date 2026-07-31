@@ -28,10 +28,13 @@ Seeded demo user (created automatically on first run):
 - email: `rahul@criiq.local`
 - password: `coach1234`
 
-New accounts: `POST /auth/register` with `{"name", "email", "password"}` (password
-8+ chars) creates a user — everyone who self-registers gets the `coach` role —
-and, like `/auth/login`, immediately returns a JWT token. Duplicate emails get
-a 409.
+New accounts: `POST /auth/register` with `{"name", "email", "password", "country"}`
+(password 8+ chars) creates a coach registration in **Inactive** state. The
+admin reviews pending coach registrations from `GET /auth/admin/pending-coaches`
+and approves them by posting `{"status": "Active"}` to
+`POST /auth/admin/pending-coaches/{user_id}`. Until a coach is approved,
+`POST /auth/login` rejects the sign-in with a pending-approval error. Duplicate
+emails get a 409.
 
 `POST /auth/login` returns a JWT token. Send it on every other request:
 `Authorization: Bearer <token>`. In `/docs`, click **Authorize** and paste the token.
