@@ -14,7 +14,7 @@ def test_resolve_venue_single_match(conn):
 
 
 def test_resolve_venue_no_match_falls_back_to_raw_input(conn):
-    # Backward-compatible with anyone already passing the slug directly.
+    # backward-compatible with anyone already passing the slug directly.
     venue_id, candidates = resolve_venue(conn, "some-existing-slug")
     assert venue_id == "some-existing-slug"
     assert candidates == []

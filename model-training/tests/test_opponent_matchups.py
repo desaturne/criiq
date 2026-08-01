@@ -32,9 +32,8 @@ def test_head_to_head_matrix_finds_bogey_best_and_ignores_tiny_samples(conn):
 
 
 def test_opponent_players_scopes_batting_matchup_by_bowler_id_not_team(conn):
-    # The batting matchup is normally scoped by bowler_team; when a specific
-    # opponent XI is named it must instead scope by those bowlers' ids, so it
-    # counts a bowler regardless of which team string the row was stored under.
+    # the batting matchup is normally scoped by bowler_team, but when a
+    # specific opponent XI is named it should scope by bowler id instead.
     register_player(conn, "myB", "My Batter", role="batter")
     add_bowler_matchup(conn, bowler_id="oppX", batter_id="myB", balls=30, runs=20, dismissals=2,
                        batter_name="My Batter", bowler_name="Opp Xavier", bowler_team="Australia")
@@ -52,10 +51,9 @@ def test_opponent_players_scopes_batting_matchup_by_bowler_id_not_team(conn):
 
 
 def test_strength_context_flags_lopsided_matchup_only_for_the_stronger_side(conn):
-    # Bigland fields 4 ICC-ranked players, Smalland none. The matchup is
-    # lopsided when asked from Bigland's side (they can rest players), and not
-    # from Smalland's -- mirroring "India vs Nepal": ICC-ranked count, not
-    # padded importance, is the strength signal.
+    # Bigland fields 4 ICC-ranked players, Smalland none. the matchup is
+    # lopsided from Bigland's side but not Smalland's, mirroring "India vs
+    # Nepal": ICC-ranked count, not padded importance, is the strength signal.
     add_match(conn, "m1", "2026-01-01", "Bigland", "Smalland")
     for i in range(4):
         register_player(conn, f"big{i}", f"Big {i}", role="batter")
@@ -71,6 +69,6 @@ def test_strength_context_flags_lopsided_matchup_only_for_the_stronger_side(conn
     assert ctx["lopsided"] is True
     assert ctx["stronger_side"] == "Bigland"
 
-    # the weaker side must NOT be told it can rotate
+    # the weaker side must not be told it can rotate
     ctx_rev = strength_context(conn, "Smalland", "Bigland", "T20", "female")
     assert ctx_rev["lopsided"] is False

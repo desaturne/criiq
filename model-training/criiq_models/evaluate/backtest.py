@@ -1,19 +1,9 @@
-"""Temporal holdout evaluation for the two contribution regressors.
+"""temporal holdout evaluation for the two contribution regressors.
 
-Split by **match date**, never by row/ball — rows from the same match are
-correlated (same date, same opponent context), so a random row-level split
-would leak (mirrors the exact reasoning already documented for the
-win-probability model in `data-collection/criiq_data/winprob.py`).
-
-Alongside plain regression error (MAE, vs a mean-predictor baseline, and
-correlation), a "top-quartile hit rate" is reported per target: within each
-held-out match, does the model's top-25%-by-prediction among the players who
-actually played also fall in the top-25% by actual contribution? This is a
-deliberately modest, honest proxy for selection quality — it does NOT claim
-to reconstruct "would the model have picked this XI over the full squad"
-(that would need bench-player features for historical matches, which the
-derived tables don't cleanly provide); it only checks whether the model
-correctly identifies the standout performers among those who took the field.
+split by match date, never by row, since rows from the same match are
+correlated. also reports a top-quartile hit rate per target: within each
+held-out match, does the model's top predicted performers overlap with the
+actual top performers among players who played.
 """
 from __future__ import annotations
 
@@ -66,10 +56,8 @@ def backtest(conn: sqlite3.Connection, fmt: str = SETTINGS.format,
             report["targets"][target] = {"note": "insufficient data for a temporal holdout"}
             continue
 
-        model = _make_model(target)
-        # Train on the same clipped labels production training uses (see
-        # recommend/train.py) -- but score against the RAW actual values
-        # below, so this report stays an honest read of real-world error.
+        model = _make_model(target, gender)
+        # trains on the same clipped labels production uses, scores against raw actuals
         model.fit(train_rows[MODEL_FEATURES], _clip_target(train_rows[target]))
         pred = model.predict(test_rows[MODEL_FEATURES])
         actual = test_rows[target].to_numpy()

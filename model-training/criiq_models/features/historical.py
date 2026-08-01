@@ -1,50 +1,33 @@
-"""Point-in-time (leakage-safe) training feature table.
+"""point-in-time (leakage-safe) training feature table.
 
-Targets are `batting_wpa`/`bowling_wpa` (data-collection's `player_match_wpa`
-— win-probability actually added, not just raw stat share; see
-`criiq_data/wpa.py`) rather than `bat_contribution_pct`/`bowl_contribution_pct`
-— contribution-share measures how big a player's numbers were, not whether
-they moved her team toward winning, and it showed: a real case this session
-had it ranking a fringe all-rounder above a proven, long-serving opener.
-`bat_contribution_pct`/`bowl_contribution_pct` remain as *features* (still
-informative), just not what's being predicted.
+targets are batting_wpa/bowling_wpa (win probability actually added, see
+criiq_data/wpa.py) rather than bat_contribution_pct/bowl_contribution_pct,
+since contribution-share measures how big the numbers were, not whether they
+moved the team toward winning. the contribution columns remain as features.
 
-For each row of `player_match_impact` (one player, one match, date-ordered),
-reconstruct the three feature groups that would otherwise leak the label if
-pulled from the final aggregated tables (`player_career`, `player_impact`,
-`player_vs_opponent`, `player_by_venue` all include the match itself, and
-every match after it) — WPA-to-date is reconstructed the exact same way, for
-the exact same reason (`player_match_wpa` also includes the match itself):
+for each row of player_match_impact, reconstructs the feature groups that
+would otherwise leak the label if pulled from the final aggregated tables
+(those include the match itself and everything after it):
 
-  * recent form   — recency-weighted mean over the player's last N matches,
-                     strictly before this match's date
-  * career-to-date — expanding mean over all of the player's prior matches
-  * opponent/venue-to-date — expanding mean restricted to prior matches
-                              against this opponent / at this venue
+  * recent form: recency-weighted mean over the last N matches, strictly
+    before this match's date
+  * career-to-date: expanding mean over prior matches
+  * opponent/venue-to-date: expanding mean restricted to prior matches
+    against this opponent / at this venue
 
-Slow-moving descriptive traits (role bucket) are pulled from the current
-`player_registry` snapshot as-is — a defensible simplification since role
-rarely changes within a career and isn't the outcome being predicted.
+role bucket is pulled from the current player_registry snapshot as-is, since
+role rarely changes within a career.
 
-Batter-vs-bowler dismissal matchups (`dismissal_matchup`) are deliberately
-NOT reconstructed here: the table has no per-match granularity (it's a career
-total, format-wide), so building a point-in-time version would require
-re-deriving it from raw deliveries — disproportionate effort for what is
-already a very sparse signal per specific pair. That signal is instead
-folded in only at live-scoring time as a separate, transparent "matchup
-edge" component (see `recommend/score.py`) rather than as a model input.
+dismissal_matchup (batter-vs-bowler) is deliberately not reconstructed here:
+it's a career total with no per-match granularity, so a point-in-time
+version would need rebuilding from raw deliveries for an already sparse
+signal. it's folded in at live-scoring time instead, as a separate matchup
+edge component (see recommend/score.py).
 
-`age_years` (player's age at each match's date, computed from
-`players.date_of_birth`) was tried as a model feature here and rejected: a
-rigorous ablation (3 holdout fractions x 5 seeds, both genders, identical
-production model architecture, real live data) found it made prediction
-correlation *worse* in 3 of the 4 (gender, target) combinations and
-negligibly better in the 4th, all well within run-to-run noise -- the same
-"tried, checked against the real backtest, not adopted" discipline already
-applied to bowling containment features and `bowl_style_bucket` (see
-model-training/README.md). It's still computed at live-scoring time
-(`features/current.py`) as descriptive-only context surfaced in
-`explain.py`, the same way `bowl_dot_pct`/`bowl_boundary_pct` are.
+age_years was tried as a model feature and rejected, it made holdout
+correlation worse (see model-training/README.md). still computed at
+live-scoring time (features/current.py) as descriptive context for
+explain.py.
 """
 from __future__ import annotations
 
@@ -80,16 +63,11 @@ def _rolling_form(grouped_col: pd.Series, window: int, decay: float) -> pd.Serie
 
 
 def _attach_domestic_form(conn: sqlite3.Connection, df: pd.DataFrame, fmt: str) -> pd.DataFrame:
-    """"Her domestic form as of this (international) match's date" -- bridges
-    two separate event streams (international rows in `df`, domestic rows
-    from `player_match_wpa`) with `merge_asof`, not a plain `.transform()`:
-    an international row isn't a member of the domestic-only subgroup being
-    rolled, so a groupby/transform on the domestic series alone would never
-    align back onto it (misaligned index, or all-NaN). `merge_asof(direction=
-    "backward")` instead finds, for each international row, the most recent
-    domestic checkpoint at or before that date -- international and domestic
-    matches for the same player on the exact same calendar date can't happen
-    in practice, so backward-inclusive is safe here, not a leakage risk.
+    """domestic form as of this international match's date. uses merge_asof,
+    not a plain groupby/transform, since an international row isn't part of
+    the domestic-only subgroup being rolled and wouldn't align back onto it.
+    merge_asof(direction="backward") finds the most recent domestic
+    checkpoint at or before that date for each international row.
     """
     empty_cols = {"domestic_form_matches": 0, "domestic_form_batting_wpa": None,
                   "domestic_form_bowling_wpa": None}
@@ -103,20 +81,16 @@ def _attach_domestic_form(conn: sqlite3.Connection, df: pd.DataFrame, fmt: str) 
     domestic = domestic.dropna(subset=["date"]).sort_values(["player_id", "date"])
     dom_by_player = domestic.groupby("player_id")
     window, decay = SETTINGS.form_window_matches, SETTINGS.form_recency_lambda
-    # Not shifted: by the time a *later* international row looks this
-    # checkpoint up via merge_asof below, it's already in the past for that
-    # row -- this is the domestic stream's own point-in-time value, not a
-    # leak of "this row's own future".
+    # not shifted: by the time a later international row looks this up via
+    # merge_asof, it's already in the past for that row.
     domestic["domestic_form_batting_wpa"] = dom_by_player["batting_wpa"].transform(
         lambda s: s.rolling(window, min_periods=1).apply(lambda a: _weighted_recent(a, decay), raw=True))
     domestic["domestic_form_bowling_wpa"] = dom_by_player["bowling_wpa"].transform(
         lambda s: s.rolling(window, min_periods=1).apply(lambda a: _weighted_recent(a, decay), raw=True))
     domestic["domestic_form_matches"] = dom_by_player.cumcount() + 1
 
-    # `df["date"]` stays a plain string throughout this module (train.py does
-    # its own `pd.to_datetime` on the final output) -- merge_asof needs a
-    # real datetime `on` column, so join on a temporary one instead of
-    # mutating the column every other feature/the caller still expects.
+    # df["date"] stays a plain string throughout this module. merge_asof
+    # needs a real datetime column, so join on a temporary one instead.
     df = df.reset_index(drop=True)
     df["_orig_order"] = df.index
     df["_date_dt"] = pd.to_datetime(df["date"], errors="coerce")
@@ -129,10 +103,8 @@ def _attach_domestic_form(conn: sqlite3.Connection, df: pd.DataFrame, fmt: str) 
         columns=["_orig_order", "_date_dt"])
     merged["domestic_form_matches"] = merged["domestic_form_matches"].fillna(0).astype(int)
 
-    # Shrink toward the player's own international career WPA -- "to some
-    # extent", capped: `domestic_form_max_effective_matches` bounds the
-    # sample size fed to the shrink, so no amount of domestic volume can
-    # ever fully outweigh the international prior.
+    # shrink toward the player's own international career WPA, capped so no
+    # amount of domestic volume can fully outweigh the international prior.
     capped_n = merged["domestic_form_matches"].clip(upper=SETTINGS.domestic_form_max_effective_matches)
     merged["domestic_form_batting_wpa"] = shrink_series(
         merged["domestic_form_batting_wpa"], capped_n, merged["career_batting_wpa"])
@@ -157,12 +129,9 @@ def build_training_table(conn: sqlite3.Connection, fmt: str = SETTINGS.format,
         return pd.DataFrame(columns=ID_COLUMNS + MODEL_FEATURES + TARGETS)
 
     df = pmi.sort_values(["player_id", "date"]).reset_index(drop=True)
-    # `wickets` is 0 (not NULL) even for matches she didn't bowl at all —
-    # unlike `economy`/`bowl_contribution_pct`, which are correctly NULL
-    # there. Masking by balls_bowled>0 makes it describe wicket-taking
-    # *threat when she actually bowls*, not diluted toward 0 by every
-    # non-bowling match a specialist batter has (which would just duplicate
-    # information role_bucket/bowl_contribution_pct already carry).
+    # wickets is 0 (not NULL) even for matches she didn't bowl, unlike
+    # economy/bowl_contribution_pct. mask by balls_bowled>0 so it describes
+    # wicket-taking threat only when she actually bowls.
     df["wickets_when_bowled"] = df["wickets"].where(df["balls_bowled"] > 0)
 
     by_player = df.groupby("player_id")
@@ -191,13 +160,9 @@ def build_training_table(conn: sqlite3.Connection, fmt: str = SETTINGS.format,
     df["form_bowling_wpa"] = _rolling_form(by_player["bowling_wpa"], window, decay)
     df["form_bowl_wickets_per_match"] = _rolling_form(by_player["wickets_when_bowled"], window, decay)
 
-    # vs-opponent and venue records are the sparsest features (often 0-2
-    # matches), so their raw expanding means are shrunk toward the career
-    # baseline (see `shrink_series`'s docstring) — a live-scoring query with
-    # no venue specified would otherwise present the model with
-    # venue_matches=0 paired with a *missing* mean, a combination that never
-    # occurs in training (every played match has a real venue) and was
-    # confirmed to produce wildly unstable predictions.
+    # vs-opponent and venue records are sparse (often 0-2 matches), so shrink
+    # the raw expanding means toward the career baseline (see
+    # shrink_series's docstring) to keep venue_matches=0 in-distribution.
     by_opp = df.groupby(["player_id", "opponent"])
     df["vs_opp_matches"] = by_opp.cumcount()
     raw_vs_opp_bat = by_opp["bat_contribution_pct"].transform(lambda s: s.shift(1).expanding().mean())
@@ -220,11 +185,9 @@ def build_training_table(conn: sqlite3.Connection, fmt: str = SETTINGS.format,
 
     df = _attach_domestic_form(conn, df, fmt)
 
-    # Prefer player_role_final (data-driven from batting position + workload,
-    # refined for known internationals via Wikipedia keeper/role lookups —
-    # see data-collection's role_finalize.py) over the noisier
-    # player_registry.role fallback, exactly as features/current.py does at
-    # scoring time — train/score must agree on how role_bucket is derived.
+    # prefer player_role_final over the noisier player_registry.role
+    # fallback, same as features/current.py at scoring time, since train and
+    # score must agree on how role_bucket is derived.
     registry_roles = pd.read_sql_query(
         "SELECT player_id, role FROM player_registry WHERE format = ?", conn, params=(fmt,))
     registry_roles["registry_role_bucket"] = registry_roles["role"].map(role_bucket)

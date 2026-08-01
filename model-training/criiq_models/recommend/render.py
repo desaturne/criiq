@@ -1,7 +1,6 @@
-"""Human-readable team-sheet rendering — the same `select_xi`/`explain` data
-`cli.cmd_recommend`'s `--explain` JSON already carries, laid out like an
-actual team sheet instead of a JSON blob. Nothing here computes anything new;
-it only formats numbers and sentences that already exist elsewhere.
+"""renders a team sheet as plain text from the same select_xi/explain data
+cli.cmd_recommend --explain outputs as JSON. purely formatting, no new
+computation.
 """
 from __future__ import annotations
 
@@ -31,24 +30,15 @@ def render_team_sheet(team: str, opponent: str, venue_id: str | None,
                        head_to_head: dict | None = None,
                        strength_context: dict | None = None,
                        rotation_xi: dict | None = None) -> str:
-    """`xi_explained`/`pool_explained`: the same lists `cmd_recommend
-    --explain` builds -- each entry is a brief dict (`name`, `role_bucket`,
-    `is_keeper`, `batting_position_median`, `score`) plus a `reasoning` list
-    of sentences. `pool_explained` is the wider shortlist (ranked by raw
-    score, `SETTINGS.pool_size` players); `xi_explained` is the final
-    constrained-and-ordered XI -- not simply its top 11, since the MILP can
-    trade a top-ranked specialist for a lower-scoring keeper/opener the
-    constraints require, so the two lists are shown separately rather than
-    one being a strict prefix of the other.
+    """xi_explained/pool_explained come from cmd_recommend --explain: each
+    entry has name/role_bucket/is_keeper/batting_position_median/score plus a
+    reasoning list. pool_explained is the wider shortlist ranked by score;
+    xi_explained is the final constrained XI, not just the top 11, since the
+    MILP can trade a top specialist for a required keeper/opener.
 
-    The shortlist is split into three role-based pools (batting/all-rounder/
-    bowling, each independently ranked by score) rather than one flat list --
-    this is how a coach actually thinks about a squad, and it's what the XI's
-    own batting/bowling-capable constraints (see `selection/optimize.py`)
-    are already implicitly drawing from; showing the pools this way makes
-    that visible instead of implicit. A player with an unrecognized role
-    (`role_bucket == "unknown"`, no reliable ball-count signal) appears in
-    its own small trailing section rather than being silently dropped.
+    the shortlist splits into batting/all-rounder/bowling pools since that's
+    how a coach thinks about a squad. unrecognized-role players get their own
+    trailing section instead of being dropped.
     """
     lines: list[str] = []
     bar = "=" * _WIDTH
@@ -182,12 +172,9 @@ def render_team_sheet(team: str, opponent: str, venue_id: str | None,
 
 def render_xi_analysis(team: str, opponent: str, venue_id: str | None,
                         xi_explained: list[dict], analysis: dict) -> str:
-    """A coach's own hand-picked XI, scored and checked against the same
-    constraints `select_xi` enforces, plus a direct comparison to the
-    provably-optimal pick (`selection/optimize.analyze_xi`) -- "how good is
-    THIS specific XI", not "what's the best XI". Every real selector
-    sometimes overrides the algorithm; this is the honest scorecard for that
-    call, not a second opinion pretending to replace it.
+    """scores a coach's own hand-picked XI against the same constraints
+    select_xi enforces, and compares it to the optimal pick from
+    selection/optimize.analyze_xi.
     """
     lines: list[str] = []
     bar = "=" * _WIDTH

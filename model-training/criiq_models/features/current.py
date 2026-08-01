@@ -1,17 +1,12 @@
-"""Live scoring feature builder — one player, "as of now".
+"""live scoring feature builder, one player, as of now.
 
-Builds the same `MODEL_FEATURES` shape as `features/historical.py`, but with
-no leakage concern: since we are scoring a genuinely unplayed future match,
-using the player's *entire* history to date is correct (the historical
-builder only restricts to "before this date" because it's manufacturing
-training rows for *past* matches, where using the full history would leak
-the future into the label).
+builds the same MODEL_FEATURES shape as features/historical.py, but with no
+leakage concern since we're scoring a genuinely unplayed future match, so the
+player's entire history to date is fair game.
 
-Also assembles the extra context (`ExtraContext`) that `recommend/score.py`
-needs for the parts of the composite score that are NOT part of the trained
-model: opponent-bowler dismissal matchups, phase profile, track record,
-and eligibility/risk — see `features/historical.py`'s docstring for why
-matchup data isn't reconstructed for training.
+also builds the ExtraContext that recommend/score.py needs for the parts of
+the composite score outside the trained model: matchups, phase profile,
+track record, eligibility/risk.
 """
 from __future__ import annotations
 
@@ -30,16 +25,13 @@ from .schema import MODEL_FEATURES
 
 
 def resolve_role(conn: sqlite3.Connection, player_id: str, fmt: str) -> tuple[str, bool, float | None]:
-    """(role_bucket, is_keeper, batting_position_median), preferring
-    `player_role_final` — data-driven from batting position + ball-count
-    workload, refined further for known international squads via
-    Wikipedia-sourced keeper/role lookups (see data-collection's
-    `role_finalize.py`) — over the noisier Wikidata-derived
-    `player_registry.role` fallback, which is used only when a player has no
-    `player_role_final` row at all (shouldn't happen once role-finalize has
-    run, but a new player added since could lack one). Batting position has
-    no registry-side fallback — it's simply absent if `player_role_final`
-    hasn't been (re-)built since the player's matches were ingested.
+    """(role_bucket, is_keeper, batting_position_median).
+
+    prefers player_role_final (data-driven, refined via Wikipedia keeper/role
+    lookups, see data-collection's role_finalize.py) over the noisier
+    player_registry.role fallback, used only when a player has no
+    player_role_final row yet. batting_position has no fallback, it's just
+    absent until player_role_final is rebuilt for that player.
     """
     final = conn.execute(
         "SELECT primary_role, is_keeper, batting_position_median FROM player_role_final "
@@ -67,8 +59,8 @@ def _player_match_history(conn: sqlite3.Connection, player_id: str, fmt: str) ->
         "AND pw.match_id = pmi.match_id AND pw.format = pmi.format "
         "WHERE pmi.player_id = ? AND pmi.format = ? ORDER BY pmi.date",
         conn, params=(player_id, fmt))
-    # see features/historical.py: wickets is 0 (not NULL) for non-bowling
-    # matches too, so it needs the same balls_bowled>0 mask before use.
+    # wickets is 0 (not NULL) for non-bowling matches too, so mask by
+    # balls_bowled>0 before use, same as features/historical.py.
     hist["wickets_when_bowled"] = hist["wickets"].where(hist["balls_bowled"] > 0)
     return hist
 
@@ -78,21 +70,17 @@ def build_model_features(conn: sqlite3.Connection, player_id: str, opponent: str
     hist = _player_match_history(conn, player_id, fmt)
     row: dict = {f: None for f in MODEL_FEATURES}
     row["career_matches"] = len(hist)
-    # Discipline-specific counts (not part of the trained model's feature
-    # schema — used only by score.py to shrink bat/bowl contribution toward a
-    # prior with the *right* sample size; a specialist bowler with 100 career
-    # matches but 3 batting innings should shrink hard on the batting side).
+    # not part of MODEL_FEATURES, used by score.py to shrink bat/bowl
+    # contribution toward a prior with the right sample size.
     row["career_bat_matches"] = 0
     row["career_bowl_matches"] = 0
     row["career_batting_wpa_matches"] = 0
     row["career_bowling_wpa_matches"] = 0
     row["domestic_form_matches"] = 0
 
-    # Age today -- no leakage concern (an objective fact, not derived from any
-    # outcome); computed regardless of career history (even a debutant has an
-    # age). Real coverage is partial (~36% of players have a known
-    # date_of_birth via opt-in ESPNcricinfo enrichment), NaN otherwise, same
-    # as historical.py's point-in-time version of this feature.
+    # age today, no leakage concern since it's an objective fact. coverage is
+    # partial (~36% have a known date_of_birth), NaN otherwise, same as
+    # historical.py's point-in-time version.
     dob_row = conn.execute(
         "SELECT date_of_birth FROM players WHERE player_id=?", (player_id,)).fetchone()
     if dob_row and dob_row["date_of_birth"]:
@@ -113,20 +101,15 @@ def build_model_features(conn: sqlite3.Connection, player_id: str, opponent: str
     row["career_batting_wpa"] = hist["batting_wpa"].mean()
     row["career_bowling_wpa"] = hist["bowling_wpa"].mean()
     row["career_bowl_wickets_per_match"] = hist["wickets_when_bowled"].mean()
-    # Descriptive only -- NOT in MODEL_FEATURES. Tried as trained-model inputs
-    # (plus form_ variants and a balls-per-wicket strike rate) and checked
-    # against the real temporal holdout: every one of them made the bowling
-    # WPA model *worse* (correlation dropped from 0.103 to as low as 0.088 --
-    # see model-training/README.md). Kept here only as plain-language color
-    # for explain.py ("she builds pressure with a high dot-ball rate"), which
-    # carries no such risk since it isn't fed back into a prediction.
+    # descriptive only, not in MODEL_FEATURES. tried as model inputs but hurt
+    # holdout performance (see model-training/README.md). kept for
+    # explain.py's plain-language color only.
     row["career_bowl_dot_pct"] = hist["bowl_dot_pct"].mean()
     row["career_bowl_boundary_pct"] = hist["bowl_boundary_pct"].mean()
     row["career_bat_matches"] = int(hist["bat_contribution_pct"].notna().sum())
     row["career_bowl_matches"] = int(hist["bowl_contribution_pct"].notna().sum())
-    # Discipline-specific WPA sample sizes — used by score.py to shrink
-    # career_batting_wpa/career_bowling_wpa toward a prior with the *right*
-    # denominator, mirroring career_bat_matches/career_bowl_matches above.
+    # used by score.py to shrink career_batting_wpa/career_bowling_wpa toward
+    # a prior with the right denominator, same idea as the counts above.
     row["career_batting_wpa_matches"] = int(hist["batting_wpa"].notna().sum())
     row["career_bowling_wpa_matches"] = int(hist["bowling_wpa"].notna().sum())
 
@@ -147,14 +130,10 @@ def build_model_features(conn: sqlite3.Connection, player_id: str, opponent: str
     row["form_bowl_wickets_per_match"] = recency_weighted_mean(
         recent["wickets_when_bowled"], order, SETTINGS.form_recency_lambda)
 
-    # vs-opponent and venue records are the sparsest features (often 0-2
-    # matches), so the raw mean is shrunk toward the career baseline exactly
-    # like `features/historical.py` does for training — this is what makes
-    # "no venue specified" (venue_matches=0) behave in-distribution: shrink()
-    # with n=0 simply returns the career prior, the same continuous
-    # degradation training rows see as venue_matches -> 0, instead of an
-    # abrupt raw-mean-vs-missing cliff (confirmed via the Mandhana-vs-
-    # Hemalatha sanity check to otherwise produce wildly unstable predictions).
+    # vs-opponent and venue records are sparse (often 0-2 matches), so shrink
+    # toward the career baseline same as features/historical.py does for
+    # training. keeps venue_matches=0 (no venue specified) in-distribution
+    # instead of an abrupt raw-mean-vs-missing cliff.
     vs_opp = hist[hist["opponent"] == opponent]
     row["vs_opp_matches"] = len(vs_opp)
     row["vs_opp_bat_contribution_pct"] = shrink(
@@ -174,11 +153,9 @@ def build_model_features(conn: sqlite3.Connection, player_id: str, opponent: str
         at_venue["bowl_contribution_pct"].mean() if len(at_venue) else None,
         len(at_venue), row["career_bowl_contribution_pct"])
 
-    # Domestic form: no leakage concern here (unlike historical.py's
-    # merge_asof reconstruction) -- data-collection's player_domestic_form is
-    # already "current, as of the last refresh", so a live scoring query just
-    # reads it directly. Same shrink-toward-international-career-baseline,
-    # same effective-sample-size cap, as training.
+    # domestic form: no leakage concern here since player_domestic_form is
+    # already current as of the last refresh, so just read it directly. same
+    # shrink-toward-international-baseline and sample cap as training.
     dom = conn.execute(
         "SELECT matches, batting_wpa_per_match, bowling_wpa_per_match "
         "FROM player_domestic_form WHERE player_id=? AND format=?", (player_id, fmt)).fetchone()
@@ -223,12 +200,10 @@ class ExtraContext:
     venue_chasing_average: float | None = None
     venue_chasing_strike_rate: float | None = None
     venue_bogey_bowler: dict | None = None  # this opponent's top dismisser of her, at this ground
-    archetype: str | None = None  # data-collection's player_advanced.archetype (anchor/power hitter/finisher/balanced)
+    archetype: str | None = None  # player_advanced.archetype (anchor/power hitter/finisher/balanced)
     bowling_style: str | None = None
     batting_hand: str | None = None
-    # Descriptive batting profile (data-collection's player_advanced.profile_json,
-    # batting block) -- "what to expect / where the impact is". Surfaced in
-    # explain.py, never a model feature.
+    # descriptive batting profile, surfaced in explain.py, never a model feature.
     bat_balls: int | None = None
     bat_strike_rate: float | None = None
     bat_boundary_pct: float | None = None
@@ -238,7 +213,7 @@ class ExtraContext:
     bat_best_phase: str | None = None        # phase with this batter's highest strike rate
     bat_best_phase_sr: float | None = None
     bat_best_phase_boundary_pct: float | None = None
-    # Game-awareness signals (score.py's strike-rate soft-penalty offset).
+    # game-awareness signals (score.py's strike-rate soft-penalty offset).
     setting_strike_rate: float | None = None   # batting first
     chasing_strike_rate: float | None = None   # under run-chase pressure
     bat_consistency: float | None = None        # 0..1, higher = more consistent match-to-match
@@ -249,20 +224,14 @@ def build_extra_context(conn: sqlite3.Connection, player_id: str, opponent: str,
                          opponent_roster: list[str] | None = None,
                          venue_id: str | None = None,
                          opponent_players: list[str] | None = None) -> ExtraContext:
-    """`opponent_roster`: the opponent's current player_ids (`roster.team_pool`),
-    pre-computed and passed in by callers scoring many players against the
-    same opponent (e.g. `RecommendationScorer.score_many`) -- it doesn't
-    depend on `player_id`, so recomputing it fresh per player scored would be
-    pure waste. Computed internally when omitted (e.g. direct/test callers).
+    """opponent_roster: the opponent's current player_ids, pre-computed and
+    passed in by callers scoring many players against the same opponent
+    (e.g. score_many), since it doesn't depend on player_id. computed
+    internally when omitted.
 
-    `opponent_players`: when the coach has named the opponent's *specific* XI
-    (not just "the team"), both matchup axes scope to exactly those players --
-    the batting matchup to *their* bowlers (by bowler_id, not the whole team's
-    bowler_team), the bowling matchup to *their* batters. This is what makes
-    the recommendation counter-optimize against the chosen 11: players who
-    match up well against those specific opponents score higher. When omitted,
-    behaviour is unchanged (batting matchup vs the whole opponent team, bowling
-    matchup vs the full current roster).
+    opponent_players: when the coach has named the opponent's specific XI,
+    both matchup axes scope to exactly those players instead of the whole
+    team, letting the recommendation counter-optimize against the chosen 11.
     """
     ctx = ExtraContext()
 
@@ -287,13 +256,10 @@ def build_extra_context(conn: sqlite3.Connection, player_id: str, opponent: str,
         ctx.matchup_dismissal_rate = float(matchup["dismissals"].sum()) / balls
         ctx.matchup_runs_per_ball = float(matchup["runs"].sum()) / balls
 
-    # Symmetric bowling-side matchup: how well THIS player has bowled against
-    # the opponent's *specific current batters* (not the blunt "any batter,
-    # any team" aggregate) -- was entirely missing before: dismissal_matchup
-    # has no batting_team column, so unlike the batting axis above (which
-    # filters by the stored bowler_team), opponent-scoping here goes through
-    # the opponent's current roster membership on the batter_id side, same
-    # roster lookup `features/style_matchup.py`'s opponent_bowling_mix uses.
+    # bowling-side matchup: how well this player has bowled against the
+    # opponent's specific current batters. dismissal_matchup has no
+    # batting_team column, so opponent-scoping goes through roster
+    # membership on batter_id instead, same lookup style_matchup.py uses.
     opponent_batters = (opponent_players if opponent_players
                         else opponent_roster if opponent_roster is not None
                         else team_pool(conn, opponent, fmt, gender))
@@ -327,10 +293,8 @@ def build_extra_context(conn: sqlite3.Connection, player_id: str, opponent: str,
             ctx.venue_setting_strike_rate = vrow["setting_strike_rate"]
             ctx.venue_chasing_average = vrow["chasing_average"]
             ctx.venue_chasing_strike_rate = vrow["chasing_strike_rate"]
-        # This opponent's top dismisser of her, at this specific ground --
-        # same `bowler_team=?` direct match the batting matchup above uses
-        # (venue_dismissal_matchup stores it the same way dismissal_matchup
-        # does), not a roster join.
+        # this opponent's top dismisser of her at this ground, same direct
+        # bowler_team match the batting matchup above uses, not a roster join.
         bogey = conn.execute(
             "SELECT bowler_name, bowler_team, dismissals, balls, runs "
             "FROM venue_dismissal_matchup WHERE batter_id=? AND format=? "
@@ -349,11 +313,9 @@ def build_extra_context(conn: sqlite3.Connection, player_id: str, opponent: str,
         ctx.setting_strike_rate = impact["setting_strike_rate"]
         ctx.chasing_strike_rate = impact["chasing_strike_rate"]
 
-    # Consistency: how steady the player's per-match batting contribution is,
-    # match to match (a "game awareness / dependable" signal -- boom-or-bust
-    # players score lower). 1 / (1 + coefficient of variation) over matches
-    # they actually batted in, so 1.0 = perfectly steady, ->0 = wildly
-    # variable. Needs a few innings to mean anything.
+    # how steady the player's per-match batting contribution is, match to
+    # match. 1 / (1 + coefficient of variation), so 1.0 = perfectly steady,
+    # ->0 = wildly variable. needs a few innings to mean anything.
     contribs = [r["bat_contribution_pct"] for r in conn.execute(
         "SELECT bat_contribution_pct FROM player_match_impact "
         "WHERE player_id=? AND format=? AND bat_contribution_pct IS NOT NULL",
@@ -399,12 +361,10 @@ def build_extra_context(conn: sqlite3.Connection, player_id: str, opponent: str,
 
 
 def _attach_batting_profile(ctx: "ExtraContext", profile_json: str | None) -> None:
-    """Pull the descriptive batting block (strike rate / boundary% / dot% /
-    sixes / per-phase splits) out of `player_advanced.profile_json` and onto
-    the context, plus derive the batter's single strongest phase (highest
-    strike rate among phases they've faced >= 30 balls in) -- the "best overs
-    to play / where the impact is" signal. All descriptive: none of this
-    feeds the score, only `explain.py`'s narrative.
+    """pulls the descriptive batting block out of player_advanced.profile_json
+    and derives the batter's strongest phase (highest strike rate among
+    phases with >= 30 balls faced). descriptive only, feeds explain.py's
+    narrative, not the score.
     """
     if not profile_json:
         return

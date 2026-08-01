@@ -24,9 +24,9 @@ def test_shrink_series_matches_scalar_shrink_elementwise():
     result = shrink_series(observed, n, prior, prior_strength=8)
 
     assert result[0] == shrink(50.0, 1, 10.0, prior_strength=8)
-    # n=0 with no observed value: the exact "no venue specified" case that
-    # caused live-scoring predictions to go out-of-distribution — must
-    # degrade cleanly to the prior, not stay missing.
+    # n=0 with no observed value: this is the "no venue specified" case that
+    # caused live predictions to go out of distribution, so it must degrade
+    # to the prior rather than stay missing.
     assert result[1] == 10.0
     assert abs(result[2] - 50.0) < 0.5
 

@@ -19,12 +19,10 @@ def test_current_team_uses_most_recent_appearance(conn):
 
 
 def test_current_team_ignores_domestic_franchise_appearances(conn):
-    # The critical fix this session's design review caught: once domestic
-    # league matches share this same `matches`/`match_players` shape, a
-    # player's *most recent* appearance overall can be a franchise game, not
-    # an international one. `player_current_teams` must still resolve her
-    # real country from her international history -- not the franchise --
-    # otherwise she'd silently vanish from her own country's `team_pool()`.
+    # once domestic league matches share this same table shape, a player's
+    # most recent appearance can be a franchise game, not international.
+    # `player_current_teams` must still resolve her real country from
+    # international history, or she'd vanish from her own team_pool().
     register_player(conn, "p1", "A Player")
     add_match(conn, "m1", "2023-01-01", "India", "Australia")
     add_appearance(conn, "m1", "India", "A Player")
@@ -42,12 +40,9 @@ def test_current_team_ignores_domestic_franchise_appearances(conn):
 
 
 def test_team_pool_includes_inactive_player_with_recent_domestic_activity(conn):
-    # The corrected eligibility carve-out: `retirement_status=INACTIVE` stays
-    # a true, unmodified fact (an earlier version of this fix wrongly turned
-    # the status label itself into "ACTIVE" for a domestically-active
-    # player -- caught by inspection: E Bisht, genuinely INCONSISTENT/
-    # INACTIVE internationally, was showing "ACTIVE"). Inclusion in the pool
-    # is driven by the separate `recent_domestic_activity` flag instead.
+    # `retirement_status=INACTIVE` stays a true, unmodified fact (an earlier
+    # version wrongly flipped it to "ACTIVE" for domestically-active players).
+    # pool inclusion is driven by the separate `recent_domestic_activity` flag.
     register_player(conn, "p1", "Domestically Active")
     conn.execute("UPDATE player_registry SET retirement_status='INACTIVE', "
                  "recent_domestic_activity=1 WHERE player_id='p1'")
@@ -86,15 +81,10 @@ def test_known_teams_lists_both_sides(conn):
 
 
 def test_cross_gender_identifier_collision_resolves_to_the_right_person(conn):
-    # Real bug found in the live DB: cricsheet identifier "5661ef90" is
-    # shared by a female India player (2009-2012) and a male UAE player
-    # "Aryansh Sharma" (2023-2026), both recorded under the ambiguous short
-    # name "A Sharma" -- a genuine quirk in Cricsheet's own registry, not a
-    # bug in this codebase's matching. data-collection's identity resolution
-    # now splits a colliding identifier into two distinct, stable player
-    # rows (one per gender, `players.gender` set) rather than blending them
-    # -- `_player_id_map` must resolve each gender's appearances to its OWN
-    # id, not silently pick one or exclude both.
+    # real bug: a shared Cricsheet identifier can map to two different
+    # players (one per gender). data-collection splits these into distinct
+    # player rows, so `_player_id_map` must resolve each gender's appearances
+    # to its own id, not silently pick one or exclude both.
     register_player(conn, "shared_female", "A Shared", identifier="shared_ident", gender="female")
     register_player(conn, "shared_male", "A Shared", identifier="shared_ident", gender="male")
     add_match(conn, "m1", "2023-01-01", "India", "Australia", gender="female")

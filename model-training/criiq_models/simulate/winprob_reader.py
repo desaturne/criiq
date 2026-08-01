@@ -1,18 +1,12 @@
-"""Local read-only mirror of data-collection's ``EmpiricalWinProb``/
-``probability_for_state`` (see ``data-collection/criiq_data/winprob.py``).
+"""local read-only mirror of data-collection's EmpiricalWinProb /
+probability_for_state (see data-collection/criiq_data/winprob.py).
 
-Loads the same persisted per-(format, gender) grid parquet files data-
-collection's win-prob model writes, without importing data-collection's own
-code -- this package deliberately never does (see ``features/historical.py``'s
-docstring, and ``roster.py``'s ``_player_id_map``, which mirrors identity
-logic locally for the exact same reason). The binning/shrinkage-lookup logic
-below is a direct mirror of ``EmpiricalWinProb._lookup``/``predict`` so
-results are identical to data-collection's own ``criiq-data winprob`` output.
+loads the same persisted per-(format, gender) grid parquet files without
+importing data-collection's own code, since this package never does that.
+the lookup logic mirrors EmpiricalWinProb._lookup/predict directly.
 
-``WinProbLookup`` is loaded once per (format, gender) and reused across an
-entire simulated match -- the free function ``probability_for_state`` on the
-data-collection side reloads all 5 files from disk on every call, which is
-fine for a one-off query but far too slow to call once per simulated ball.
+WinProbLookup loads once per (format, gender) and is reused across a whole
+simulated match, since reloading from disk per ball would be too slow.
 """
 from __future__ import annotations
 

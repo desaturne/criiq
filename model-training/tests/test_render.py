@@ -18,8 +18,8 @@ def test_render_team_sheet_shows_pool_and_xi_with_reasoning():
         _explained("p3", "Bench Bowler", 12.0, "bowler",
                    reasoning=["Bench Bowler rates 12.0/100."]),
     ]
-    # XI includes p1 and p2 (keeper forced in by constraints) but not p3 --
-    # exercises the "XI is not simply the pool's top N" case directly.
+    # XI includes p1 and p2 (keeper forced in by constraints) but not p3,
+    # exercising the "XI is not simply the pool's top N" case directly.
     xi = [
         _explained("p1", "Star Batter", 40.0, "batter",
                    reasoning=["Star Batter rates 40.0/100.",
@@ -35,9 +35,9 @@ def test_render_team_sheet_shows_pool_and_xi_with_reasoning():
                                "format": "T20", "gender": "female"},
                               constraints)
 
-    # The roster header + both role-pool sections present (2 batters incl.
-    # the keeper, 1 bowler -- no all-rounders in this fixture, so that
-    # section is omitted entirely rather than shown empty), before the XI.
+    # roster header plus both role-pool sections present (2 batters incl.
+    # keeper, 1 bowler; no all-rounders here, so that section is omitted
+    # entirely rather than shown empty), before the XI.
     assert "ROSTER: 3 PLAYERS ACROSS 3 ROLE POOLS" in text
     assert "BATTING POOL (2)" in text
     assert "BOWLING POOL (1)" in text
@@ -45,19 +45,19 @@ def test_render_team_sheet_shows_pool_and_xi_with_reasoning():
     assert "PLAYING XI" in text
     assert text.index("BATTING POOL") < text.index("PLAYING XI")
 
-    # Every pool member appears with her own reasoning, including the one
+    # every pool member appears with her own reasoning, including the one
     # who didn't make the XI.
     assert "Bench Bowler" in text
     assert "Bench Bowler rates 12.0/100." in text
 
-    # Pool members who *did* make the XI are tagged, the one who didn't isn't.
+    # pool members who *did* make the XI are tagged, the one who didn't isn't.
     lines = text.splitlines()
     star_line = next(l for l in lines if "Star Batter" in l and "rates" not in l)
     bench_line = next(l for l in lines if "Bench Bowler" in l and "rates" not in l)
     assert "[XI]" in star_line
     assert "[XI]" not in bench_line
 
-    # The XI section itself carries its own (different, slot-aware) reasoning.
+    # the XI section itself carries its own (different, slot-aware) reasoning.
     assert "Picked for the opening slot ahead of Bench Bowler" in text
     assert "No close alternative in the pool for the keeper slot" in text
 

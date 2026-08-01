@@ -1,34 +1,10 @@
-"""Is a dedicated learning-to-rank model worth adding, or does the existing
-WPA regression already rank players well enough?
+"""is a dedicated learning-to-rank model worth adding over the existing WPA
+regressors for ranking players?
 
-The recommendation engine's actual job is a ranking task — "who's most
-valuable to pick" — not a regression task. `recommend/train.py` trains
-pointwise regressors (predict each player's absolute WPA) and `select_xi`
-then ranks by that prediction; a dedicated ranker (XGBoost/LightGBM's
-`lambdarank`-style objectives, grouped by match) optimizes relative
-ordering directly instead, which is a better match for the task in theory.
-
-This module answers the question empirically rather than assuming the
-theoretical case holds: fit a ranker (`recommend.train_ranker`) on the same
-temporal holdout as `evaluate/backtest.py`, and compare its ranking quality
-against simply ranking by the two persisted WPA regressors' combined
-prediction. Two metrics, both computed per held-out match (a match's
-players — both teams combined — are the natural "group" to rank within):
-
-  * top-11 hit rate — of the actual top-11 players by real combined WPA in
-    that match, how many does the top-11-by-predicted-score include. The
-    most literal, decision-relevant measure of "does it pick the right
-    people".
-  * Spearman rank correlation — predicted order vs actual order within the
-    match. NDCG's usual gain formula (2^relevance - 1) doesn't behave
-    sensibly for a continuous, frequently-negative quantity like WPA, so a
-    rank correlation is used instead of forcing a technically-questionable
-    NDCG computation.
-
-`select_xi`'s objective is only switched from the composite score to a
-ranker's output if this comparison shows a *meaningful* improvement — see
-this module's docstring in `cli.py`'s `rank-backtest` command for how that
-decision is reported.
+fits a ranker (recommend.train_ranker) on the same temporal holdout as
+evaluate/backtest.py and compares it against ranking by the two persisted
+WPA regressors, using top-11 hit rate and spearman rank correlation (not
+NDCG, since WPA is continuous and often negative).
 """
 from __future__ import annotations
 
@@ -49,12 +25,9 @@ def _combined_label(df: pd.DataFrame) -> pd.Series:
 
 
 def _graded_relevance(label: pd.Series, n_grades: int = 5) -> pd.Series:
-    """LightGBM's `lambdarank` requires small non-negative integer relevance
-    grades, not raw continuous values — bin the (signed, continuous) combined
-    WPA label into quantile grades (0 = lowest, n_grades-1 = highest) across
-    the whole training population. `duplicates="drop"` handles the large
-    exact-zero mass (players with no bowling involvement etc.) collapsing
-    some quantile edges together.
+    """lambdarank needs small non-negative integer grades, not raw values, so
+    bin the combined WPA label into quantiles. duplicates="drop" handles the
+    large exact-zero mass collapsing some quantile edges together.
     """
     grades = pd.qcut(label, n_grades, labels=False, duplicates="drop")
     return grades.fillna(0).astype(int)

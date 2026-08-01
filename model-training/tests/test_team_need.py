@@ -12,11 +12,10 @@ def _seed_phase_wpa(conn, player_id, phase, batting=0.0, bowling=0.0, matches=10
 
 
 def _seed_benchmark_gender(conn, player_id, gender="female"):
-    """The format-wide benchmark is scoped to one gender (see team_need.py's
-    docstring) via each player's real match participation, not a `gender`
-    column on `player_phase_wpa` itself (it has none) -- so a benchmark
-    player needs a `player_match_wpa`/`matches` row of the right gender to be
-    included in `_phase_benchmarks` at all.
+    """the format-wide benchmark is scoped to one gender via each player's
+    real match participation, not a `gender` column on `player_phase_wpa`
+    (it has none), so a benchmark player needs a matching gender-tagged
+    match row to be included in `_phase_benchmarks`.
     """
     mid = f"m_{player_id}"
     add_match(conn, mid, "2024-01-01", "Team A", "Team B", gender=gender)
@@ -43,20 +42,18 @@ def test_compute_team_need_identifies_pool_weak_phase(conn):
 
 
 def test_compute_team_need_ignores_the_other_genders_benchmark(conn):
-    # A men's-only benchmark of very strong death hitters must not drag a
-    # women's pool's own (perfectly average, 0.0) death performance below
-    # its correctly-scoped (also 0.0) benchmark -- the exact bug this fix
-    # guards against: before it, this format-wide benchmark blended both
-    # genders, so a men's benchmark of +0.20 could wrongly make a genuinely
-    # average women's pool look "weak" by comparison.
+    # a men's-only benchmark of strong death hitters must not drag a
+    # women's pool's own average (0.0) death performance below its
+    # correctly-scoped benchmark. the bug this guards against: the benchmark
+    # used to blend both genders together.
     _seed_phase_wpa(conn, "male_star", "death", batting=0.20)
     _seed_benchmark_gender(conn, "male_star", gender="male")
     _seed_phase_wpa(conn, "p1", "death", batting=0.0)
     conn.commit()
 
     team_need = compute_team_need(conn, ["p1"], "T20", "female")
-    # No female benchmark data exists at all -- "death" isn't even a key,
-    # so it can't be flagged as the neediest phase.
+    # no female benchmark data exists, "death" isn't even a key, so it
+    # can't be flagged as the neediest phase.
     assert team_need["neediest_phase"] is None
     assert "death" not in team_need["benchmarks"]
 
@@ -64,7 +61,7 @@ def test_compute_team_need_ignores_the_other_genders_benchmark(conn):
 def test_compute_team_need_none_when_pool_is_not_below_benchmark(conn):
     _seed_phase_wpa(conn, "benchmark1", "death", batting=-0.05)
     _seed_benchmark_gender(conn, "benchmark1")
-    _seed_phase_wpa(conn, "p1", "death", batting=0.05)  # pool is ABOVE benchmark
+    _seed_phase_wpa(conn, "p1", "death", batting=0.05)  # pool is above benchmark
     conn.commit()
 
     team_need = compute_team_need(conn, ["p1"], "T20", "female")
@@ -88,7 +85,7 @@ def test_player_team_need_bonus_rewards_strength_in_neediest_phase(conn):
 
     assert specialist_bonus["bonus"] > 0
     assert specialist_bonus["phase"] == "death"
-    # never a penalty -- a player below the benchmark simply gets nothing
+    # never a penalty, a player below the benchmark simply gets nothing
     assert weak_member_bonus["bonus"] == 0.0
 
 

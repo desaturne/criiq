@@ -1,33 +1,12 @@
-"""Genetic algorithm: search over the batting order, respecting real
-batting-order structure.
+"""genetic algorithm that searches for the best batting order.
 
-Complements `ga_bowling.py` and the exact-MILP squad selector
-(`selection/optimize.py`) with the one combinatorial decision neither can
-express: given an already-chosen XI, what *order* maximizes the outcome
-against a specific opposition attack? Chromosome = a permutation of the
-batters; order-crossover (OX) preserves the permutation structure crossover
-naturally violates with naive single-point recombination.
+given a fixed XI, finds the order that maximizes the outcome against a
+specific opposition. `batting_groups` keeps the search realistic: openers,
+middle order and tail are searched as separate permutation groups so a
+bowler never ends up opening.
 
-**Batting order is searched in role-based bands, not as one free-for-all
-permutation.** A real lineup isn't drawn from an unconstrained shuffle of
-all 11 players -- the two openers might interchange who takes strike first,
-the top/middle order rotates among themselves by form/matchup, and the tail
-(specialist bowlers) fill out the rest, but a specialist bowler doesn't
-suddenly open and an opener doesn't bat at 10. `batting_groups` encodes this:
-an ordered list of player-id groups (e.g. `[[opener_a, opener_b],
-[top_middle...], [tail...]]`) -- slots are assigned strictly group-by-group
-in that order, and the GA searches a permutation *within* each group
-independently (so the openers group, size 2, can still interchange which of
-the two goes in first), never moving a player across a group boundary. A
-single all-in-one group recovers the fully unconstrained search.
-
-**Fitness is noisy** (a Monte Carlo mean over a handful of reps), so the
-tracked "best" is protected against that noise rather than trusting raw
-per-generation scores: elitism (the best-known individual always stays in
-the gene pool) and a re-verification step (extra reps) before accepting an
-apparent new best. `fitness_history` logs the running best-known fitness
-(monotonically non-decreasing by construction), not each generation's raw
-top score.
+fitness is a noisy Monte Carlo mean, so the best-known individual is kept
+via elitism and re-verified with extra reps before being replaced.
 """
 from __future__ import annotations
 
@@ -91,7 +70,7 @@ def optimize_batting_order(batting_groups: list, bowler_pool: list, outcome_mode
                             generations: int = 60, n_reps: int = 8, rng_seed: int | None = None) -> dict:
     """`batting_groups`: ordered list of player-id groups, e.g.
     `[[opener_a, opener_b], [top_middle_1..N], [tail_1..M]]` (see module
-    docstring). For the simplest fully-unconstrained search, pass a single
+    docstring). for the simplest fully-unconstrained search, pass a single
     group containing all players: `[[p1, p2, ..., p11]]`.
     """
     groups = _validate_groups(batting_groups)
@@ -138,7 +117,7 @@ def optimize_batting_order(batting_groups: list, bowler_pool: list, outcome_mode
         history.append(best_fitness)
 
         survivors = [ind for ind, _ in scored[:max(2, pop_size // 2 - 1)]]
-        survivors.append(best)  # elitism: the true best-known never drops out of the gene pool
+        survivors.append(best)  # elitism: keep the best-known individual in the pool
         children = []
         while len(survivors) + len(children) < pop_size:
             a = survivors[rng.integers(len(survivors))]

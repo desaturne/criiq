@@ -1,7 +1,6 @@
-"""Rules-compliance tests for the ball-by-ball T20 engine (`simulate/engine.py`),
-checked directly against rulebook-cricket.md's cited clauses -- synthetic
-outcome models/profiles throughout, no DB dependency (mirrors this test
-suite's existing convention of a tiny fixture DB or none at all).
+"""rules-compliance tests for the ball-by-ball T20 engine
+(simulate/engine.py), checked against rulebook-cricket.md's clauses.
+synthetic outcome models throughout, no DB dependency.
 """
 from __future__ import annotations
 
@@ -61,19 +60,16 @@ def test_no_bowler_exceeds_max_overs_and_no_consecutive_overs():
 
 
 def test_bowler_selection_prefers_a_real_phase_specialist_over_least_used():
-    """A captain's proven death-overs bowler should actually bowl the death
-    overs (and the powerplay specialist the powerplay), not whichever
-    bowler simply has bowled fewest overs so far -- the realistic default
-    scheduling `select_bowler`'s docstring describes. Needs real squad depth
-    (6+ bowling options, one more than the bare minimum) for this preference
-    to be safe to apply at all -- see `select_bowler`'s `min_required` guard.
+    """a proven death-overs bowler should bowl the death overs, not whichever
+    bowler has bowled fewest overs so far. needs 6+ bowling options (one more
+    than bare minimum) for this to be safe, see `select_bowler`'s
+    `min_required` guard.
     """
     bowlers6 = BOWLERS5 + ["w5"]
     batter_profiles, bowler_profiles = _profiles(BATTERS + bowlers6)
-    # Only rank each specialist in their own phase -- otherwise a bowler
-    # ranked (even mediocrely) in every phase would out-prioritize the
-    # "no data" bowlers everywhere and exhaust their 4-over cap in the
-    # middle overs before ever reaching their actual specialty phase.
+    # only rank each specialist in their own phase, otherwise a bowler ranked
+    # in every phase would out-prioritize "no data" bowlers everywhere and
+    # exhaust their cap before reaching their actual specialty phase.
     bowler_profiles["w0"].phase_rank = {"powerplay": 1}
     bowler_profiles["w1"].phase_rank = {"death": 1}
     model = _model(NO_EXTRAS_NO_WICKET)
@@ -92,17 +88,15 @@ def test_bowler_selection_prefers_a_real_phase_specialist_over_least_used():
 
 
 def test_bowler_selection_ignores_phase_tiering_at_exact_minimum_pool_size():
-    """Exactly 5 bowlers (the bare minimum for a 20-over innings at 4 overs
-    each) has zero slack -- phase-tiering must not apply here at all (see
-    `select_bowler`'s dynamic remaining-capacity-vs-remaining-need check),
-    since holding any bowler back from a phase they're needed in risks a
-    legal deadlock.
+    """exactly 5 bowlers (the bare minimum for a 20-over innings) has zero
+    slack, so phase-tiering must not apply at all, holding a bowler back
+    here risks a legal deadlock.
     """
     batter_profiles, bowler_profiles = _profiles(BATTERS + BOWLERS5)
     bowler_profiles["w0"].phase_rank = {"powerplay": 1}
     bowler_profiles["w1"].phase_rank = {"death": 1}
     model = _model(NO_EXTRAS_NO_WICKET)
-    # Must not raise -- with no slack, the engine falls back to the
+    # must not raise: with no slack, the engine falls back to the
     # provably-safe least-used-first schedule regardless of phase data.
     state, log = simulate_innings(BATTERS, BOWLERS5, model, batter_profiles, bowler_profiles,
                                    rng=np.random.default_rng(11))
@@ -110,13 +104,10 @@ def test_bowler_selection_ignores_phase_tiering_at_exact_minimum_pool_size():
 
 
 def test_bowler_selection_is_safe_even_with_a_duplicate_pool_entry():
-    """Real bug, caught live: a *static* len(bowler_pool)-based slack check
-    can be fooled by a pool list containing a duplicate entry (the same
-    bowler_id twice) -- it counts as "extra slack" by raw list length even
-    though there's no genuinely different bowler behind it, which let phase-
-    tiering wrongly activate in a razor-tight 5-distinct-bowler pool and
-    deadlock. The dynamic remaining-capacity check (computed over *distinct*
-    bowlers) must not be fooled by this and must never raise.
+    """real bug: a static len(bowler_pool) slack check can be fooled by a
+    duplicate pool entry, counting fake "extra slack" and letting phase-
+    tiering wrongly activate in a tight pool. the fix computes slack over
+    distinct bowlers and must never raise.
     """
     pool_with_duplicate = BOWLERS5 + ["w0"]  # w0 listed twice, still only 5 real bowlers
     batter_profiles, bowler_profiles = _profiles(BATTERS + BOWLERS5)
@@ -133,8 +124,8 @@ def test_bowler_selection_is_safe_even_with_a_duplicate_pool_entry():
 
 
 def test_bowler_selection_without_phase_data_falls_back_to_least_used():
-    """No `bowler_profiles` phase-rank data anywhere -> identical to the
-    pre-existing least-used-first behaviour (no regression).
+    """no phase-rank data anywhere -> identical to the pre-existing
+    least-used-first behaviour (no regression).
     """
     batter_profiles, bowler_profiles = _profiles(BATTERS + BOWLERS5)
     balls = {"w0": 6, "w1": 0, "w2": 12}
@@ -146,7 +137,7 @@ def test_bowler_selection_without_phase_data_falls_back_to_least_used():
 
 def test_bowling_pool_too_small_raises_clear_error():
     """4 bowlers x 4 overs max = 16 overs of capacity, short of the 20 an
-    innings needs -- must raise rather than silently violate Law 17.6/ICC PC
+    innings needs, must raise rather than silently violate Law 17.6/ICC PC
     cl. 13.9.1.
     """
     small_pool = BOWLERS5[:4]
@@ -239,9 +230,8 @@ def test_chase_ends_immediately_on_reaching_target():
 
 
 class _StubWinProb:
-    """A fixed-probability stand-in for `WinProbLookup` -- these tests exercise
-    match/Super-Over *rules mechanics*, not the win-probability model itself,
-    so no real persisted model file is needed.
+    """fixed-probability stand-in for WinProbLookup. these tests exercise
+    match/Super Over rules mechanics, not the win-probability model itself.
     """
     def predict_one(self, **kwargs):
         return 0.5
@@ -268,11 +258,10 @@ def test_super_over_ends_early_on_two_wickets_not_all_out():
 
 
 def test_a_tied_run_chase_is_resolved_by_super_over_not_reported_as_a_bare_tie():
-    """T20Is have no draw (rulebook-cricket.md sec 7.1): with a model where
-    every ball scores exactly 1 run and both sides face the same 120 legal
-    balls, the second innings always finishes exactly one run short (target -
-    1) -- a guaranteed tie -- which must trigger at least one Super Over
-    rather than reporting `winner == "Tie"` outright.
+    """T20Is have no draw (rulebook-cricket.md sec 7.1). with every ball
+    scoring exactly 1 run, the second innings always finishes one run short,
+    a guaranteed tie, which must trigger a Super Over, not a bare
+    `winner == "Tie"`.
     """
     batter_profiles, bowler_profiles = _profiles(BATTERS + BOWLERS5)
     always_one = {"0": 0.0, "1": 1.0, "2": 0.0, "3": 0.0, "4": 0.0, "6": 0.0,

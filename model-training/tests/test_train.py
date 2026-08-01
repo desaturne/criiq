@@ -16,14 +16,11 @@ def _seed_gender(conn, gender: str, player_id: str, opponent: str) -> None:
         add_match_wpa(conn, player_id, mid, batting_wpa=0.05, bowling_wpa=0.02, date=d)
 
 
-def _stub_fit_one(df, target):
-    """Real `_fit_one` fits actual sklearn pipelines (HistGradientBoosting/
-    RandomForest) that need realistically-sized, non-degenerate data to bin/
-    split on -- already exercised by the real end-to-end training run, not
-    what this module's tests are about. Standing in a trivial always-fittable
-    DummyRegressor isolates what's actually under test here: `train()`'s
-    orchestration (does it write to the right per-(format,gender) directory
-    without clobbering another scope), not model quality.
+def _stub_fit_one(df, target, gender=None):
+    """real `_fit_one` needs realistically-sized data for sklearn pipelines
+    to bin/split on, already covered by the end-to-end training run. this
+    stub isolates what's under test here: train()'s orchestration, not
+    model quality.
     """
     rows = df.dropna(subset=[target])
     model = DummyRegressor().fit(rows[["career_matches"]].fillna(0), rows[target])
@@ -43,10 +40,9 @@ def test_artifacts_dir_is_scoped_by_format_and_gender(tmp_path, monkeypatch):
 
 
 def test_training_one_gender_does_not_clobber_the_others_artifacts(conn, tmp_path, monkeypatch):
-    # The exact bug this guards against: before artifacts were scoped by
-    # (format, gender), every scope shared the same filenames, so training
-    # a second gender silently overwrote the first's models with no error
-    # and no way to tell afterward which gender's model was actually loaded.
+    # the bug this guards against: before artifacts were scoped by
+    # (format, gender), every scope shared filenames, so training a second
+    # gender silently overwrote the first's models.
     monkeypatch.setattr(train_module, "RECOMMENDATION_ARTIFACTS_DIR", tmp_path)
     monkeypatch.setattr(train_module, "_fit_one", _stub_fit_one)
 
@@ -62,7 +58,7 @@ def test_training_one_gender_does_not_clobber_the_others_artifacts(conn, tmp_pat
     assert female_metadata["gender"] == "female"
     assert male_metadata["gender"] == "male"
 
-    # Re-loading female metadata AFTER training male proves training male
+    # re-loading female metadata after training male proves training male
     # never touched female's files.
     reloaded_female = train_module.load_metadata("T20", "female")
     reloaded_male = train_module.load_metadata("T20", "male")
@@ -75,7 +71,7 @@ def test_training_one_gender_does_not_clobber_the_others_artifacts(conn, tmp_pat
     male_models = train_module.load_models("T20", "male")
     assert set(female_models) == {"batting_wpa", "bowling_wpa"}
     assert set(male_models) == {"batting_wpa", "bowling_wpa"}
-    # Distinct fitted estimators, not the same object/file reused across genders.
+    # distinct fitted estimators, not the same object/file reused across genders.
     assert female_models["batting_wpa"] is not male_models["batting_wpa"]
 
 

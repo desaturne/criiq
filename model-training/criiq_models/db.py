@@ -7,10 +7,10 @@ from .config import DB_PATH
 
 
 def connect(db_path: Path | str | None = None) -> sqlite3.Connection:
-    """Read-only connection to the data-collection SQLite DB.
+    """read-only connection to the data-collection SQLite DB.
 
-    This module never writes to criiq.db — it owns its own derived
-    artifacts (models, feature tables) under artifacts/player_recommendation.
+    this module never writes to criiq.db, it owns its own derived artifacts
+    (models, feature tables) under artifacts/player_recommendation.
     """
     path = Path(db_path or DB_PATH)
     if not path.exists():

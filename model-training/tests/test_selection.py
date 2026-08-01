@@ -19,10 +19,9 @@ def _scored(pid, score, archetype=None, best_phase_sr=None, six_rate=None):
 
 
 def test_role_highlights_ranks_finisher_by_death_sr_not_composite_score():
-    # The RM Ghosh case: the genuine finisher (death SR 166) rates LOW on the
-    # composite score (7.8), while a fringe finisher rates higher overall.
-    # "Best finisher" must go by finishing quality (death SR), not the
-    # win-probability composite that undervalues her.
+    # the RM Ghosh case: the genuine finisher (death SR 166) rates low on the
+    # composite score while a fringe finisher rates higher. "best finisher"
+    # must go by finishing quality, not the composite score that undervalues her.
     players = [
         _scored("ghosh", 7.8, archetype="finisher", best_phase_sr=166.0),
         _scored("fringe", 22.0, archetype="finisher", best_phase_sr=120.0),
@@ -37,7 +36,7 @@ def test_role_highlights_ranks_finisher_by_death_sr_not_composite_score():
 
 
 def test_select_xi_respects_role_quotas_and_maximizes_score():
-    # 4 batters, 4 bowlers, 2 all-rounders — pick 6 total, >=3 batting-capable, >=3 bowling-capable.
+    # 4 batters, 4 bowlers, 2 all-rounders: pick 6 total, >=3 batting-capable, >=3 bowling-capable.
     players = [
         _player("bat1", 90, "batter"), _player("bat2", 80, "batter"),
         _player("bat3", 70, "batter"), _player("bat4", 10, "batter"),
@@ -69,7 +68,7 @@ def test_select_xi_handles_empty_pool():
 
 
 def test_select_xi_forces_in_a_keeper_when_one_exists_in_the_pool():
-    # the only keeper is the lowest scorer — a plain top-N pick would drop her.
+    # the only keeper is the lowest scorer, so a plain top-N pick would drop her.
     players = [
         _player("bat1", 90, "batter"), _player("bat2", 80, "batter"),
         _player("bat3", 70, "batter"),
@@ -97,11 +96,9 @@ def test_select_xi_skips_keeper_constraint_when_pool_has_no_keeper_data():
 
 
 def test_select_xi_finds_keeper_even_outside_the_display_pool_cutoff():
-    # regression test: a real bug had the top-`pool_size` truncation happen
-    # BEFORE the MILP ran, so a keeper scoring below the display cutoff was
-    # invisible to the constraint by the time it was applied, silently
-    # degrading min_keepers to 0. 30 batters score above the sole keeper,
-    # who must still be pulled in from outside the pool_size=20 cutoff.
+    # regression test: a real bug had the pool_size truncation happen before
+    # the MILP ran, so a keeper below the display cutoff was invisible to the
+    # constraint, silently degrading min_keepers to 0.
     players = [_player(f"bat{i}", 100 - i, "batter") for i in range(30)]
     players.append(_player("keeper1", 1, "batter", is_keeper=True))
     settings = dataclasses.replace(SETTINGS, xi_size=11, min_batting_capable=0,
@@ -118,10 +115,9 @@ def test_select_xi_finds_keeper_even_outside_the_display_pool_cutoff():
 
 
 def test_select_xi_orders_output_like_a_team_sheet_not_by_score():
-    # opener2 (position 2) scores lowest of all but must still lead the XI
-    # (locked opener slot); bowlers trail the core batting order, ranked by
-    # their OWN score (bowler_no_pos outscores bowler_late, so bats higher
-    # in the tail) rather than by a raw historical position number.
+    # opener2 scores lowest but still leads the XI (locked opener slot);
+    # bowlers trail the batting order, ranked by their own score rather than
+    # a raw historical position number.
     players = [
         _player("opener1", 90, "batter", batting_position_median=1),
         _player("opener2", 20, "batter", batting_position_median=2),
@@ -139,8 +135,8 @@ def test_select_xi_orders_output_like_a_team_sheet_not_by_score():
 
 
 def test_select_xi_forces_in_openers_even_outside_the_display_pool_cutoff():
-    # the only two recognized openers score the lowest — a plain top-N pick
-    # would leave the team with no opener at all.
+    # the only two recognized openers score the lowest, so a plain top-N
+    # pick would leave the team with no opener at all.
     players = [_player(f"mid{i}", 100 - i, "batter", batting_position_median=4) for i in range(9)]
     players.append(_player("opener1", 5, "batter", batting_position_median=1))
     players.append(_player("opener2", 4, "batter", batting_position_median=2))
@@ -154,12 +150,9 @@ def test_select_xi_forces_in_openers_even_outside_the_display_pool_cutoff():
 
 
 def test_select_xi_overflow_opener_competes_on_score_not_locked_to_slot_three():
-    # three players score high enough and are opener-capable, but only 2
-    # opener slots exist. The 3rd opener (opener3) should NOT be forced into
-    # "position 3" just because she's opener-tagged -- she competes purely
-    # on score against the core batting order, and here she beats everyone
-    # in that pool, so she still bats at 3, but ahead of a *higher-scoring*
-    # nominal top-order player she must fall behind on merit.
+    # three players are opener-capable but only 2 opener slots exist. the
+    # 3rd opener shouldn't be forced into "position 3" just for being
+    # opener-tagged, she competes purely on score against the batting order.
     players = [
         _player("opener1", 95, "batter", batting_position_median=1),
         _player("opener2", 90, "batter", batting_position_median=2),
@@ -213,9 +206,9 @@ def test_analyze_xi_matches_optimal_reports_zero_gap():
 
 
 def test_analyze_xi_flags_violations_and_scores_gap_against_optimal():
-    # A coach picks 4 batters and only 2 bowlers when 3 bowling-capable are
-    # required -- a real, common override (e.g. favouring an extra batter
-    # for a flat pitch) that should be scored honestly, not silently allowed.
+    # a coach picks 4 batters and only 2 bowlers when 3 bowling-capable are
+    # required, a common override that should be scored honestly, not
+    # silently allowed.
     players = [
         _player("bat1", 90, "batter"), _player("bat2", 80, "batter"),
         _player("bat3", 70, "batter"), _player("bat4", 60, "batter"),
