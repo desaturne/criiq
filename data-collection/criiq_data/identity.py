@@ -19,32 +19,20 @@ _VENUE_ALIASES = {
     "m.chinnaswamy stadium": "M Chinnaswamy Stadium",
     "punjab cricket association stadium, mohali": "PCA Stadium, Mohali",
     "punjab cricket association is bindra stadium, mohali": "PCA Stadium, Mohali",
-    # Confirmed real venue conflation (found while auditing gender/venue
-    # isolation): the default fallback below canonicalizes on `raw.split(",")[0]`,
-    # which for a generic English ground name merges genuinely different real
-    # grounds that all happen to share a bare "County Ground"/"National
-    # Stadium" prefix -- e.g. Bristol, Chelmsford, Derby, Hove, Northampton,
-    # and Worcester's county grounds all collapsed into one `venue_id`
-    # (54 matches wrongly sharing one ground), and Hamilton NZ's National
-    # Stadium collapsed with Karachi's (29 matches, two different countries).
-    # Each specifically-qualified raw string below gets its own correct,
-    # distinct canonical name instead of losing the city on the general path.
+    # the fallback below canonicalizes on raw.split(",")[0], which merges
+    # different grounds that share a bare "County Ground"/"National Stadium"
+    # prefix, so each is listed here with its own distinct canonical name.
     "county ground, bristol": "County Ground, Bristol",
     "county ground, chelmsford": "County Ground, Chelmsford",
     "county ground, derby": "County Ground, Derby",
     "county ground, hove": "County Ground, Hove",
     "county ground, new road, worcester": "County Ground, New Road, Worcester",
     "county ground, northampton": "County Ground, Northampton",
-    # Same real ground as "The Cooper Associates County Ground[, Taunton]"
-    # (Somerset's sponsored name) -- both already independently canonicalize
-    # to "The Cooper Associates County Ground" via the general fallback
-    # below, so this one needs to be pointed at that name explicitly to join
-    # them rather than being left to collide with the *other* cities' grounds.
+    # same ground as "The Cooper Associates County Ground" (Somerset's
+    # sponsored name), pointed at that canonical name explicitly.
     "county ground, taunton": "The Cooper Associates County Ground",
-    # The raw venue string itself doesn't say which English county ground --
-    # honestly labelled as unresolved rather than guessed or merged with any
-    # of the specific ones above (see data-collection's "not obtainable, not
-    # faked" principle).
+    # raw string doesn't say which English county ground, so it's labelled
+    # unresolved rather than guessed.
     "county ground": "County Ground (ground unspecified)",
     "national stadium, hamilton": "National Stadium, Hamilton",
     "national stadium, karachi": "National Stadium, Karachi",
@@ -53,32 +41,24 @@ _VENUE_ALIASES = {
 
 
 def player_id_for(identifier: str, gender: str | None = None) -> str:
-    """Deterministic id from a Cricsheet registry identifier. `gender` must
-    be passed when (and only when) `identifier` is confirmed to span more
-    than one gender's matches (see `_colliding_identifiers`) -- a real,
-    if rare, quirk in Cricsheet's own upstream registry, not a bug in this
-    codebase's matching, where the same identifier gets reused across two
-    genuinely different people. Left `None` for the overwhelming majority of
-    identifiers, which only ever appear under one gender, so their id is
-    identical to before this parameter existed -- no downstream rebuild
-    needed for them.
+    """deterministic id from a Cricsheet registry identifier. pass `gender`
+    only when `identifier` is confirmed to span more than one gender's
+    matches (see `_colliding_identifiers`); leave `None` for the rest so
+    their id stays unchanged.
     """
     suffix = f":{gender}" if gender else ""
     return str(uuid.uuid5(_NS, f"cricsheet:{identifier}{suffix}"))
 
 
 def player_id_map(conn) -> tuple[dict[str, str], dict[tuple[str, str], str]]:
-    """Two lookup structures every builder that resolves cricsheet identifiers
-    to player_ids should use instead of a plain `{identifier: player_id}`
-    dict (which silently picks an arbitrary one of two real people for the
-    handful of identifiers Cricsheet's own registry reuses across genders):
+    """two lookup structures for resolving cricsheet identifiers to
+    player_ids, instead of a plain `{identifier: player_id}` dict (which
+    would pick an arbitrary one of two people for colliding identifiers):
 
-      * `unambiguous`: identifier -> player_id, for the ~99.5% of
-        identifiers that only ever appear under one gender -- check this
-        first, no gender needed.
+      * `unambiguous`: identifier -> player_id, for identifiers that only
+        ever appear under one gender.
       * `split`: (identifier, gender) -> player_id, for the rare identifiers
-        that do span more than one gender -- only reachable when the
-        caller's row actually carries a gender to disambiguate with.
+        that span more than one gender.
     """
     unambiguous: dict[str, str] = {}
     split: dict[tuple[str, str], str] = {}
@@ -91,17 +71,13 @@ def player_id_map(conn) -> tuple[dict[str, str], dict[tuple[str, str], str]]:
 
 
 def resolve_player_ids(conn, identifiers: pd.Series, genders: pd.Series | None = None) -> pd.Series:
-    """Vectorized counterpart to `player_id_map` for pandas-merge-style
-    builders: `identifiers` resolved to player_id, falling back to
-    `(identifier, gender)` (using the aligned `genders` series) only for the
-    rare identifiers that need it. Omit `genders` only when the caller
-    already knows none of its identifiers can possibly collide.
+    """vectorized counterpart to `player_id_map`: resolves `identifiers` to
+    player_id, falling back to `(identifier, gender)` for the rare
+    identifiers that collide across genders.
 
-    Unmatched entries are `None`, never NaN -- `pd.Series.map` on an object
-    dtype produces `float('nan')` for misses, and `nan` is truthy in Python
-    (`bool(nan) is True`), so a caller's usual `if not pid: continue` guard
-    (the same idiom a plain dict's `.get()` has always supported) would
-    silently let unmatched rows through instead of skipping them.
+    unmatched entries are `None`, never NaN: `pd.Series.map` misses produce
+    `nan`, which is truthy in Python, so a caller's `if not pid: continue`
+    guard would otherwise silently let unmatched rows through.
     """
     unambiguous, split = player_id_map(conn)
     result = identifiers.map(unambiguous)
@@ -119,10 +95,8 @@ def _slug(text: str) -> str:
 
 
 def _derived_roles(conn) -> dict[tuple[str, str | None], str]:
-    """(identifier, gender) -> role. Gender-scoped (not just identifier) so
-    the rare identifier Cricsheet's own registry reuses across two genuinely
-    different people doesn't blend one person's batting with the other's
-    bowling into a single, meaningless combined role.
+    """(identifier, gender) -> role. gender-scoped so the rare identifier
+    reused across two different people doesn't blend their roles together.
     """
     idmap = pd.read_sql_query(
         "SELECT im.player_name, im.identifier, m.gender FROM identifier_map im "
@@ -163,11 +137,8 @@ def _derived_roles(conn) -> dict[tuple[str, str | None], str]:
 
 def _colliding_identifiers(conn) -> dict[str, list[str]]:
     """identifier -> sorted list of the >1 distinct genders it appears under
-    in Cricsheet's own per-match registry data. Confirmed real (not a
-    matching bug in this codebase -- see `ingest._parse_info`, which reads
-    these identifiers verbatim from each match file's own `registry,people`
-    rows) but rare: identifiers not in this dict (the overwhelming majority)
-    only ever appear under one gender.
+    in Cricsheet's own registry data. rare: most identifiers aren't in this
+    dict at all, since they only ever appear under one gender.
     """
     rows = conn.execute(
         "SELECT DISTINCT im.identifier, m.gender FROM identifier_map im "
@@ -214,9 +185,8 @@ def resolve_players(conn) -> dict:
         else:
             method = "cricsheet_only"
 
-        # A colliding identifier mints one row PER gender (each a distinct,
-        # stable id via player_id_for(ident, gender)); everyone else keeps a
-        # single gender=NULL row with exactly the id they've always had.
+        # a colliding identifier mints one row per gender; everyone else
+        # keeps a single gender=NULL row.
         genders_for_ident = colliding.get(ident)
         if genders_for_ident:
             split_identifiers += 1
@@ -240,9 +210,8 @@ def resolve_players(conn) -> dict:
         "resolution_method=excluded.resolution_method, needs_review=excluded.needs_review",
         rows,
     )
-    # Removes players for identifiers no longer present at all, AND the OLD
-    # gender-agnostic id of any identifier that has just been split into
-    # per-gender ids above (that id is deliberately not in `rows` anymore).
+    # removes players no longer present, and the old gender-agnostic id of
+    # any identifier just split into per-gender ids above.
     valid_ids = tuple(row[0] for row in rows)
     placeholders = ",".join("?" * len(valid_ids)) if valid_ids else "NULL"
     conn.execute(f"DELETE FROM players WHERE player_id NOT IN ({placeholders})", valid_ids)

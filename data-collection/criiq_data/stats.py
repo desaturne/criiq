@@ -9,15 +9,9 @@ log = get_logger("stats")
 
 
 def build_innings(conn, fmt: str, team_type: str | None = "international") -> pd.DataFrame:
-    """One row per (identifier, match_id): batting + bowling for that match.
+    """one row per (identifier, match_id): batting and bowling stats for that match.
 
-    `team_type='international'` (the default) is what every existing career/
-    impact/phase/venue/opponent builder expects and has always effectively
-    gotten -- before domestic leagues were ingested, every match *was*
-    international, so this default preserves their behaviour unchanged.
-    Pass `team_type=None` for every match regardless of competition, or
-    `team_type='club'` for domestic-only (used by `wpa.py`'s domestic-form
-    aggregate) -- never silently blend the two under one 'career' number.
+    team_type defaults to 'international'; pass None for all matches or 'club' for domestic-only (used by wpa.py).
     """
     tt_clause_aliased = " AND m.team_type = ?" if team_type is not None else ""
     tt_clause_plain = " AND team_type = ?" if team_type is not None else ""
@@ -54,17 +48,10 @@ def build_innings(conn, fmt: str, team_type: str | None = "international") -> pd
         _bb=legal_bowl.astype(int),
         _rc=(deliv["runs_off_bat"].fillna(0) + deliv["wides"].fillna(0) + deliv["noballs"].fillna(0)),
         _wk=bowl_credit.astype(int),
-        # Dot ball: a legal delivery off which the batting team scored
-        # nothing at all (the standard commentary definition). A wide/no-ball is
-        # never a dot: the bowler has already conceded a run by bowling it.
-        # A bye/leg-bye is also never a dot in practice: `runs_total` counts
-        # any run scored off the delivery regardless of source, and a real
-        # bye/leg-bye is by definition at least 1 run -- so this criterion
-        # naturally excludes them too, it isn't a special case being made
-        # here for byes specifically.
+        # dot ball: legal delivery with zero total runs scored (wides/no-balls
+        # already concede a run, so they're excluded automatically).
         _dot=(legal_bowl & (deliv["runs_total"].fillna(0) == 0)).astype(int),
-        # Boundary conceded off the bat (4s/6s) -- containment quality that
-        # economy alone doesn't distinguish from "gave away ones and twos".
+        # boundary conceded off the bat (4s/6s), since economy alone doesn't distinguish this from ones and twos.
         _bdry=(legal_bowl & (deliv["runs_off_bat"].fillna(0) >= 4)).astype(int),
     ).groupby(["match_id", "bowler"]).agg(
         balls_bowled=("_bb", "sum"), runs_conceded=("_rc", "sum"),

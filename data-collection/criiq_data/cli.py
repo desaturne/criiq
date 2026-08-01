@@ -301,12 +301,9 @@ def cmd_h2h(args):
 
 
 def cmd_vs_team(args):
-    """A player's full matchup breakdown against one specific opponent team
-    -- the "player card, clicked against Australia" view: every bowler
-    she's faced (runs/balls/strike rate/dismissal rate, bogey bowler
-    highlighted) if she bats, every batter she's bowled to (economy/wickets,
-    best-matchup and most-expensive batter highlighted) if she bowls. An
-    all-rounder gets both; a pure specialist just gets her one real side.
+    """a player's full matchup breakdown against one specific opponent team:
+    every bowler she's faced if she bats, every batter she's bowled to if
+    she bowls. an all-rounder gets both.
     """
     conn = connect(); init_schema(conn)
     found = _find_player(conn, args.name)

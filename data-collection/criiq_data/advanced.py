@@ -50,10 +50,8 @@ def build_for_format(conn, fmt: str) -> int:
     bat_hand = styles.batter_hands(conn)
     unambiguous, split = player_id_map(conn)
     # (cricsheet_identifier, gender) -> (batting_hand, bowling_style); the
-    # handful of Cricsheet registry identifiers reused across two genuinely
-    # different people of different genders (see identity.py) can have
-    # different style metadata for each, so a plain identifier-keyed dict
-    # would silently keep only one of them.
+    # handful of identifiers reused across two different people (see
+    # identity.py) can have different style metadata for each.
     style_meta = {}
     for r in conn.execute(
             "SELECT cricsheet_identifier, gender, batting_hand, bowling_style FROM players"):
@@ -63,12 +61,9 @@ def build_for_format(conn, fmt: str) -> int:
         return style_meta.get((ident, None)) or style_meta.get((ident, gender)) or (None, None)
 
     def _lookup_by_name_gender(names: pd.Series, genders: pd.Series, mapping: dict) -> pd.Series:
-        """`bowler_buckets`/`batter_hands` are keyed (name, gender) -- `None`
-        for the overwhelming majority of unsplit names, a real gender for the
-        handful split by the cross-gender-collision fix (see styles.py). Try
-        the split-specific key first, falling back to the unsplit `None` key
-        -- same precedence every other split/unambiguous lookup in this
-        codebase uses.
+        """`bowler_buckets`/`batter_hands` are keyed (name, gender), `None`
+        for unsplit names. tries the split-specific key first, falling back
+        to the unsplit `None` key.
         """
         exact = pd.Series(list(zip(names, genders)), index=names.index).map(mapping)
         fallback = pd.Series(list(zip(names, [None] * len(names))), index=names.index).map(mapping)
@@ -96,10 +91,8 @@ def build_for_format(conn, fmt: str) -> int:
     bat["rotate"] = (bat["legal"] & bat["rob"].isin([1, 2, 3])).astype(int)
     bat["lb"] = bat["legal"].astype(int)
 
-    # gender kept in every group key throughout this function: the handful
-    # of colliding identifiers would otherwise have two different people's
-    # deliveries blended into one meaningless combined "profile" -- see
-    # identity.py.
+    # gender kept in every group key throughout: colliding identifiers would
+    # otherwise blend two different people's deliveries into one profile.
     bat_overall = bat.groupby(["striker_id", "gender"]).agg(
         runs=("rob", "sum"), balls=("lb", "sum"), fours=("four", "sum"),
         sixes=("six", "sum"), bdry=("bdry", "sum"), dots=("dot", "sum"),
@@ -232,29 +225,22 @@ def _vs_type_block(vs: dict) -> dict:
         for t, v in vs.items()}
 
 
-# Minimum balls faced before a batter's population stats count toward the
-# per-gender archetype thresholds (below) -- ~2 T20 innings, so a one-off
-# cameo can't skew a whole gender's percentile bars.
+# minimum balls faced before a batter's stats count toward the per-gender
+# archetype thresholds below, so a one-off cameo can't skew the percentile bars.
 _ARCHETYPE_MIN_BALLS = 120
 
-# Minimum balls faced before an *individual* earns a specialist role label at
-# all. Without it a bowler who faced 7 balls (all at the death, decent strike
-# rate) gets tagged "finisher" off pure noise and pollutes the finisher pool;
-# below this a batter is just "balanced". Deliberately lower than the
-# percentile-bar minimum above: this is "enough to describe a role", not
-# "enough to move a population percentile".
+# minimum balls faced before an individual earns a specialist role label at
+# all; below this a batter is just "balanced". lower than the percentile-bar
+# minimum above since this is about describing one player, not a population.
 _ARCHETYPE_MIN_CLASSIFY_BALLS = 60
 _ARCHETYPE_MIN_DEATH_BALLS = 40  # death sample a finisher needs, matching the death-SR percentile gate
 
 
 def _gender_archetype_thresholds(bat_overall: dict, bat_phase: dict) -> dict:
-    """Per-gender percentile bars for the archetype classifier. Men's and
-    women's T20 six-hitting/strike-rate distributions are very different
-    (men's six rate p90 ~8.0 per 100 balls vs women's ~1.9, SR p90 ~146 vs
-    ~115 -- confirmed on the live DB), so an absolute SR/six threshold shared
-    across both would label most men "power hitters" and almost no women, for
-    no cricketing reason. Bars are therefore each gender's own population
-    percentiles, computed once per build from the aggregated batting data.
+    """per-gender percentile bars for the archetype classifier. men's and
+    women's T20 six-hitting/strike-rate distributions differ enough that a
+    shared threshold would label most men "power hitters" and almost no
+    women, so each gender gets its own population percentiles.
     """
     import numpy as np
     per_gender: dict = {}
@@ -297,9 +283,8 @@ def _batting_block(bo, innings, phase, vs_type, accel, vs_type_detail=None, thre
         "dot_pct": round(100 * bo["dots"] / balls, 1) if balls else None,
         "scoring_pct": round(100 * (balls - bo["dots"]) / balls, 1) if balls else None,
         "rotation_pct": round(100 * bo["rotate"] / balls, 1) if balls else None,
-        # Sixes per 100 balls -- the scale-stable "power" signal the archetype
-        # classifier leans on (a raw six *count* just tracks how long a career
-        # is), surfaced so downstream explanations can narrate it directly.
+        # sixes per 100 balls: a scale-stable "power" signal, unlike a raw
+        # six count which just tracks career length.
         "six_rate": round(100 * bo["sixes"] / balls, 2) if balls else None,
         "fours": int(bo["fours"]), "sixes": int(bo["sixes"]),
         "by_phase": {ph: _phase_block(phase[ph]) for ph in phase},
@@ -317,23 +302,17 @@ def _batting_block(bo, innings, phase, vs_type, accel, vs_type_detail=None, thre
 
 
 def _archetype(b: dict, th: dict) -> str:
-    """Descriptive batting role, classified against this batter's own gender's
-    population bars (`th`, from `_gender_archetype_thresholds`):
+    """descriptive batting role, classified against this batter's own
+    gender's population bars (`th`):
 
-      * finisher    -- bats a real share of balls at the death AND is genuinely
-                       destructive there (death SR *and* death boundary% both
-                       above the gender's high bar): strike rate + sizes +
-                       boundaries, exactly what a death finisher needs.
-      * power hitter -- clears the rope well above the gender norm (six rate
-                       at/above the gender p75) at a high overall strike rate:
-                       big hitting wherever they bat. Six rate is the primary
-                       signal (a raw six *count* just tracks career length).
-      * anchor      -- accumulator: bats a lot up top, rotates strike hard, but
-                       at a below-median strike rate.
-      * balanced    -- none of the above stands out.
+      * finisher: bats a real share of death overs and is genuinely
+        destructive there (SR and boundary% both above the gender's bar).
+      * power hitter: six rate at/above the gender p75 with a high overall
+        strike rate.
+      * anchor: bats up top, rotates strike hard, but below-median SR.
+      * balanced: none of the above stands out.
 
-    finisher takes precedence over power hitter: a death specialist who also
-    hits sixes (e.g. RM Ghosh) is described by the more specific role.
+    finisher takes precedence over power hitter.
     """
     total = b["balls"] or 0
     if total < _ARCHETYPE_MIN_CLASSIFY_BALLS:

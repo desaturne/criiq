@@ -1,21 +1,10 @@
-"""Finalized playing role (batter/bowler/all-rounder) + wicket-keeper flag.
+"""finalized playing role (batter/bowler/all-rounder) + wicket-keeper flag.
 
-`players.derived_role` (see `identity.py`) already classifies from ball
-counts alone (>=60 balls faced/bowled), but that conflates two different
-things: a genuine batting all-rounder, and a specialist bowler who simply has
-a long career's worth of career-long tail-end batting balls. Batting
-*position* (median position across innings, derived from the same
-ball-by-ball data used everywhere else — nobody had computed and stored it
-per-player before) disambiguates the two.
-
-Wicket-keeper status has **no signal anywhere in the ball-by-ball data**
-(Cricsheet's CSV export doesn't carry fielder-of-dismissal), so it can only
-come from an external source. Per the project's established policy
-(ESPNcricinfo blocks scraping — see the data-collection README), that source
-is Wikipedia squad-page lookups, done out-of-band and merged in via
-`merge_external_roles` — same scaffold-fill-load shape as `styles.py`, and
-merged strictly by `key_cricinfo` (never by raw name) so it can never create
-a duplicate identity for a player already in `players`.
+`players.derived_role` (identity.py) classifies from ball counts alone,
+which conflates batting all-rounders with tail-batting specialist bowlers;
+batting position disambiguates the two. wicket-keeper status has no signal
+in the ball-by-ball data, so it comes from Wikipedia squad-page lookups
+merged in via `merge_external_roles`, matched strictly by `key_cricinfo`.
 """
 from __future__ import annotations
 
@@ -30,19 +19,15 @@ from .logging_utils import get_logger
 
 log = get_logger("role_finalize")
 
-# A derived all-rounder whose median batting position is this deep in the
-# order is a bowler who's faced enough tail-end balls over a long career to
-# clear the raw ball-count threshold, not a genuine batting all-rounder.
+# a derived all-rounder batting this deep in the order is really a tail-end
+# bowler, not a genuine batting all-rounder.
 TAIL_POSITION_THRESHOLD = 8
 
 
 def compute_batting_positions(conn, fmt: str) -> pd.DataFrame:
-    """Median batting position + innings-batted count, per (cricsheet
-    identifier, gender) -- gender-scoped because a handful of Cricsheet's
-    own registry identifiers are reused across two genuinely different
-    people of different genders (see identity.py); grouping by identifier
-    alone would blend both people's batting positions into one meaningless
-    combined median.
+    """median batting position + innings-batted count, per (cricsheet
+    identifier, gender). gender-scoped since a handful of Cricsheet
+    identifiers are reused across two different people (see identity.py).
     """
     deliv = pd.read_sql_query(
         "SELECT d.match_id, d.innings, d.over, d.ball_in_over, d.striker, d.non_striker, "
@@ -82,11 +67,9 @@ def _classify(derived_role: str | None, position_median: float | None) -> str:
 
 
 def _role_field_keepers(conn) -> set:
-    """player_ids whose *existing* enrichment role data (players.role or
-    player_styles.playing_role, from Wikidata/Wikipedia) already says
-    wicket-keeper. Promoting these into `is_keeper` is not fabrication -- it's
-    surfacing a fact the pipeline already collected. "goalkeeper" (a Wikidata
-    mis-tag seen on a few players) is explicitly excluded.
+    """player_ids whose existing role data (players.role or
+    player_styles.playing_role) already says wicket-keeper. excludes
+    "goalkeeper", a Wikidata mis-tag seen on a few players.
     """
     keepers = set()
     for q in ("SELECT player_id, role AS r FROM players WHERE role IS NOT NULL",
@@ -99,21 +82,16 @@ def _role_field_keepers(conn) -> set:
 
 
 def finalize_local_roles(conn, fmt: str) -> int:
-    """Local-only pass: refines `derived_role` with batting position, and sets
-    `is_keeper` from any existing wicket-keeper role field
-    (`_role_field_keepers`). The keeper flag is merged with MAX, never
-    overwritten down to 0, so a subsequent (or prior) `merge_external_roles`
-    keeper flag is preserved -- the two sources add, they don't clobber.
+    """local-only pass: refines `derived_role` with batting position, and
+    sets `is_keeper` from any existing wicket-keeper role field. the keeper
+    flag is merged with MAX so it's never overwritten back down to 0.
     """
     keeper_ids = _role_field_keepers(conn)
     positions = compute_batting_positions(conn, fmt)
     players_df = pd.read_sql_query(
         "SELECT player_id, cricsheet_identifier, gender, derived_role FROM players", conn)
-    # merge on (identifier, gender), not identifier alone -- see
-    # compute_batting_positions' docstring. A player row with gender=NULL
-    # (the overwhelming majority, never split) still needs to match
-    # positions computed under its one real gender, so fall back to a
-    # gender-agnostic merge for those specifically.
+    # merge on (identifier, gender); rows with gender=NULL (never split)
+    # fall back to a gender-agnostic merge.
     split_players = players_df[players_df["gender"].notna()]
     unsplit_players = players_df[players_df["gender"].isna()]
     merged_split = split_players.merge(
@@ -142,8 +120,7 @@ def finalize_local_roles(conn, fmt: str) -> int:
         "primary_role=excluded.primary_role, "
         "batting_position_median=excluded.batting_position_median, "
         "innings_batted=excluded.innings_batted, "
-        # never demote a keeper flag: MAX preserves a flag set by the external
-        # merge (or a prior run), only ever promoting 0/NULL -> 1.
+        # never demote a keeper flag: MAX only ever promotes 0/NULL -> 1.
         "is_keeper=MAX(COALESCE(player_role_final.is_keeper, 0), excluded.is_keeper), "
         "keeper_source=COALESCE(player_role_final.keeper_source, excluded.keeper_source), "
         "role_source=excluded.role_source, updated_at=excluded.updated_at",
@@ -164,23 +141,15 @@ def finalize_all_local(conn) -> dict:
 
 
 def merge_external_roles(conn, records: list[dict], fmt: str) -> dict:
-    """Merge externally-sourced (key_cricinfo, is_keeper, primary_role, ...)
-    records into `player_role_final`. Matches strictly by `key_cricinfo`
-    against the existing `players` table — a record with no matching
-    key_cricinfo is reported as unmatched rather than silently dropped or
-    inserted as a new identity (this is precisely how a "S Mandhana" /
-    "Smriti Mandhana" duplicate would get created if matching were done by
-    raw name instead).
+    """merge externally-sourced role records into `player_role_final`.
 
-    Each record: {key_cricinfo, name (source label, for the unmatched
-    report only), is_keeper, primary_role_override (optional), bowling_style
-    (optional, "pace"/"spin"), confidence, source_url}.
+    matches strictly by `key_cricinfo`; a record with no match is reported
+    unmatched rather than dropped or inserted as a new identity (matching by
+    raw name could create a duplicate like "S Mandhana" vs "Smriti Mandhana").
 
-    `bowling_style` is merged into `player_styles` — separately from
-    `player_role_final` — and never overwrites an existing value there (the
-    same "existing values win" rule `styles.py` already uses for manually
-    filled/Wikipedia-sourced style data), so a better-sourced value already
-    on file is never clobbered by this coarser pace/spin tag.
+    each record: {key_cricinfo, name, is_keeper, primary_role_override,
+    bowling_style, confidence, source_url}. `bowling_style` is also merged
+    into `player_styles`, without overwriting an existing value there.
     """
     by_cricinfo = {r["key_cricinfo"]: r["player_id"] for r in conn.execute(
         "SELECT key_cricinfo, player_id FROM players WHERE key_cricinfo IS NOT NULL")}
@@ -218,10 +187,8 @@ def merge_external_roles(conn, records: list[dict], fmt: str) -> dict:
             "bowling_style = COALESCE(player_styles.bowling_style, excluded.bowling_style), "
             "updated_at=excluded.updated_at",
             (player_id, bowling_style, source, ts))
-        # advanced.py's vs-pace/vs-spin computation (styles.bowler_buckets)
-        # reads `players.bowling_style`, a separate column from
-        # `player_styles.bowling_style` — both need the backfill for the new
-        # coverage to actually feed the vs-bowling-type splits.
+        # advanced.py's vs-pace/vs-spin computation reads players.bowling_style,
+        # a separate column from player_styles.bowling_style, so both need the backfill
         conn.execute(
             "UPDATE players SET bowling_style = COALESCE(bowling_style, ?) WHERE player_id=?",
             (bowling_style, player_id))
@@ -233,16 +200,10 @@ def merge_external_roles(conn, records: list[dict], fmt: str) -> dict:
 
 
 def team_candidates(conn, team: str, gender: str = "female") -> pd.DataFrame:
-    """Players who have appeared for `team` (any T20 match, any format row in
-    `matches`), for scoping a squad-page name match to a small, high-precision
-    candidate set instead of matching against all ~7000 players.
-
-    The join is gender-qualified (`p.gender IS NULL OR p.gender = m.gender`)
-    -- the handful of Cricsheet registry identifiers reused across two
-    genuinely different people of different genders (see identity.py) would
-    otherwise match *both* split player rows for a single real appearance,
-    one of them for the wrong gender entirely. `p.gender IS NULL` always
-    passes for the ~99.5% of identifiers that were never split.
+    """players who've appeared for `team`, scoping a squad-page name match
+    to a small candidate set instead of matching against all players.
+    gender-qualified join since a handful of Cricsheet identifiers are
+    reused across two different people (see identity.py).
     """
     return pd.read_sql_query(
         "SELECT DISTINCT p.player_id, p.canonical_name, p.key_cricinfo "
@@ -266,17 +227,12 @@ def _initials(name: str) -> str:
 
 
 def match_full_name_to_cricsheet(full_name: str, candidates: pd.DataFrame) -> tuple[dict | None, str]:
-    """Match a "First Last" name (e.g. from a Wikipedia squad table) against
-    cricsheet's "XY Surname" display names for one team's roster.
+    """match a "First Last" name (e.g. from a Wikipedia squad table) against
+    Cricsheet's "XY Surname" display names for one team's roster.
 
-    Plain fuzzy string similarity (e.g. rapidfuzz WRatio) scores "Smriti
-    Mandhana" vs "S Mandhana" at ~85 — *below* the project's existing
-    fuzzy_threshold (88) used for other identity matching, because the two
-    strings simply don't share enough characters overall, despite being
-    unambiguously the same person. Cricsheet's naming convention is
-    consistent enough (initials + surname) that matching on surname, then
-    disambiguating by leading initial, is both more accurate and auditable
-    than tuning a generic string-similarity threshold down.
+    plain fuzzy string similarity scores this too low to trust (e.g.
+    "Smriti Mandhana" vs "S Mandhana" ~85, below fuzzy_threshold), so this
+    matches on surname and disambiguates by leading initial instead.
     """
     surname = _surname(full_name).lower()
     initials = _initials(full_name)
@@ -304,7 +260,7 @@ def match_full_name_to_cricsheet(full_name: str, candidates: pd.DataFrame) -> tu
 
 _ROLE_KEYWORDS = (
     ("all-rounder", "all-rounder"), ("all rounder", "all-rounder"),
-    ("keeper", "batter"),  # a keeper's batting/bowling capability is "batter" — is_keeper is separate
+    ("keeper", "batter"),  # a keeper's batting/bowling capability is "batter"; is_keeper is tracked separately
     ("bowler", "bowler"), ("batter", "batter"), ("batsman", "batter"),
 )
 
@@ -318,11 +274,9 @@ def _map_primary_role(role_text: str) -> str | None:
 
 
 def _map_bowling_style(role_text: str) -> str | None:
-    """Coarse pace/spin from the same squad-page role text ("Spin Bowler" /
-    "Pace Bowler") already fetched for role-finalization — no new scraping,
-    just persisting a field that was previously discarded. `None` (not
-    guessed) for role text that doesn't specify a bowling discipline at all
-    (a plain "Batter"/"All-rounder"/"Wicket-keeper" tag).
+    """coarse pace/spin from the same squad-page role text already fetched
+    for role-finalization. returns None (not guessed) when the role text
+    doesn't specify a bowling discipline.
     """
     r = role_text.lower()
     if "spin" in r:
@@ -340,7 +294,7 @@ _CONFIDENCE_BY_METHOD = {
 def match_squad_to_roster(conn, team: str, entries: list[dict], source_url: str,
                            gender: str = "female") -> dict:
     """`entries`: [{"name": "Smriti Mandhana", "role": "Batter"}, ...] as read
-    off a squad page. Returns {"records": [...ready for merge_external_roles...],
+    off a squad page. returns {"records": [...ready for merge_external_roles...],
     "unmatched": [...names that didn't confidently resolve to this team's roster...]}.
     """
     candidates = team_candidates(conn, team, gender)
@@ -362,8 +316,8 @@ def match_squad_to_roster(conn, team: str, entries: list[dict], source_url: str,
 
 
 def load_external_roles_csv(path) -> list[dict]:
-    """Read `key_cricinfo, name, team, is_keeper, primary_role_override,
-    bowling_style, confidence, source_url` rows — the shape
+    """read `key_cricinfo, name, team, is_keeper, primary_role_override,
+    bowling_style, confidence, source_url` rows, the shape
     `merge_external_roles` expects.
     """
     records = []

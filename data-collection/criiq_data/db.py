@@ -626,15 +626,11 @@ def connect(db_path: Path | str | None = None) -> sqlite3.Connection:
 
 
 def _migrate_players_gender_scoped(conn: sqlite3.Connection) -> None:
-    """One-time structural migration: `cricsheet_identifier TEXT UNIQUE` ->
-    `UNIQUE(cricsheet_identifier, gender)`, needed because a handful of
-    Cricsheet's own registry identifiers are confirmed reused across
-    genuinely different people of different genders (see `players`' comment
-    in SCHEMA above). SQLite can't ALTER a UNIQUE constraint in place, so
-    this recreates the table -- existing rows are preserved with
-    `gender=NULL` (identity.py's `resolve_players` fills in real values and
-    splits the handful of actually-colliding identifiers on its next run).
-    Idempotent: a no-op once the `gender` column exists.
+    """one-time migration: `cricsheet_identifier TEXT UNIQUE` ->
+    `UNIQUE(cricsheet_identifier, gender)`. SQLite can't ALTER a UNIQUE
+    constraint in place, so this recreates the table; existing rows keep
+    `gender=NULL` until identity.py's `resolve_players` fills them in.
+    idempotent: a no-op once the `gender` column exists.
     """
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(players)")}
     if not cols or "gender" in cols:
@@ -673,14 +669,10 @@ def _migrate_players_gender_scoped(conn: sqlite3.Connection) -> None:
 
 
 def _backfill_international_team_type(conn: sqlite3.Connection) -> None:
-    """Every match ingested before domestic leagues existed has `team_type
-    IS NULL`, not `'international'` -- they were all international-only
-    ingestions by construction (see the old `ingest.py` gate this project
-    used to have). Any reader that now filters on `team_type='international'`
-    (roster.py's `player_current_teams`, registry.py's recency split) would
-    otherwise silently exclude every pre-existing match. Idempotent: only
-    touches rows still NULL, so a re-run after new domestic data has its own
-    real `team_type` values is a no-op for those rows.
+    """matches ingested before domestic leagues existed have `team_type IS
+    NULL`, not `'international'`. any reader filtering on
+    `team_type='international'` would otherwise silently exclude them.
+    idempotent: only touches rows still NULL.
     """
     conn.execute("UPDATE matches SET team_type='international' WHERE team_type IS NULL")
     conn.commit()
