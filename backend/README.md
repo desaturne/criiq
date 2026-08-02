@@ -36,8 +36,13 @@ and approves them by posting `{"status": "Active"}` to
 `POST /auth/login` rejects the sign-in with a pending-approval error. Duplicate
 emails get a 409.
 
-`POST /auth/login` returns a JWT token. Send it on every other request:
+`POST /auth/login` returns a JWT token. Send it on every request under
+`/players`, `/matches`, `/selection`, and the simulation group:
 `Authorization: Bearer <token>`. In `/docs`, click **Authorize** and paste the token.
+The two `/auth/admin/pending-coaches` routes are the exception — they currently
+take no token at all, so anyone who can reach the API can read pending
+registrations and approve or suspend a coach. Put them behind `require_user`
+(plus an admin role check) before this is exposed beyond localhost.
 `POST /auth/logout` revokes that token server-side (its session row is deleted,
 so reusing it afterward gets a 401 even though it hasn't expired yet).
 
@@ -70,20 +75,35 @@ Everything returns `{"data": ..., "error": null}` (or `{"data": null, "error": "
 - `GET /players/compare?ids=a,b,c` (2–3 ids)
 
 **Phase 3 — matches & dashboard**
-- `GET /matches` — upcoming fixtures (`f1`, `f2`…) + recent completed
+- `GET /matches?completed_limit=&gender=&country=&team1=&team2=` — upcoming fixtures (`f1`, `f2`…) + recent completed
 - `GET /matches/{id}`
+- `GET /matches/{id}/scorecard` — per-player batting/bowling figures rebuilt from
+  ball-by-ball `deliveries`. Completed matches only: a fixture (`f1`…) hasn't been
+  played, so it answers 400.
+- `GET /teams?gender=` — the team names `/matches` and the AI endpoints accept
 - `GET /dashboard/summary` · `GET /dashboard/alerts` · `GET /ticker`
 
 **Phase 4 — selection & AI**
 - `GET /selection/{match_id}` · `PUT /selection/{match_id}` — body `{"xi": [], "extra": [], "excluded": []}`, max 11 in the XI
-- `POST /recommendations` — body `{"opponent": "...", "venue": "...", "team": "India", "gender": "female"}` (`team`/`gender` optional, default `India`/`female`)
-- `GET /winprob?innings=2&balls_remaining=30&wickets=4&runs_required=40&gender=female`
+- `POST /recommendations` — body `{"opponent": "...", "venue": "...", "team": "India", "gender": "female", "format": "T20", "auto_opponent_xi": false}` (everything but `opponent` optional). `auto_opponent_xi` also picks the opposition's probable XI and uses it to switch team-level matchups for real player-vs-player head-to-head.
+- `GET /winprob?innings=2&balls_remaining=30&wickets=4&runs_required=40&gender=female&format=T20`
 
 **Phase 5 — simulation & optimization** (calls `model-training` directly, no fake fallback — errors come back as the engine's own message)
-- `POST /analyze-xi` — body `{"team", "opponent", "players": [11 names], "venue?", "format?", "gender?"}` — scores a coach's own hand-picked XI and compares it to the AI's optimal pick
-- `POST /simulate` — body `{"team1", "team2", "team1_players": [11], "team2_players": [11], "toss_winner", "n_simulations?": 1-200, "force_dismissal?", "venue?", "format?", "gender?"}` — ball-by-ball Monte Carlo match simulation: scores, scorecards, bowling rotation, key moments, win-probability timeline
-- `POST /optimize-bowling` — body `{"bowling_team", "batting_team", "bowling_players": [11], "batting_players": [11], "venue?", "format?", "gender?"}` — GA-searched bowler-to-over rotation
-- `POST /optimize-batting` — body `{"batting_team", "bowling_team", "batting_players": [11], "bowling_players": [11], "target?", "venue?", "format?", "gender?"}` — GA-searched batting order
+
+Every XI below is given as **`player_id`s, never names** — a display name can be
+genuinely ambiguous (two players sharing a short name), which the model refuses
+to guess. Each id list must hold exactly 11 entries.
+
+- `POST /analyze-xi` — body `{"team", "opponent", "player_ids": [11], "venue?", "format?", "gender?"}` — scores a coach's own hand-picked XI and compares it to the AI's optimal pick
+- `POST /simulate` — body `{"team1", "team2", "team1_player_ids": [11], "team2_player_ids": [11], "toss_winner", "n_simulations?": 1-200, "force_dismissal?", "venue?", "format?", "gender?"}` — ball-by-ball Monte Carlo match simulation: scores, scorecards, bowling rotation, key moments, win-probability timeline
+- `POST /optimize-bowling` — body `{"bowling_team", "batting_team", "bowling_player_ids": [11], "batting_player_ids": [11], "venue?", "format?", "gender?"}` — GA-searched bowler-to-over rotation
+- `POST /optimize-batting` — body `{"batting_team", "bowling_team", "batting_player_ids": [11], "bowling_player_ids": [11], "target?", "venue?", "format?", "gender?"}` — GA-searched batting order
+
+`gender` defaults to `female` on every one of these. Pass `"male"` explicitly for
+a men's XI — otherwise the ids fall outside the scoped roster and the endpoint
+answers with an empty `xi` and all 11 ids under `missing_player_ids`.
+`format` accepts either `"T20"` or `"T20I"`; both normalize to the `T20` scope
+the model artifacts are keyed by (`model_bridge.normalize_format`).
 
 ## The real AI model — model-training / criiq_models
 

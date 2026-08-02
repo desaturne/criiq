@@ -7,9 +7,14 @@ import { AnalyzeXiModal } from "./AnalyzeXiModal";
 import * as api from "../../lib/api";
 import { Player, SelectionState } from "../../types/index";
 
-export function SquadSelectionPanel({ players, selections, opposition, format, onClose, onReset, onChangeSelection }: {
+export function SquadSelectionPanel({ players, selections, team, gender, opposition, format, onClose, onReset, onChangeSelection }: {
   players: Player[];
   selections: Record<string, SelectionState>;
+  // `team` and `gender` describe whose squad is on screen. They're passed down
+  // rather than assumed: this panel used to hand AnalyzeXiModal a literal
+  // "India", so a coach registered to any other country had their XI analysed
+  // against India's roster.
+  team: string; gender: "female" | "male";
   opposition: string; format: string;
   onClose: () => void; onReset: () => void;
   onChangeSelection: (id: string, s: SelectionState) => void;
@@ -246,7 +251,7 @@ export function SquadSelectionPanel({ players, selections, opposition, format, o
       </motion.div>
 
       {showAnalysis && (
-        <AnalyzeXiModal team="India" opponent={opposition} playerIds={selected.map(p => p.id)}
+        <AnalyzeXiModal team={team} gender={gender} opponent={opposition} playerIds={selected.map(p => p.id)}
           onClose={() => setShowAnalysis(false)} />
       )}
     </motion.div>

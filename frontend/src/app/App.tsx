@@ -83,6 +83,36 @@ export function AppWithAuth() {
       .catch(() => { api.clearToken(); setToken(null); setAuthMode("user-login"); });
   }, [token, user]);
 
+  // `selections` is the shared board that Build XI, Recommendations and the
+  // squad panel all read and write. Saving it hits PUT /selection/{match_id},
+  // but nothing ever called the matching GET, so a reload silently threw away
+  // a saved XI while the backend still held it. Restore it here, once per
+  // session, against the same fixture the save path targets (the next upcoming
+  // match — neither end has a match picker yet).
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { upcoming } = await api.listMatches();
+        const matchId = upcoming[0]?.id;
+        if (!matchId) return;
+        const saved = await api.getSelection(matchId);
+        if (cancelled) return;
+        const restored: Record<string, SelectionState> = {};
+        for (const id of saved.xi) restored[id] = "select";
+        for (const id of saved.extra) restored[id] = "reserve";
+        for (const id of saved.excluded) restored[id] = "exclude";
+        if (!Object.keys(restored).length) return;
+        // Never clobber picks the coach made while this request was in flight.
+        setSelections(prev => (Object.keys(prev).length ? prev : restored));
+      } catch {
+        /* nothing saved yet, or the fixture list is empty — start from a clean board */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [token]);
+
   // Admin login — completely separate, no user context
   if (authMode === "admin-login") {
     return <AdminLoginPage onLogin={() => setAuthMode("admin-app")} onBack={() => setAuthMode("user-login")} />;

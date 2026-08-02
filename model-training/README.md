@@ -560,11 +560,17 @@ make a change look better or worse than it really is:
    `VotingRegressor` behaves like any other single estimator everywhere else
    in the codebase (score.py, backtest.py never had to change).
 
-Net effect on the real temporal holdout (`criiq_models.cli backtest`,
-default 0.2 split): bowling-WPA correlation **0.103 -> 0.11**, batting-WPA
-**0.134 -> 0.136**. Real, checked, but still modest in absolute terms — see
-Known Limitations for why a much larger jump isn't realistic given how noisy
-per-match WPA inherently is.
+Net effect on the real temporal holdout at the time these changes were made
+(`criiq_models.cli backtest`, default 0.2 split, women's T20I, on the DB
+snapshot current then): bowling-WPA correlation **0.103 -> 0.11**, batting-WPA
+**0.134 -> 0.136**. Real and checked, but modest in absolute terms.
+
+Those two figures are a **historical record of that comparison, not the current
+numbers** — the database has since been rebuilt and the holdout moved with it.
+For what the shipped models score today, on both gender scopes, see Known
+Limitations below; re-measure with `python -m criiq_models.cli backtest
+--format T20 --gender female|male` rather than trusting any number quoted in
+this file.
 
 ### Bowling-specific features — wicket-taking rate
 
@@ -800,14 +806,27 @@ exclusion logic was always correct, it was just being fed a broken input.
 ## Known limitations (honestly reported)
 
 - **Bowling-WPA prediction is weak, batting-WPA only slightly less so.**
-  Temporal-holdout backtest: batting WPA barely beats a mean-predictor
-  baseline (MAE 0.082 vs 0.081, corr ≈ 0.136, top-quartile hit-rate ≈ 32% vs a
-  ~25% random baseline); bowling WPA is similarly marginal (MAE 0.069 vs
-  0.068, corr ≈ 0.11, hit-rate ≈ 36%) even after wicket-taking-rate features,
-  a better-suited batting model, and a dedicated round of bowling-model
-  tuning (depth-limited + ensembled + target-winsorized — see above) — all
-  real, checked improvements (bowling correlation moved ≈0.09 -> 0.103 -> 0.11
-  across this session), none individually dramatic. Per-match WPA is
+  Temporal-holdout backtest against the current DB snapshot, measured on the
+  shipped artifacts (`criiq_models.cli backtest --format T20 --gender ...`),
+  both scopes:
+
+  | scope | target | MAE | baseline MAE | corr | top-quartile hit-rate |
+  |---|---|---|---|---|---|
+  | female | batting_wpa | 0.095 | 0.096 | 0.122 | 35.2% |
+  | female | bowling_wpa | 0.077 | 0.078 | 0.074 | 22.8% |
+  | male   | batting_wpa | 0.089 | 0.090 | 0.089 | 30.7% |
+  | male   | bowling_wpa | 0.070 | 0.071 | 0.067 | 22.9% |
+
+  Read honestly: batting WPA beats a mean-predictor baseline, but only just,
+  and its edge over a ~25% random top-quartile hit-rate is real though small
+  (35.2% female / 30.7% male). **Bowling WPA is the weak one — at 22.8% and
+  22.9% its top-quartile hit-rate is at or slightly below chance**, so the
+  bowling model should be treated as barely-informative on a per-match basis
+  despite wicket-taking-rate features, a better-suited batting model, and a
+  dedicated round of bowling-model tuning (depth-limited + ensembled +
+  target-winsorized — see above). Those tuning steps were each verified as
+  improvements when they were made; they did not lift the target out of the
+  noise floor. Per-match WPA is
   inherently high-variance (one dropped catch, one hat-trick, swings it
   hugely) — the engine leans on career-to-date/form aggregation (which
   averages out that noise) rather than per-match precision to still produce

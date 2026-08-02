@@ -103,7 +103,10 @@ export const dashboardAlerts = (limit?: number) => apiFetch(`/dashboard/alerts${
 export const ticker = (matches?: number) => apiFetch(`/ticker${qs({ matches })}`);
 
 // --- selection / recommendations / winprob ---------------------------------
-export const getSelection = (matchId: string) => apiFetch(`/selection/${encodeURIComponent(matchId)}`);
+export const getSelection = (matchId: string) =>
+  apiFetch(`/selection/${encodeURIComponent(matchId)}`) as Promise<{
+    match_id: string; xi: string[]; extra: string[]; excluded: string[]; updated_at: string | null;
+  }>;
 export const saveSelection = (matchId: string, body: { xi: string[]; extra: string[]; excluded: string[] }) =>
   apiFetch(`/selection/${encodeURIComponent(matchId)}`, { method: "PUT", body: JSON.stringify(body) });
 

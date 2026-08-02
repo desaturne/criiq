@@ -1,16 +1,13 @@
 import React, { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { useNavigate, useLocation } from "react-router";
-import { Search, CheckCircle, X, Eye, Download, UserPlus, Edit, Trash2, Users, GitCompare, ClipboardList } from "lucide-react";
-import { PlayerCard } from "../components/player/PlayerCard";
-import { PlayerCompareModal } from "../components/player/PlayerCompareModal";
+import { useNavigate } from "react-router";
+import { Search, CheckCircle, X, Eye, Download, UserPlus, Edit, Trash2 } from "lucide-react";
 import { SparkLine } from "../components/common/SparkLine";
-import { SquadSelectionPanel } from "../components/squad/SquadSelectionPanel";
 import { StatusBadge } from "../components/common/StatusBadge";
 import { useApp } from "../context/AppContext";
 import * as api from "../lib/api";
 import { mapApiPlayerListItem } from "../lib/mappers";
-import { Player, PlayerStatus, SelectionState } from "../types/index";
+import { Player, PlayerStatus } from "../types/index";
 
 export function SquadsPage() {
   const navigate = useNavigate();

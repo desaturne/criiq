@@ -3,8 +3,12 @@ import { motion, AnimatePresence } from "motion/react";
 import { X, ClipboardCheck, AlertTriangle, Loader2 } from "lucide-react";
 import * as api from "../../lib/api";
 
-export function AnalyzeXiModal({ team, opponent, playerIds, onClose }: {
-  team: string; opponent: string; playerIds: string[]; onClose: () => void;
+// `gender` is required, not optional: the backend defaults it to "female", so
+// omitting it for a men's XI made every player fall outside the scoped roster
+// and the endpoint answered with an empty xi and 11 missing_player_ids.
+export function AnalyzeXiModal({ team, opponent, gender, playerIds, onClose }: {
+  team: string; opponent: string; gender: "female" | "male";
+  playerIds: string[]; onClose: () => void;
 }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -12,12 +16,12 @@ export function AnalyzeXiModal({ team, opponent, playerIds, onClose }: {
 
   useEffect(() => {
     let cancelled = false;
-    api.analyzeXi({ team, opponent, player_ids: playerIds })
+    api.analyzeXi({ team, opponent, gender, player_ids: playerIds })
       .then(res => { if (!cancelled) setResult(res); })
       .catch(err => { if (!cancelled) setError(err instanceof Error ? err.message : "Couldn't analyze this XI"); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [team, opponent, playerIds]);
+  }, [team, opponent, gender, playerIds]);
 
   const comparison = result?.comparison_to_optimal;
 

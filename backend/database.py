@@ -113,26 +113,51 @@ auth_db.executescript(
 )
 
 
-def _ensure_column(connection, table: str, column: str, ddl: str) -> None:
+def _ensure_column(connection, table: str, column: str, ddl: str) -> bool:
+    """Adds the column if it is missing. Returns True if it was just added."""
     columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
-    if column not in columns:
-        connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+    if column in columns:
+        return False
+    connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+    return True
 
 
-_ensure_column(auth_db, "users", "status", "TEXT NOT NULL DEFAULT 'Inactive'")
+# Rows that already existed when `status` was introduced predate the whole
+# admin-approval workflow, so they were implicitly approved. Without this
+# backfill the ALTER's DEFAULT stamps every one of them 'Inactive', which
+# retroactively locks out working accounts (it did exactly that to the seeded
+# demo coach: login started answering "Registration pending admin approval").
+# Only accounts created through /auth/register after this point start pending.
+if _ensure_column(auth_db, "users", "status", "TEXT NOT NULL DEFAULT 'Inactive'"):
+    auth_db.execute("UPDATE users SET status = 'Active'")
+    auth_db.commit()
+
 _ensure_column(auth_db, "users", "country", "TEXT NOT NULL DEFAULT 'India'")
 
 # --- 4. Seed data (only inserted the first time) -----------------------------
 
+DEMO_COACH_EMAIL = "rahul@criiq.local"
+
+
 def seed():
     """Create the demo coach account and a few upcoming fixtures."""
-    has_users = auth_db.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]
-    if not has_users:
-        pw_hash = bcrypt.hashpw(b"coach1234", bcrypt.gensalt()).decode()
-        auth_db.execute(
-            "INSERT INTO users (email, password_hash, name, role, status, country) VALUES (?,?,?,?,?,?)",
-            ("rahul@criiq.local", pw_hash, "Rahul Coach", "coach", "Active", "India"),
-        )
+    demo = auth_db.execute(
+        "SELECT id, status FROM users WHERE email = ?", (DEMO_COACH_EMAIL,)
+    ).fetchone()
+    if demo is None:
+        has_users = auth_db.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]
+        if not has_users:
+            pw_hash = bcrypt.hashpw(b"coach1234", bcrypt.gensalt()).decode()
+            auth_db.execute(
+                "INSERT INTO users (email, password_hash, name, role, status, country) VALUES (?,?,?,?,?,?)",
+                (DEMO_COACH_EMAIL, pw_hash, "Rahul Coach", "coach", "Active", "India"),
+            )
+            auth_db.commit()
+    elif demo["status"] != "Active":
+        # Repairs databases migrated before the backfill above existed. This is
+        # the documented demo login (see backend/README.md) — it is only ever
+        # useful in the "Active" state, so keep it that way on every boot.
+        auth_db.execute("UPDATE users SET status = 'Active' WHERE id = ?", (demo["id"],))
         auth_db.commit()
 
     has_fixtures = app_db.execute("SELECT COUNT(*) AS n FROM fixtures").fetchone()["n"]

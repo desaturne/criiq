@@ -35,7 +35,11 @@ def get_recommendations(match_context: dict) -> dict:
     team = match_context.get("team") or "India"
     opponent = match_context.get("opponent", "the opposition")
     gender = match_context.get("gender") or "female"
-    fmt = model_bridge.DEFAULT_FORMAT
+    # Honour the caller's format instead of pinning it to the default -- this
+    # used to ignore match_context["format"] outright, so the API's format
+    # field was accepted and silently discarded. model_bridge normalizes the
+    # "T20I" spelling the UI sends to the "T20" the model scopes are keyed by.
+    fmt = match_context.get("format") or model_bridge.DEFAULT_FORMAT
     venue = match_context.get("venue")
     auto_opponent_xi = bool(match_context.get("auto_opponent_xi"))
 
@@ -102,6 +106,7 @@ def get_win_probability(state: dict) -> dict:
             wickets=int(state.get("wickets", 0)),
             balls_remaining=state.get("balls_remaining"),
             runs_required=state.get("runs_required"),
+            fmt=state.get("format") or model_bridge.DEFAULT_FORMAT,
             gender=state.get("gender") or "female",
         )
     except model_bridge.ModelBridgeError as exc:

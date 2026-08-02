@@ -2,8 +2,10 @@
 selection.py — Playing XI save/load + the AI endpoints (Phase 4).
 
 Squad selections are OUR data, so they live in app.db.
-Recommendations and win probability call ai_stub — the teammate's real model
-will replace that module later with the same function signatures.
+Recommendations and win probability go through ai_stub, which calls the real
+criiq_models engine via model_bridge (a subprocess, so its ML dependencies stay
+out of this venv). The module keeps its original name and its hard-coded
+fallbacks: those are only served if that subprocess is unreachable.
 """
 
 import json
@@ -73,7 +75,9 @@ class RecommendationBody(BaseModel):
     venue: str | None = None
     team: str = "India"        # which side we are picking for
     gender: str = "female"     # "female" | "male"
-    format: str = "T20I"
+    # "T20I" is accepted and normalized to "T20" by model_bridge; the default
+    # matches simulation.py's so both AI route groups agree.
+    format: str = "T20"
     auto_opponent_xi: bool = False   # also recommend the opponent's probable XI, and use it to activate player-vs-player head-to-head matchups
 
 
@@ -89,14 +93,14 @@ def recommendations(body: RecommendationBody):
 # 17. GET /winprob — win probability for a game state
 # --------------------------------------------------------------------------
 @router.get("/winprob")
-def winprob(innings: int = 1, balls_remaining: int = 120,
-            wickets: int = 0, runs_required: int | None = None, gender: str = "female"):
+def winprob(innings: int = 1, balls_remaining: int = 120, wickets: int = 0,
+            runs_required: int | None = None, gender: str = "female", format: str = "T20"):
     if not 1 <= innings <= 2:
         raise HTTPException(400, "innings must be 1 or 2")
     if not 0 <= wickets <= 10:
         raise HTTPException(400, "wickets must be 0–10")
     result = ai_stub.get_win_probability({
-        "innings": innings, "balls_remaining": balls_remaining,
-        "wickets": wickets, "runs_required": runs_required, "gender": gender,
+        "innings": innings, "balls_remaining": balls_remaining, "wickets": wickets,
+        "runs_required": runs_required, "gender": gender, "format": format,
     })
     return {"data": result, "error": None}

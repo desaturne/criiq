@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { useNavigate, useLocation } from "react-router";
 import { CheckCircle, Users, GitCompare, Shield } from "lucide-react";
@@ -146,7 +146,8 @@ export function BuildXiPage() {
       <AnimatePresence>
         {showSquadPanel && (
           <SquadSelectionPanel
-            players={players} selections={selections} opposition={opposition} format="T20I"
+            players={players} selections={selections} team={team} gender={gender}
+            opposition={opposition} format="T20I"
             onClose={() => setShowSquadPanel(false)}
             onReset={() => setSelections({})}
             onChangeSelection={setSelection}

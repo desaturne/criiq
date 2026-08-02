@@ -26,6 +26,20 @@ MODEL_TRAINING_PYTHON = os.environ.get("MODEL_TRAINING_PYTHON") or _default_mode
 DEFAULT_FORMAT = "T20"
 DEFAULT_GENDER = "female"
 
+# criiq.db and the artifact scopes (artifacts/player_recommendation/<gender>_T20)
+# only ever use "T20", but callers naturally write "T20I" for the international
+# flavour -- and the UI's own format selector is labelled "T20I". Passing that
+# through unchanged makes every model call fall back to an empty roster, so
+# normalize once here, where every entry point below already funnels through.
+_FORMAT_ALIASES = {"t20": "T20", "t20i": "T20"}
+
+
+def normalize_format(fmt: str | None) -> str:
+    if not fmt:
+        return DEFAULT_FORMAT
+    fmt = fmt.strip()
+    return _FORMAT_ALIASES.get(fmt.lower(), fmt)
+
 
 class ModelBridgeError(Exception):
     """criiq_models CLI exited without usable JSON; message is whatever it printed."""
@@ -56,8 +70,8 @@ def _opt(flag: str, value) -> list[str]:
 def recommend(team: str, opponent: str, venue: str | None = None,
               fmt: str = DEFAULT_FORMAT, gender: str = DEFAULT_GENDER,
               opponent_player_ids: list[str] | None = None) -> dict:
-    args = ["recommend", "--team", team, "--opponent", opponent, "--format", fmt, "--gender", gender,
-            "--explain", *_opt("--venue", venue)]
+    args = ["recommend", "--team", team, "--opponent", opponent, "--format", normalize_format(fmt),
+            "--gender", gender, "--explain", *_opt("--venue", venue)]
     if opponent_player_ids:
         args += ["--opponent-player-ids", ",".join(opponent_player_ids)]
     return run_cli(args)
@@ -65,7 +79,8 @@ def recommend(team: str, opponent: str, venue: str | None = None,
 
 def winprob(innings: int, wickets: int = 0, balls_remaining: int | None = None,
             runs_required: int | None = None, fmt: str = DEFAULT_FORMAT, gender: str = DEFAULT_GENDER) -> dict:
-    args = ["winprob", "--innings", str(innings), "--wickets", str(wickets), "--format", fmt, "--gender", gender,
+    args = ["winprob", "--innings", str(innings), "--wickets", str(wickets),
+            "--format", normalize_format(fmt), "--gender", gender,
             *_opt("--balls-remaining", balls_remaining), *_opt("--runs-required", runs_required)]
     return run_cli(args)
 
@@ -73,8 +88,8 @@ def winprob(innings: int, wickets: int = 0, balls_remaining: int | None = None,
 # player_ids, not names -- names can be ambiguous (e.g. two "A Reddy"s).
 def analyze_xi(team: str, opponent: str, player_ids: list[str], venue: str | None = None,
                fmt: str = DEFAULT_FORMAT, gender: str = DEFAULT_GENDER) -> dict:
-    args = ["analyze-xi", "--team", team, "--opponent", opponent, "--format", fmt, "--gender", gender,
-            "--player-ids", ",".join(player_ids), "--explain", *_opt("--venue", venue)]
+    args = ["analyze-xi", "--team", team, "--opponent", opponent, "--format", normalize_format(fmt),
+            "--gender", gender, "--player-ids", ",".join(player_ids), "--explain", *_opt("--venue", venue)]
     return run_cli(args)
 
 
@@ -84,7 +99,7 @@ def simulate(team1: str, team2: str, team1_player_ids: list[str], team2_player_i
     args = ["simulate", "--team1", team1, "--team2", team2,
             "--team1-player-ids", ",".join(team1_player_ids), "--team2-player-ids", ",".join(team2_player_ids),
             "--toss-winner", toss_winner, "--n-simulations", str(n_simulations),
-            "--format", fmt, "--gender", gender, "--json",
+            "--format", normalize_format(fmt), "--gender", gender, "--json",
             *_opt("--venue", venue), *_opt("--force-dismissal", force_dismissal)]
     return run_cli(args, timeout=300)
 
@@ -105,7 +120,8 @@ def optimize_bowling(bowling_team: str, batting_team: str, bowling_player_ids: l
                       fmt: str = DEFAULT_FORMAT, gender: str = DEFAULT_GENDER) -> dict:
     args = ["optimize-bowling", "--bowling-team", bowling_team, "--batting-team", batting_team,
             "--bowling-player-ids", ",".join(bowling_player_ids), "--batting-player-ids", ",".join(batting_player_ids),
-            "--format", fmt, "--gender", gender, "--json", "--pop-size", str(pop_size), "--generations", str(generations),
+            "--format", normalize_format(fmt), "--gender", gender, "--json",
+            "--pop-size", str(pop_size), "--generations", str(generations),
             *_opt("--venue", venue)]
     return run_cli(args, timeout=300)
 
@@ -116,6 +132,7 @@ def optimize_batting(batting_team: str, bowling_team: str, batting_player_ids: l
                       fmt: str = DEFAULT_FORMAT, gender: str = DEFAULT_GENDER) -> dict:
     args = ["optimize-batting", "--batting-team", batting_team, "--bowling-team", bowling_team,
             "--batting-player-ids", ",".join(batting_player_ids), "--bowling-player-ids", ",".join(bowling_player_ids),
-            "--format", fmt, "--gender", gender, "--json", "--pop-size", str(pop_size), "--generations", str(generations),
+            "--format", normalize_format(fmt), "--gender", gender, "--json",
+            "--pop-size", str(pop_size), "--generations", str(generations),
             *_opt("--target", target), *_opt("--venue", venue)]
     return run_cli(args, timeout=300)
