@@ -59,11 +59,9 @@ def build_career_for_format(conn, fmt: str) -> int:
     if innings.empty:
         log.info("career %s: no innings", fmt)
         return 0
-    # gender-scoped group, not just identifier: the handful of Cricsheet
-    # registry identifiers reused across two genuinely different people of
-    # different genders (see identity.py) would otherwise have their innings
-    # blended into one meaningless combined "career" before player_id is
-    # even resolved.
+    # gender-scoped group, not just identifier: colliding Cricsheet
+    # identifiers (see identity.py) would otherwise blend two different
+    # people's innings into one "career".
     meta = {}
     for r in conn.execute(
             "SELECT cricsheet_identifier, gender, canonical_name, role, derived_role FROM players"):

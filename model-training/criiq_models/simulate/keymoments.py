@@ -1,10 +1,8 @@
-"""Milestone / highlight detection over a simulated ball-by-ball log.
+"""milestone/highlight detection over a simulated ball-by-ball log.
 
-The user explicitly wants the simulation to surface key moments the way real
-match commentary/scorecards do, not just a final win-probability line graph.
-Everything here is derived from columns `engine.py` already tracks per ball
--- no extra state, just running per-batter/per-bowler totals over the log
-in order.
+surfaces key moments like real match commentary would, instead of just a
+win probability line graph. everything's derived from columns engine.py
+already tracks, just running per-batter/per-bowler totals over the log.
 """
 from __future__ import annotations
 
@@ -63,14 +61,10 @@ def _boundaries(df: pd.DataFrame, name_map: dict | None) -> list:
 
 
 def _bowling_milestones_and_hattricks(df: pd.DataFrame, name_map: dict | None) -> list:
-    """3/4/5-fers, plus hat-trick detection: 3 wickets off 3 consecutive
-    *legal* deliveries by the same bowler. A wide/no-ball is not a "ball" in
-    the formal sense (it's replayed, doesn't count toward the over -- see
-    rulebook-cricket.md §4.1/§4.2), so one intervening between two wickets
-    does NOT break a hat-trick under real cricket scoring convention; this
-    is why the sequence is checked over legal deliveries only, not the raw
-    delivery stream. Only within-innings sequences count (T20 is one innings
-    per side per match, so no cross-innings hat-tricks apply here).
+    """3/4/5-fers plus hat-trick detection: 3 wickets off 3 consecutive legal
+    deliveries by the same bowler. checked over legal deliveries only since
+    a wide/no-ball doesn't break a hat-trick under real scoring rules. only
+    within-innings sequences count.
     """
     moments = []
     for innings, inn_df in df.groupby("innings"):
@@ -112,12 +106,8 @@ def _bowling_milestones_and_hattricks(df: pd.DataFrame, name_map: dict | None) -
 def _biggest_swings(df: pd.DataFrame, top_n: int, name_map: dict | None) -> list:
     if "win_prob_batting" not in df.columns or df.empty:
         return []
-    # `win_prob_batting` is relative to whichever team is *currently*
-    # batting, and that team flips at the innings break -- a plain `.diff()`
-    # across the whole log would score the innings-1-to-innings-2 boundary
-    # as one giant "swing", when it's really just two different reference
-    # frames being subtracted. Reset the diff per innings (on a stable
-    # chronological sort) so only genuine within-innings swings are ranked.
+    # win_prob_batting flips reference frame at the innings break, so diff
+    # per innings instead of across the whole log to avoid a fake giant swing
     d = df.copy().sort_values(["innings", "over", "ball_in_over"]).reset_index(drop=True)
     d["delta_wp"] = d.groupby("innings")["win_prob_batting"].diff().fillna(0.0)
     top = d.reindex(d["delta_wp"].abs().sort_values(ascending=False).index[:top_n])
@@ -137,7 +127,7 @@ def _biggest_swings(df: pd.DataFrame, top_n: int, name_map: dict | None) -> list
 
 def detect_key_moments(ball_log_df: pd.DataFrame, name_map: dict | None = None,
                         top_swings: int = 5) -> list:
-    """Ordered (by innings, over, ball) list of `{over, ball, innings, type,
+    """ordered (by innings, over, ball) list of `{over, ball, innings, type,
     description, win_prob_before, win_prob_after}` dicts covering batting
     milestones (50/100/150/200), every boundary, bowling milestones
     (3/4/5-for) and hat-tricks, and the biggest single-ball win-probability

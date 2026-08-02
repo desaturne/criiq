@@ -1,23 +1,12 @@
-"""Ball-outcome probability model.
+"""ball-outcome probability model.
 
-No existing model in this repo predicts a *single delivery's* outcome
-distribution (`win_prob`/WPA are match-/player-level aggregates), so this is
-new, but grounded entirely in real data: phase-level (powerplay/middle/death,
-the same boundaries `ml_features.py` uses: over<=5 / <=14 / else) empirical
-outcome frequencies straight from data-collection's `deliveries` table,
-per-gender (never blended, matching every other model in this repo), then
-adjusted per-ball for the specific batter's and bowler's own record (strike
-rate, economy, wicket rate) and any real head-to-head dismissal history
-between them (`dismissal_matchup`), shrunk toward the phase prior so a small
-sample can't swing the estimate wildly (`features/common.shrink`).
+phase-level (powerplay/middle/death) empirical frequencies per gender,
+adjusted per-ball for the batter/bowler's own record and any head-to-head
+history, shrunk toward the phase prior so a small sample can't swing it.
 
-Simplification, documented rather than silently assumed: each delivery is
-classified into exactly one outcome bucket (a run value, a wicket, a wide, a
-no-ball, or a bye/leg-bye) -- mirroring how the empirical baseline itself is
-computed. A wicket therefore never coincides with a wide/no-ball in this
-model (no stumped-off-a-wide, no run-out-off-a-no-ball); both are real but
-rare events. Every other consequence of wides/no-balls (replay, penalty run,
-free hit, restricted scoring) is modelled downstream in `engine.py`.
+simplification: each delivery gets exactly one outcome bucket, so a wicket
+never coincides with a wide/no-ball here. other wide/no-ball consequences
+are modelled downstream in engine.py.
 """
 from __future__ import annotations
 
@@ -34,9 +23,8 @@ from ..features.current import build_model_features
 PHASES = ("powerplay", "middle", "death")
 OUTCOMES = ("0", "1", "2", "3", "4", "6", "wicket", "wide", "noball", "bye")
 
-# Default league-wide fallbacks if no historical rows exist at all (e.g. a
-# tiny synthetic test DB) -- plausible T20 numbers, never used when real data
-# is available.
+# fallback league-wide numbers when no historical rows exist (e.g. a tiny
+# synthetic test DB), never used when real data is available
 _DEFAULT_LEAGUE_SR = 120.0
 _DEFAULT_LEAGUE_ECONOMY = 7.5
 
@@ -50,10 +38,9 @@ def _phase(over: int) -> str:
 
 
 def _classify_row(runs_off_bat, extras, wides, noballs, wicket_type) -> str:
-    # `wicket_type`/etc come back as Python float('nan') (not None) for a
-    # missing SQL NULL via pandas -- and `nan` is truthy in plain Python, so
-    # a naive `if wicket_type:` misclassifies ~every non-wicket ball as a
-    # wicket. `pd.notna(...)` is required, not just an `or 0` fallback.
+    # wicket_type comes back as nan (not None) for a missing SQL NULL via
+    # pandas, and nan is truthy, so pd.notna() is required here instead of
+    # a plain `if wicket_type:` check
     if pd.notna(wides) and wides > 0:
         return "wide"
     if pd.notna(noballs) and noballs > 0:
@@ -63,16 +50,14 @@ def _classify_row(runs_off_bat, extras, wides, noballs, wicket_type) -> str:
     runs = int(runs_off_bat or 0)
     if runs == 0 and pd.notna(extras) and extras > 0:
         return "bye"
-    # Odd/rare running-run values (5, 7 from overthrows, ...) are folded into
-    # the nearest common bucket rather than given their own near-zero-
-    # frequency category -- negligible real frequency, documented here.
+    # rare running-run values (5, 7 from overthrows) get folded into the
+    # nearest common bucket instead of their own category
     return str(runs) if runs in (0, 1, 2, 3, 4, 6) else "1"
 
 
 def build_phase_baseline_rates(conn: sqlite3.Connection, fmt: str, gender: str) -> dict:
-    """Empirical per-phase outcome frequencies from real ball-by-ball data,
-    scoped to (format, gender) -- never blended across genders, matching
-    every other model in this repo.
+    """empirical per-phase outcome frequencies from real ball-by-ball data,
+    scoped to (format, gender), never blended across genders.
     """
     df = pd.read_sql_query(
         "SELECT d.over AS over, d.runs_off_bat AS runs_off_bat, d.extras AS extras, "
@@ -101,20 +86,11 @@ def build_phase_baseline_rates(conn: sqlite3.Connection, fmt: str, gender: str) 
     return out
 
 
-# A naive all-time, all-innings average badly understates the modern game:
-# checked against the real DB, unfiltered mean strike rate is ~99 for men's
-# T20I (all-time) -- but that average is dominated by brief, unrepresentative
-# cameos (tailenders batting a handful of balls, ducks) and diluted by early
-# T20 history, when scoring rates were genuinely lower than today's. Once
-# restricted to *recent, settled* innings (last 2 years, >=15 balls faced --
-# a genuine knock, not a cameo), the real mean jumps to ~126 for men's T20I,
-# matching a coach's modern intuition ("frontline batters sit around 120-130
-# SR today") far better than the naive figure. Women's T20I settled-innings
-# SR is lower (~90) -- a real, well-documented gap in the game's hitting
-# distributions (see this repo's gender-relative archetype classifier), not
-# something to force toward the men's number. The same recency + minimum-
-# sample principle is applied to economy (>=18 balls bowled -- a genuine
-# 3-over spell, not one expensive over).
+# a naive all-time average understates the modern game since it's dominated
+# by brief cameos and older, slower-scoring eras. restricting to recent
+# (2yr), settled innings (>=15 balls faced) gives a more realistic league
+# average. same recency + minimum-sample logic applies to economy (>=18
+# balls bowled).
 _LEAGUE_RECENT_YEARS = 2
 _LEAGUE_MIN_BALLS_FACED = 15
 _LEAGUE_MIN_BALLS_BOWLED = 18
@@ -142,13 +118,10 @@ def league_averages(conn: sqlite3.Connection, fmt: str, gender: str) -> dict:
 @dataclass
 class BatterProfile:
     strike_rate: float | None = None
-    # Venue-conditioned strike rate (`player_by_venue.setting_strike_rate`/
-    # `chasing_strike_rate`, shrunk toward `strike_rate` by real matches at
-    # that venue -- same `features/common.shrink` pattern `score.py`'s game-
-    # awareness signal already uses this data for) -- `None` unless a venue
-    # was supplied and the player has any recorded history there. The engine
-    # selects between these by which innings is actually in progress
-    # (setting = 1st innings, chasing = 2nd), not a fixed per-player number.
+    # venue-conditioned strike rate, shrunk toward `strike_rate` by matches
+    # played there. None unless a venue was supplied with recorded history.
+    # engine picks setting (1st innings) vs chasing (2nd) by innings in
+    # progress.
     setting_strike_rate: float | None = None
     chasing_strike_rate: float | None = None
 
@@ -157,13 +130,9 @@ class BatterProfile:
 class BowlerProfile:
     economy: float | None = None
     wickets_per_match: float | None = None
-    # Real per-phase economy rank *within their own team* (`player_phase.
-    # bowl_team_rank`, min 30 balls -- rank 1 = best/most economical bowler
-    # of that phase on their team), used by `engine.select_bowler` to pick a
-    # realistic default over-by-over rotation: a real captain sends their
-    # proven best powerplay/death bowler for those overs, not whoever has
-    # simply bowled the fewest overs so far. `None` per phase with no
-    # qualifying sample (e.g. a part-timer who rarely bowls that phase).
+    # per-phase economy rank within their own team (rank 1 = most economical),
+    # used by engine.select_bowler to pick a realistic bowling rotation.
+    # None per phase with no qualifying sample.
     phase_rank: dict = field(default_factory=dict)
 
 
@@ -217,15 +186,12 @@ def build_bowler_profile(conn: sqlite3.Connection, player_id: str, fmt: str, opp
 
 def build_player_profiles(conn: sqlite3.Connection, fmt: str, team1_ids: list, team2_ids: list,
                            team1_name: str = "", team2_name: str = "", venue_id: str | None = None) -> tuple:
-    """One (batter_profiles, bowler_profiles) pair, each keyed by player_id --
-    every player gets both (a specialist bowler still needs a batting profile
-    for when they're at the crease as a tailender, and vice versa).
+    """one (batter_profiles, bowler_profiles) pair keyed by player_id, every
+    player gets both since a bowler still needs a batting profile as a
+    tailender and vice versa.
 
-    Each side's players are scored with the *other* side as `opponent` (real
-    vs-opponent shrinkage, not an empty placeholder) and the shared `venue_id`
-    (venue-conditioned setting/chasing strike rate, see `BatterProfile`) --
-    both threaded through from the CLI's `--venue` (see `cli.py`'s
-    `_resolve_venue_arg`, the same ground-name resolution `recommend` uses).
+    each side is scored with the other side as `opponent` and the shared
+    `venue_id`, both threaded through from the CLI's `--venue`.
     """
     batter_profiles, bowler_profiles = {}, {}
     for pid in team1_ids:
@@ -239,8 +205,7 @@ def build_player_profiles(conn: sqlite3.Connection, fmt: str, team1_ids: list, t
 
 def load_matchup_lookup(conn: sqlite3.Connection, fmt: str, ids_a: list, ids_b: list) -> dict:
     """`{(batter_id, bowler_id): {"balls","runs","dismissals"}}` for every
-    real recorded pairing between the two rosters (either direction), from
-    `dismissal_matchup` -- the same table `recommend/matchup_matrix.py` reads.
+    real recorded pairing between the two rosters, from `dismissal_matchup`.
     """
     all_ids = list(dict.fromkeys(list(ids_a) + list(ids_b)))
     if not all_ids:
@@ -255,12 +220,11 @@ def load_matchup_lookup(conn: sqlite3.Connection, fmt: str, ids_a: list, ids_b: 
 
 
 class PlayerAdjustedOutcomeModel:
-    """Per-ball categorical outcome distribution: phase baseline, scaled by
-    the specific batter's strike rate and bowler's economy (boundary
-    probability) and the bowler's wicket-taking rate plus any real head-to-
-    head dismissal history (wicket probability, shrunk toward the phase prior
-    with `features/common.shrink` so a handful of historical balls can't
-    swing the estimate wildly).
+    """per-ball categorical outcome distribution: phase baseline scaled by
+    the batter's strike rate and bowler's economy (boundary probability),
+    plus the bowler's wicket rate and head-to-head history (wicket
+    probability), shrunk toward the phase prior so small samples don't
+    swing it.
     """
 
     def __init__(self, phase_baseline: dict, league_sr: float, league_economy: float,
@@ -275,11 +239,8 @@ class PlayerAdjustedOutcomeModel:
                       free_hit: bool = False, innings: int | None = None) -> dict:
         base = dict(self.phase_baseline[phase])
 
-        # Venue-conditioned strike rate, selected by which innings is
-        # actually in progress (setting vs chasing genuinely differ -- see
-        # `score.py`'s game-awareness signal) -- falls back to the player's
-        # overall strike rate when no venue was supplied or they have no
-        # recorded history there.
+        # venue-conditioned strike rate, picked by which innings is in
+        # progress. falls back to overall strike rate with no venue history.
         effective_sr = batter.strike_rate
         if innings == 1 and batter.setting_strike_rate is not None:
             effective_sr = batter.setting_strike_rate
@@ -288,9 +249,8 @@ class PlayerAdjustedOutcomeModel:
 
         sr_factor = (effective_sr or self.league_sr) / self.league_sr
         econ_factor = (bowler.economy or self.league_economy) / self.league_economy
-        # A batter faster than average *and* facing a bowler more expensive
-        # than average both push boundary probability up; clipped to a
-        # plausible range so an extreme record can't blow the model up.
+        # a faster batter facing a pricier bowler pushes boundary probability
+        # up, clipped to a plausible range so extremes can't blow it up
         boundary_scale = float(np.clip(sr_factor / max(econ_factor, 0.3), 0.4, 2.5))
         base["4"] = base["4"] * boundary_scale
         base["6"] = base["6"] * boundary_scale
@@ -308,17 +268,14 @@ class PlayerAdjustedOutcomeModel:
         base["wicket"] = base["wicket"] * wkt_factor
 
         if free_hit:
-            # Only run out / obstructing the field / hit the ball twice are
-            # possible off a free hit's delivery (rulebook-cricket.md §4.2) --
-            # none of which this bucketed model represents as "wicket", so
-            # the safe, documented approximation is to suppress it entirely
-            # for that one ball, redistributing its mass into batting runs.
+            # only run out/obstructing the field/hit twice can dismiss on a
+            # free hit, none of which this model buckets as "wicket", so
+            # suppress wicket probability for that ball
             base["wicket"] = 0.0
 
-        # Wide/no-ball rates are held fixed at the phase-empirical rate
-        # (a batter's SR/a bowler's economy shouldn't move discipline-of-
-        # delivery odds); every other bucket is rescaled to fill the
-        # remaining probability mass.
+        # wide/no-ball rates stay fixed at the phase-empirical rate since
+        # sr/economy shouldn't affect discipline; everything else rescales
+        # to fill the remaining probability mass
         fixed = base["wide"] + base["noball"]
         remaining_keys = [k for k in OUTCOMES if k not in ("wide", "noball")]
         remaining_total = sum(base[k] for k in remaining_keys)
@@ -330,9 +287,8 @@ class PlayerAdjustedOutcomeModel:
 
         total = sum(base.values())
         if total <= 0:
-            # Only reachable if a phase baseline had literally zero mass
-            # outside "wicket" and a free hit just zeroed that too -- falls
-            # back to a dot ball rather than dividing by zero.
+            # only reachable if the baseline had zero mass outside "wicket"
+            # and a free hit just zeroed that too; fall back to a dot ball
             base["0"] = 1.0
             total = 1.0
         return {k: v / total for k, v in base.items()}

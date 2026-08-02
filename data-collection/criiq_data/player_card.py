@@ -63,9 +63,8 @@ def _support_tables(conn, fmt: str):
         "GROUP BY d.match_id, d.bowling_team", conn, params=(fmt,))
     tw = {(r.match_id, r.team): r.wkts for r in team_wkts.itertuples()}
 
-    # gender kept alongside identifier in the group key -- without it, a
-    # colliding identifier's death-overs runs would sum both real people's
-    # innings into one number (see identity.py's collision docs).
+    # gender kept alongside identifier in the group key, otherwise a colliding
+    # identifier's death-overs runs would blend two real people's innings (see identity.py).
     death = pd.read_sql_query(
         "SELECT d.striker AS player_name, m.gender AS gender, "
         "SUM(d.runs_off_bat) AS death_runs "
@@ -79,13 +78,10 @@ def _support_tables(conn, fmt: str):
 
 
 def _ident_to_player(conn) -> dict[tuple, dict]:
-    """(cricsheet_identifier, gender) -> player row, gender-scoped for the
-    same reason every other builder in this codebase is (see e.g. impact.py):
-    a handful of Cricsheet identifiers are reused across two genuinely
-    different real people of different genders. Unsplit (the overwhelming
-    majority) players are stored with `gender=NULL` on the `players` row --
-    callers look up `(ident, real_gender)` first, falling back to
-    `(ident, None)` for those.
+    """maps (cricsheet_identifier, gender) -> player row.
+
+    gender-scoped since a few identifiers are shared by two different people (see impact.py).
+    unsplit players are stored with gender=NULL; callers fall back to (ident, None).
     """
     rows = conn.execute(
         "SELECT player_id, cricsheet_identifier, gender, canonical_name, nationality, "

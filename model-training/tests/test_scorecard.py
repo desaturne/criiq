@@ -1,6 +1,6 @@
-"""Scorecard + coach-perspective tests (`simulate/scorecard.py`) against
-small, hand-built synthetic ball logs -- generic by construction (operates
-purely on a ball log + name map), so no team-specific behavior to test here.
+"""scorecard and coach-perspective tests (simulate/scorecard.py) against
+small, synthetic ball logs. generic by construction, so no team-specific
+behavior to test here.
 """
 from __future__ import annotations
 

@@ -127,6 +127,23 @@ matters for a ranking task like XI selection). Re-run after any feature
 change, same as the notebook above; confirmed after adding the domestic-form
 feature that the model choice per target is unchanged.
 
+`training_and_selection_walkthrough.ipynb` is the visual, single-notebook answer to "how do the
+models actually train and how does the MILP actually choose" — learning curves (does more data
+help?), permutation importance, actual-vs-predicted on the temporal holdout, a live reproduction
+of the bowling model's depth-limit -> winsorize -> ensemble tuning progression, **a live
+hyperparameter search that changed the shipped models this session** (every candidate logged, the
+winners re-verified across 3 holdout fractions x 3 seeds with a paired significance test, checked
+on *both* gender scopes separately before either was adopted — see `recommend/train.py`'s
+`_make_model` and the "Per-target model selection" section above for what shipped), a real case
+where naive top-11-by-score violates the keeper/opener constraints that `select_xi`'s MILP enforces
+(with an LP-relaxation comparison), and the two GAs' fitness converging generation-over-generation
+on the XIs that MILP selected. Deliberately doesn't repeat the two notebooks above,
+`feature_analysis.ipynb`, or `simulation_demo.ipynb` — it links to each at the point where they go
+deeper. Re-run the same way
+(`jupyter nbconvert --to notebook --execute --inplace training_and_selection_walkthrough.ipynb`);
+takes roughly 15-20 minutes, dominated by building the training table for both gender scopes and
+the hyperparameter-search section's 72 model fits.
+
 ## Match simulation, genetic-algorithm optimizers, win-probability graphs
 
 `criiq_models.simulate` (new package) adds a ball-by-ball T20 Monte Carlo
@@ -529,6 +546,24 @@ backtest.py` imports the same `_make_model()` factory `train.py` uses, so the
 reported holdout numbers are always for the model actually shipped, not a
 stand-in.
 
+**`batting_wpa`'s `max_features="sqrt"` is gender-conditional, not a global
+default** — a later addition, and the one hyperparameter in this codebase
+that a live check found does NOT generalize across the two gender scopes.
+`RandomForestRegressor` (unlike its classifier sibling) uses *all* features
+at every split by default, so its trees barely decorrelate from each other;
+explicitly subsampling features per split (`max_features="sqrt"`) is the
+textbook Random Forest regularization for that. Checked with a live
+3-fraction (0.15/0.2/0.25) x 3-seed paired comparison against the
+unconstrained default, on **both** gender scopes separately before shipping
+anything (see `training_and_selection_walkthrough.ipynb`'s hyperparameter-
+search section for the full logged run): female mean holdout correlation
+**0.1208 -> 0.1260** (paired diff +0.0052, p=0.0024, won all 9/9 fraction/
+seed comparisons — a real effect), male **0.0859 -> 0.0850** (paired diff
+-0.0009, p=0.4871, won only 3/9 — statistically indistinguishable from doing
+nothing). `_make_model(target, gender)` now only applies it where the
+evidence supports it, rather than assuming a female-validated change
+transfers to male for free.
+
 ### Bowling model tuning — depth-limited + ensembled + target winsorized
 
 Bowling-WPA is the weaker of the two targets (see Known Limitations), so its
@@ -559,18 +594,34 @@ make a change look better or worse than it really is:
    "ensembling reduces variance" effect, and a clean drop-in since
    `VotingRegressor` behaves like any other single estimator everywhere else
    in the codebase (score.py, backtest.py never had to change).
+4. **Reweighting the ensemble + a milder clip.** A later live search
+   (`training_and_selection_walkthrough.ipynb`) found the equal-weight
+   `VotingRegressor` and the (0.10, 0.90) clip from step 2 were both leaving
+   correlation on the table: giving the depth-limited HistGB more say than
+   the Random Forest (`weights=[0.7, 0.3]`, not an even split) plus widening
+   the clip to (0.02, 0.98) — checked the same live way (3 fractions x 3
+   seeds, paired t-test), and this time on **both** gender scopes before
+   shipping either: female paired diff +0.0028 (p=0.0033, won 8/9), male
+   +0.0064 (p=0.0000, won 9/9 — the cleanest result in the whole search).
+   Generalized cleanly across genders, so applied unconditionally to both.
 
-Net effect on the real temporal holdout at the time these changes were made
-(`criiq_models.cli backtest`, default 0.2 split, women's T20I, on the DB
-snapshot current then): bowling-WPA correlation **0.103 -> 0.11**, batting-WPA
-**0.134 -> 0.136**. Real and checked, but modest in absolute terms.
+Net effect on the real temporal holdout (`criiq_models.cli backtest`,
+default 0.2 split, current DB snapshot): bowling-WPA correlation **female
+0.075 -> 0.076, male 0.068 -> 0.073**; batting-WPA (from the
+`max_features="sqrt"` change above, female-only) **female 0.111 -> 0.122**,
+male architecturally unchanged. Real, checked, but still modest in absolute
+terms for bowling — see Known Limitations for why a much larger jump isn't
+realistic given how noisy per-match WPA inherently is.
 
-Those two figures are a **historical record of that comparison, not the current
-numbers** — the database has since been rebuilt and the holdout moved with it.
-For what the shipped models score today, on both gender scopes, see Known
-Limitations below; re-measure with `python -m criiq_models.cli backtest
---format T20 --gender female|male` rather than trusting any number quoted in
-this file.
+Treat every figure in this file as a snapshot of the run that produced it. The
+database is rebuilt as new matches land, which moves the holdout cutoff and the
+numbers with it. An independent re-run of these two changes on a later snapshot
+reproduced the same *direction* and size of improvement, but from a different
+baseline — female batting 0.122 -> 0.126, female bowling 0.074 -> 0.078, male
+bowling 0.067 -> 0.077, male batting flat at 0.089 (as expected: the
+`max_features` change is female-only). Re-measure with `python -m
+criiq_models.cli backtest --format T20 --gender female|male` rather than
+trusting a quoted number.
 
 ### Bowling-specific features — wicket-taking rate
 
@@ -806,27 +857,21 @@ exclusion logic was always correct, it was just being fed a broken input.
 ## Known limitations (honestly reported)
 
 - **Bowling-WPA prediction is weak, batting-WPA only slightly less so.**
-  Temporal-holdout backtest against the current DB snapshot, measured on the
-  shipped artifacts (`criiq_models.cli backtest --format T20 --gender ...`),
-  both scopes:
-
-  | scope | target | MAE | baseline MAE | corr | top-quartile hit-rate |
-  |---|---|---|---|---|---|
-  | female | batting_wpa | 0.095 | 0.096 | 0.122 | 35.2% |
-  | female | bowling_wpa | 0.077 | 0.078 | 0.074 | 22.8% |
-  | male   | batting_wpa | 0.089 | 0.090 | 0.089 | 30.7% |
-  | male   | bowling_wpa | 0.070 | 0.071 | 0.067 | 22.9% |
-
-  Read honestly: batting WPA beats a mean-predictor baseline, but only just,
-  and its edge over a ~25% random top-quartile hit-rate is real though small
-  (35.2% female / 30.7% male). **Bowling WPA is the weak one — at 22.8% and
-  22.9% its top-quartile hit-rate is at or slightly below chance**, so the
-  bowling model should be treated as barely-informative on a per-match basis
-  despite wicket-taking-rate features, a better-suited batting model, and a
-  dedicated round of bowling-model tuning (depth-limited + ensembled +
-  target-winsorized — see above). Those tuning steps were each verified as
-  improvements when they were made; they did not lift the target out of the
-  noise floor. Per-match WPA is
+  Temporal-holdout backtest (`criiq_models.cli backtest`, current DB
+  snapshot): batting WPA barely beats a mean-predictor baseline (female MAE
+  0.095 vs baseline 0.096, corr **0.122**, hit-rate **35.1%**; male MAE 0.089
+  vs baseline 0.090, corr 0.093, hit-rate 31.1% — both against a ~25% random
+  baseline); bowling WPA is similarly marginal (female MAE 0.077 vs baseline
+  0.078, corr **0.076**, hit-rate **26.9%**; male MAE 0.070 vs baseline
+  0.071, corr **0.073**, hit-rate 25.2%) even after wicket-taking-rate
+  features, a better-suited batting model, and two rounds of bowling-model
+  tuning (depth-limited + ensembled + target-winsorized, then reweighted +
+  re-clipped — see above) — all real, checked improvements (bowling
+  correlation moved ≈0.09 -> 0.103 -> 0.11 -> female 0.076/male 0.073 across
+  these sessions), none individually dramatic. Bowling is the weaker of the
+  two throughout: its top-quartile hit-rate clears the ~25% chance line, but
+  only just, so treat it as a mild signal rather than a confident one.
+  Per-match WPA is
   inherently high-variance (one dropped catch, one hat-trick, swings it
   hugely) — the engine leans on career-to-date/form aggregation (which
   averages out that noise) rather than per-match precision to still produce

@@ -39,10 +39,9 @@ def test_cold_start_skips_model_and_score_is_bounded(conn):
 
 
 def test_cold_start_model_part_discounted_by_sample_size(conn):
-    # A cold-start (fallback) player's model_part is scaled by how much history
-    # backs it, so a 3-match player who bowled/batted well (often vs weak
-    # opposition) can't post a near-full model_part -- the real Aakash Chand
-    # over-rating (3 matches -> +12.5) this discount fixes.
+    # model_part for a cold-start player is scaled by how much history backs
+    # it, so a 3-match player can't post a near-full model_part. fixes the
+    # real Aakash Chand over-rating (3 matches -> +12.5).
     register_player(conn, "p1", "Tiny Sample", role="bowler")
     for i, d in enumerate(["2024-01-01", "2024-02-01", "2024-03-01"]):
         mid = f"m{i}"
@@ -57,16 +56,15 @@ def test_cold_start_model_part_discounted_by_sample_size(conn):
     c = scored["components"]
     assert c["model_applied"] is False               # 3 < min_matches_for_model (10)
     # 3 matches -> confidence 0.3, so model_part is at most 30% of the
-    # undiscounted value -- comfortably below a full-history player's ceiling.
+    # undiscounted value, comfortably below a full-history player's ceiling.
     from criiq_models.config import SETTINGS
     assert c["model_part"] <= 45.0 * (3 / SETTINGS.min_matches_for_model) + 0.05
 
 
 def test_strike_rate_penalty_scaled_down_by_game_awareness(conn):
-    # Modern T20I prizes strike rate: a batting-capable player below the gender
-    # par takes a penalty, but experience + game awareness (big-moment impact,
-    # chasing composure, consistency) scale it DOWN -- so an experienced,
-    # aware anchor is largely forgiven while a raw low-SR player is not.
+    # modern T20I prizes strike rate: a player below the gender par is
+    # penalized, but experience and game awareness scale that penalty down,
+    # so an experienced anchor is largely forgiven while a raw low-SR player isn't.
     from criiq_models.features.current import ExtraContext
     scorer = RecommendationScorer(conn, "T20", "female", models={})
     scorer._priors["batter_sr_benchmark"] = 120.0
@@ -79,7 +77,7 @@ def test_strike_rate_penalty_scaled_down_by_game_awareness(conn):
                                                    raw_ctx, "batter")
 
     assert pen_aware < 0 and pen_raw < 0
-    assert pen_raw < pen_aware                      # the raw player is penalized MORE
+    assert pen_raw < pen_aware                      # the raw player is penalized more
     assert aw["factor"] > aw_raw["factor"]
 
     # at/above par -> no penalty; pure bowler never penalized for batting SR
@@ -110,17 +108,16 @@ def test_explain_surfaces_archetype_batting_hand_and_bowling_style(conn):
     assert inp["archetype"] == "power hitter"
     assert inp["bowling_style"] == "Right-arm off break"
     assert inp["batting_hand"] == "Right handed"
-    # Messy real-world casing/spacing ("Right handed" vs "right-handed") is
+    # messy real-world casing/spacing ("Right handed" vs "right-handed") is
     # normalized in the sentence itself, not just passed through raw.
     assert any("Right-handed power hitter." in line for line in payload["summary"])
     assert any("Bowls right-arm off break." in line for line in payload["summary"])
 
 
 def test_explain_surfaces_batting_profile_best_phase_and_finisher_note(conn):
-    # The "what to expect / best overs / where the impact is" enrichment,
-    # plus the transparency note that a strong finisher can still rate low
-    # because the score is win-probability-added, not raw hitting (the real
-    # "RM Ghosh is our best finisher but isn't recommended" case).
+    # covers the "what to expect / best phase" enrichment, plus the note that
+    # a strong finisher can still rate low since the score is win-probability
+    # added, not raw hitting (the real "RM Ghosh" case).
     _seed_cold_start_player(conn)  # cold-start -> low model_part, like a real low WPA
     set_player_profile(conn, "p1", batting_hand="Right handed", archetype="finisher",
                         batting={"balls": 876, "strike_rate": 145.4, "boundary_pct": 21.8,
@@ -148,8 +145,8 @@ def test_explain_surfaces_batting_profile_best_phase_and_finisher_note(conn):
 
 
 def test_explain_tiny_batting_sample_does_not_get_a_profile_sentence(conn):
-    # A tailender who faced a handful of balls must not get "expect strike
-    # rate X" narrated from a 12-ball cameo -- gated at 30 balls.
+    # a tailender who faced a handful of balls must not get "expect strike
+    # rate X" narrated from a 12-ball cameo, gated at 30 balls.
     _seed_cold_start_player(conn)
     set_player_profile(conn, "p1", archetype="balanced",
                         batting={"balls": 12, "strike_rate": 40.0, "boundary_pct": 0.0,
@@ -160,7 +157,7 @@ def test_explain_tiny_batting_sample_does_not_get_a_profile_sentence(conn):
 
 
 def test_explain_reasoning_has_no_dash_connectors(conn):
-    # House style: no em-dash / en-dash connectors in the coach-facing prose
+    # house style: no em-dash / en-dash connectors in coach-facing prose
     # (ordinary hyphens inside words like "Right-handed" are fine).
     _seed_cold_start_player(conn)
     set_player_profile(conn, "p1", bowling_style="Right-arm off break",
@@ -176,11 +173,10 @@ def test_explain_reasoning_has_no_dash_connectors(conn):
 
 
 def test_explain_surfaces_age_as_descriptive_context_not_a_model_feature(conn):
-    # age_years was tried as a trained-model feature and rejected (see
-    # features/historical.py's docstring -- a rigorous ablation found no
-    # measurable improvement, and a slight regression in 3 of 4 cases), so
-    # it must never appear in MODEL_FEATURES, only as narrative color here,
-    # the same way bowl_dot_pct/bowl_boundary_pct already work.
+    # age_years was tried as a model feature and rejected (see
+    # features/historical.py, no measurable improvement and a slight
+    # regression in 3 of 4 cases), so it must stay narrative color only,
+    # like bowl_dot_pct/bowl_boundary_pct.
     from criiq_models.features.schema import MODEL_FEATURES
     assert "age_years" not in MODEL_FEATURES
 
@@ -196,9 +192,8 @@ def test_explain_surfaces_age_as_descriptive_context_not_a_model_feature(conn):
 
 
 def test_explain_omits_profile_sentences_when_data_is_missing(conn):
-    # No set_player_profile call -- archetype/bowling_style/batting_hand all
-    # stay unset, same as the overwhelming majority of the ~7000-player pool
-    # that hasn't been through Wikipedia-sourced enrichment.
+    # no set_player_profile call, so archetype/bowling_style/batting_hand stay
+    # unset, same as most of the ~7000-player pool without Wikipedia enrichment.
     _seed_cold_start_player(conn)
     scorer = RecommendationScorer(conn, "T20", "female", models={})
     scored = scorer.score("p1", "Australia")
@@ -212,12 +207,10 @@ def test_explain_omits_profile_sentences_when_data_is_missing(conn):
 
 
 def test_explain_uses_no_gendered_pronouns(conn):
-    # Every `explain()` sentence used to hardcode "she"/"her" -- harmless
-    # while the pool was women's-only, but a real bug once men's players
-    # (gender="male") flow through the identical narrative code path: no
-    # per-player pronoun preference is ever stored (only the cricket-format
-    # `gender` field), so the fix is neutral phrasing for everyone, not a
-    # second he/him branch keyed off that field.
+    # explain() used to hardcode "she"/"her", fine while the pool was
+    # women's-only but a real bug once men's players flow through the same
+    # path. no per-player pronoun is stored, so the fix is neutral phrasing
+    # for everyone, not a second he/him branch.
     _seed_cold_start_player(conn)
     scorer = RecommendationScorer(conn, "T20", "male", models={})
     scored = scorer.score("p1", "Australia")
@@ -257,11 +250,10 @@ def test_bowler_side_matchup_rewards_wicket_rate_above_career_baseline(conn):
     add_match(conn, "m_opp", "2024-06-01", "India", "Australia")
     add_appearance(conn, "m_opp", "Australia", "O Batter")
 
-    # p1 has struck far more often against this specific opponent's roster
-    # than her career average (rate 5/40=0.125 vs career 0.05) -- a bowler
-    # getting real credit for this was previously impossible: the aggregate
-    # matchup signal only ever looked at HER batting history vs opponent
-    # bowlers, never her bowling history vs opponent batters.
+    # p1's wicket rate here (5/40=0.125) is well above her career rate
+    # (0.05). previously impossible to credit, since the aggregate matchup
+    # signal only looked at her batting history vs opponent bowlers, never
+    # her bowling history vs opponent batters.
     add_bowler_matchup(conn, bowler_id="p1", batter_id="opp1", balls=40, runs=30, dismissals=5)
 
     scorer = RecommendationScorer(conn, "T20", "female", models={})
@@ -291,7 +283,7 @@ def test_bowling_dot_and_boundary_pct_surface_as_descriptive_narrative(conn):
 
     inp = scored["components"]["inputs"]
     assert inp["bowl_dot_pct"] == 50.0 and inp["bowl_boundary_pct"] == 8.0
-    # Descriptive only -- must never affect the actual score/component points.
+    # descriptive only, must never affect the actual score/component points.
     assert "bowl_dot_pct" not in scored["components"]
 
     payload = explain(scored)
@@ -299,11 +291,10 @@ def test_bowling_dot_and_boundary_pct_surface_as_descriptive_narrative(conn):
 
 
 def test_model_part_driven_by_wpa_not_contribution_share(conn):
-    # The whole point of the WPA switch: a proven match-winner (high WPA,
-    # modest contribution-share) must score above a fringe player with a
-    # flashier-looking contribution-share but near-zero WPA — the exact
-    # failure mode found this session (a part-time all-rounder outranking a
-    # proven opener).
+    # the point of the WPA switch: a proven match-winner (high WPA, modest
+    # contribution-share) must score above a fringe player with a flashier
+    # share but near-zero WPA, the exact failure mode found here (a part-time
+    # all-rounder outranking a proven opener).
     register_player(conn, "star", "Star Opener", role="batter")
     register_player(conn, "fringe", "Fringe Allrounder", role="all-rounder")
 
@@ -338,9 +329,9 @@ def test_score_many_applies_team_need_bonus_across_the_pool(conn):
                  "('benchmark','T20','death',10,0.0,0.0), "
                  "('p1','T20','death',10,-0.10,0.0), "  # pool average (-0.10+0.02)/2 = -0.04,
                  "('p2','T20','death',10,0.02,0.0)")     # still below benchmark despite p2's edge
-    # The format-wide benchmark is scoped to the pool's own gender via real
-    # match participation (see team_need.py) -- "benchmark" needs a matching
-    # gender-tagged match/WPA row to be included at all.
+    # the format-wide benchmark is scoped to the pool's own gender via real
+    # match participation (see team_need.py), so "benchmark" needs a
+    # matching gender-tagged match/WPA row to be included at all.
     add_match(conn, "m_benchmark", "2024-01-01", "Team A", "Team B", gender="female")
     add_match_wpa(conn, "benchmark", "m_benchmark", batting_wpa=0.0)
     conn.commit()

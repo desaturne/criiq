@@ -9,16 +9,12 @@ _BW_PLACEHOLDERS = ",".join("?" for _ in BOWLER_WICKETS)
 
 
 def names_for_player(conn, player_id: str) -> tuple[list[str], str | None]:
-    """(display names, gender) for a player_id. `identifier_map` has no
-    gender column and stores one shared name list per raw Cricsheet
-    identifier -- for the handful of identifiers reused across two genuinely
-    different real people of different genders (see identity.py), the name
-    list alone can't tell them apart, and every query built from it MUST also
-    filter by this returned `gender` or it will silently blend both real
-    people's deliveries (a real bug this fixes, not a hypothetical one).
-    `gender` is `players.gender` for this player_id -- `None` for the
-    overwhelming majority of (unsplit, unambiguous) players, in which case no
-    filter is needed at all since no other real person shares the identifier.
+    """returns (display names, gender) for a player_id.
+
+    some Cricsheet identifiers are shared by two different real people of
+    different genders, so callers must filter by the returned gender or
+    risk blending both people's deliveries. gender is None when the
+    identifier isn't split and no filter is needed.
     """
     row = conn.execute(
         "SELECT cricsheet_identifier, gender FROM players WHERE player_id=?", (player_id,)
@@ -38,14 +34,10 @@ def _in(names: list[str]) -> str:
 def batter_vs_bowler(conn, fmt: str, batter_names: list[str],
                      bowler_names: list[str], batter_gender: str | None = None,
                      bowler_gender: str | None = None) -> dict:
-    """`batter_gender`/`bowler_gender`: from `names_for_player` -- pass these
-    through whenever the names came from a resolved player_id, or a
-    colliding identifier's two real people (of different genders) get their
-    deliveries silently summed together. `None` means "no disambiguation
-    needed" (the identifier isn't split), not "any gender".  A genuine match
-    always has one gender, so if both are set they must agree or the filter
-    (correctly) returns nothing -- these two names never actually played
-    each other.
+    """batter_gender/bowler_gender should come from names_for_player and be
+    passed through, or a colliding identifier's two people get their
+    deliveries summed together. None means no disambiguation needed, not
+    any gender.
     """
     if not batter_names or not bowler_names:
         return {"balls": 0, "runs": 0, "dismissals": 0, "strike_rate": None,

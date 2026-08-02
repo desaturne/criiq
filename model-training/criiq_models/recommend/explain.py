@@ -1,14 +1,8 @@
-"""Turn a `score()` result into a plain-language explanation payload.
+"""turns a score() result into a plain-language explanation payload.
 
-Mirrors the "strengths" plain-language summary style already used in
-`data-collection/criiq_data/advanced.py`: a list of short, coach-facing
-sentences generated directly from the `components` breakdown, so nothing
-said here is invented independently of the numbers that produced the score.
-
-House style for these sentences: no em-dash / en-dash connectors ("—"/"–")
-in the prose. Use commas, colons, or parentheses instead. (Ordinary hyphens
-inside words like "all-rounder", "vs-pace", "Right-handed" are fine and
-intentional.)
+mirrors the "strengths" summary style in data-collection/criiq_data/advanced.py,
+generating coach-facing sentences straight from the components breakdown.
+no em-dashes in the generated prose; ordinary hyphens like "all-rounder" are fine.
 """
 from __future__ import annotations
 
@@ -23,11 +17,10 @@ _PHASE_LABEL = {
 
 def explain(scored: dict, alternative: dict | None = None, slot: str | None = None,
             h2h_batting: dict | None = None, h2h_bowling: dict | None = None) -> dict:
-    """`alternative`/`slot`: the best-scoring player NOT selected for the
-    same team-sheet slot (opener / core batting / bowling tail, see
-    `selection/optimize.slot_category`), if any, lets the explanation say
-    *why this player over the next-best option*, not just describe their own
-    numbers in isolation.
+    """`alternative`/`slot` is the best-scoring player not picked for the same
+    slot (see `selection/optimize.slot_category`), if any, so the explanation
+    can say why this player over the next-best option, not just describe
+    their own numbers.
     """
     c = scored["components"]
     inp = c["inputs"]
@@ -76,11 +69,8 @@ def explain(scored: dict, alternative: dict | None = None, slot: str | None = No
             f"{_pct(inp['predicted_bowling_wpa'])} bowling win-probability impact per match "
             f"({c['model_part']:+} pts).")
 
-    # A strong hitter (finisher / power hitter) can still rate modestly here,
-    # because the score is win-probability-added, not raw strike rate. Flag
-    # that explicitly so a low rating on a genuine finisher (the recurring
-    # "she's our best finisher but isn't recommended" case) reads as "low
-    # recent win-impact", not "can't hit", and points a coach at a manual call.
+    # score is win-probability-added, not raw strike rate, so a genuine
+    # finisher with low recent win-impact can still rate low here despite a strong profile
     if archetype in ("finisher", "power hitter") and c["model_part"] <= SETTINGS.finisher_low_impact_threshold:
         lines.append(
             f"The batting profile above is strong, but this rating is driven by win-probability-added "
@@ -208,8 +198,8 @@ def explain(scored: dict, alternative: dict | None = None, slot: str | None = No
 
     if inp.get("retirement_status"):
         reason = inp.get("status_reason")
-        # comma, not parens: the reason itself often already ends in a
-        # parenthetical ("... (40% of team matches)"), and nesting parens reads badly.
+        # comma not parens: the reason often already ends in a parenthetical,
+        # and nesting parens reads badly
         reason_note = f", {reason}" if reason else ""
         lines.append(f"Current status: {inp['retirement_status']}{reason_note}.")
 
@@ -232,11 +222,10 @@ def explain(scored: dict, alternative: dict | None = None, slot: str | None = No
 
 
 def _append_batting_profile(lines: list[str], inp: dict, archetype: str | None) -> None:
-    """The descriptive "what to expect / best overs / where the impact is"
-    block, from data-collection's `player_advanced` batting profile (surfaced
-    via `score.py`'s inputs, never scored). Gated on >= 30 balls faced so a
-    tailender's tiny-sample strike rate doesn't get narrated as if it were a
-    real batting profile.
+    """the "what to expect / best overs" batting profile block, from
+    data-collection's `player_advanced` (surfaced via score.py's inputs, never
+    scored). gated on >= 30 balls faced so a tailender's tiny sample doesn't
+    get narrated as a real profile.
     """
     bat_sr = inp.get("bat_strike_rate")
     if bat_sr is None or (inp.get("bat_balls") or 0) < 30:

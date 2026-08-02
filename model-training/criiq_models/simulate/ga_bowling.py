@@ -1,42 +1,18 @@
-"""Genetic algorithm: search over legal bowler-to-over rotations.
+"""genetic algorithm that searches over legal bowler-to-over rotations.
 
-The repo's existing optimizer (`selection/optimize.py`) is exact MILP for a
-single "pick 11 from a pool" decision -- it can't express an *in-match
-sequence* subject to Law 17.6 (no consecutive overs) and ICC PC cl. 13.9.1
-(max 4 overs each) cleanly, since which bowler is legal to bowl a given over
-depends on every earlier choice in the sequence. A GA searches this
-combinatorial space instead, with every candidate repaired back to a
-rules-legal rotation after crossover/mutation (never merely penalized), so
-fitness always reflects an actually-playable match.
+unlike the exact-MILP squad selector (`selection/optimize.py`), this needs
+to search an in-match sequence under Law 17.6 (no consecutive overs) and
+ICC PC cl. 13.9.1 (max 4 overs each). every candidate is repaired back to a
+legal rotation after crossover/mutation instead of just being penalized.
 
-**The recognized bowlers take the full quota between them by default, not
-an even spread across everyone bowling-capable.** A real T20 side has (in
-the ordinary case) exactly 5 specialist bowlers who share all 20 overs, 4
-each -- an all-rounder or part-timer chips in only occasionally, not as an
-equal competitor for overs. `primary_bowlers` (the up to 5 recognized
-specialists, passed in by the caller) gets this default treatment: initial
-rotations and the repair fallback both prefer them, so the search starts
-from -- and stays close to -- a realistic default, while ordinary mutation
-(which reassigns a slot to *any* eligible bowler, uniformly) still lets a
-part-timer be "introduced" and evolve into the result if that's genuinely
-better for this specific matchup. Omitting `primary_bowlers` recovers the
-old even-spread-across-everyone behaviour.
+`primary_bowlers` (the recognized specialists) take the full quota by
+default, since a real T20 side usually has 5 bowlers sharing all 20 overs.
+mutation can still introduce a part-timer if it's genuinely better.
 
-Fitness is the (negative) mean runs conceded across a handful of
-`simulate_innings` Monte Carlo reps -- a single completed innings with no
-chase target. This is the tractable, correct proxy for bowling-side win
-probability: restricting the opposition to fewer runs is exactly what a
-captain choosing a bowling rotation controls, without needing a full two-
-innings match simulated per fitness evaluation (an order of magnitude more
-expensive, for no extra signal about the rotation itself).
-
-**Fitness is noisy** (a Monte Carlo mean over a handful of reps), so the
-tracked "best" is protected against that noise the same way `ga_batting.py`
-protects its own: elitism (the best-known rotation always stays in the gene
-pool, never dropped for scoring worse on an unrelated noisy re-evaluation)
-and a re-verification step (extra reps) before accepting an apparent new
-best. `fitness_history` logs the running best-known fitness, monotonically
-non-decreasing by construction, not each generation's raw top score.
+fitness is negative mean runs conceded over a few `simulate_innings` reps,
+a cheap proxy for bowling-side win probability. it's noisy, so the
+best-known rotation is protected via elitism and re-verified with extra
+reps before being replaced.
 """
 from __future__ import annotations
 
@@ -49,10 +25,8 @@ _VERIFY_REP_MULTIPLIER = 3  # extra reps used to confirm an apparent new best
 
 def _even_quotas(bowler_pool: list, rng: np.random.Generator,
                   max_overs_per_bowler: int, total_overs: int) -> dict:
-    """Distributes `total_overs` as evenly as possible across `bowler_pool`
-    (each capped at `max_overs_per_bowler`), randomizing *which* bowlers get
-    the leftover "extra" over so repeated calls explore different quota
-    splits.
+    """distributes `total_overs` as evenly as possible across `bowler_pool`,
+    randomizing which bowlers get the leftover overs.
     """
     n = len(bowler_pool)
     if n == 0:
@@ -83,9 +57,8 @@ def _quotas(bowler_pool: list, rng: np.random.Generator, primary_bowlers: list |
     if primary_capacity >= total_overs:
         quotas.update(_even_quotas(primary, rng, max_overs_per_bowler, total_overs))
         return quotas
-    # Fewer recognized bowlers than needed to cover the innings alone (a real
-    # captain's forced situation) -- each bowls a full quota, and the
-    # shortfall goes to the next-best options.
+    # not enough recognized bowlers to cover the innings alone: each bowls a
+    # full quota and the shortfall goes to the next-best options.
     for b in primary:
         quotas[b] = max_overs_per_bowler
     quotas.update(_even_quotas(others, rng, max_overs_per_bowler, total_overs - primary_capacity))
@@ -93,12 +66,9 @@ def _quotas(bowler_pool: list, rng: np.random.Generator, primary_bowlers: list |
 
 
 def _sequence(quotas: dict, rng: np.random.Generator) -> list:
-    """Greedy "most overs remaining, excluding the previous over's bowler"
-    scheduling -- the standard, provably-correct algorithm for arranging
-    items with a no-two-adjacent-equal constraint (equivalent to the classic
-    "task scheduler"/"reorganize string" problem), guaranteed to succeed
-    whenever the largest quota is at most half the total (always true here:
-    a single bowler's 4-over cap is well under half of 20 overs).
+    """greedy "most overs remaining, excluding the previous bowler" scheduling.
+    standard approach for a no-two-adjacent-equal constraint, guaranteed to
+    work here since a single bowler's 4-over cap is well under half of 20.
     """
     remaining = {b: q for b, q in quotas.items() if q > 0}
     last = None
@@ -124,30 +94,19 @@ def _random_valid_rotation(bowler_pool: list, rng: np.random.Generator,
 
 def _repair(rotation: list, bowler_pool: list, rng: np.random.Generator,
             primary_bowlers: list | None = None) -> list:
-    """Rebuilds a possibly-illegal post-crossover/mutation rotation into a
-    guaranteed-legal one. A naive left-to-right patch (walk the rotation,
-    swap in any *currently* eligible bowler wherever a slot is illegal) is
-    NOT safe in general: crossover recombines two 20-length parents without
-    any regard for the resulting per-bowler over-counts, and with a
-    razor-tight pool (exactly 5 bowlers at 4 overs each, zero slack -- a
-    real case, not hypothetical: confirmed live with a men's T20I side that
-    had only 5 bowling-capable players) that can skew several bowlers past
-    4 overs before repair even starts, painting a left-to-right walk into a
-    corner with no eligible bowler left for a later slot even though the
-    *pool as a whole* can legally cover 20 overs.
+    """rebuilds a possibly-illegal post-crossover/mutation rotation into a
+    legal one. a naive left-to-right patch isn't safe: with a tight pool
+    (e.g. exactly 5 bowlers at 4 overs each, zero slack) crossover can skew
+    several bowlers past their cap before repair even starts, leaving no
+    eligible bowler for a later slot even though the pool as a whole can
+    cover 20 overs.
 
-    Instead: count how many overs each bowler already has in the candidate
-    (capped at the legal maximum), reassign any overs lost to that cap (or
-    to a bowler no longer in `bowler_pool`) to whichever bowler has spare
-    capacity -- preferring a recognized `primary_bowlers` option, mirroring
-    a real captain reaching for a part-timer only once the frontline attack
-    is exhausted -- and then re-derive the actual over-by-over sequence with
-    `_sequence`, the same provably-safe "most overs remaining, excluding the
-    previous over's bowler" algorithm a fresh rotation is built with. This
-    preserves crossover's real genetic content (which bowlers survive, and
-    roughly how many overs each), just not the exact original slot
-    positions, and can never fail for a pool that can legally bowl 20 overs
-    at all.
+    instead, count each bowler's overs in the candidate (capped at the
+    legal max), reassign any overs lost to that cap to whoever has spare
+    capacity (preferring `primary_bowlers`), then re-derive the sequence
+    with `_sequence`. keeps crossover's real genetic content (which bowlers
+    survive and roughly how many overs each) without the exact slot
+    positions.
     """
     total_overs = len(rotation)
     counts: dict = {}
@@ -203,10 +162,9 @@ def optimize_bowling_rotation(bowler_pool: list, batting_order: list, outcome_mo
                                pop_size: int = 40, generations: int = 60,
                                n_reps: int = 8, rng_seed: int | None = None) -> dict:
     """`primary_bowlers`: the up to 5 recognized specialist bowlers in
-    `bowler_pool` -- if given, they default to taking the full quota (4
-    overs each) between them; other pool members are only introduced via
-    mutation or when the primary group runs short (see module docstring).
-    `None` recovers the old even-spread-across-everyone behaviour.
+    `bowler_pool`. if given, they default to taking the full quota between
+    them; others are only introduced via mutation or when the primary group
+    runs short. `None` falls back to an even spread across everyone.
     """
     if len(bowler_pool) * MAX_OVERS_PER_BOWLER < MAX_OVERS:
         raise ValueError(
@@ -234,7 +192,7 @@ def optimize_bowling_rotation(bowler_pool: list, batting_order: list, outcome_mo
         history.append(best_fitness)
 
         survivors = [rot for rot, _ in scored[:max(2, pop_size // 2 - 1)]]
-        survivors.append(best)  # elitism: the true best-known never drops out of the gene pool
+        survivors.append(best)  # elitism: keep the best-known individual in the pool
         children = []
         while len(survivors) + len(children) < pop_size:
             a = survivors[rng.integers(len(survivors))]

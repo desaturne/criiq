@@ -1,30 +1,12 @@
-"""Synergy-aware team-need bonus.
+"""synergy-aware team-need bonus.
 
-Scoring each player in isolation (as `RecommendationScorer.score` does) can't
-capture "this team is thin on death bowling, so a death-overs specialist is
-worth more *here* than her standalone number suggests" — a real coach's
-7th/8th pick partly depends on who's already in the frame. A fully sequential
-re-scoring algorithm would capture this most precisely, but is harder to keep
-provably well-behaved than the MILP `selection/optimize.py` already uses; this
-is the practical middle ground — a single, transparent bonus computed once
-per recommendation, added as its own component (not folded silently into
-`model_part`), using data-collection's `player_phase_wpa` (see
-`criiq_data/wpa.py`): identify the pool's single *neediest* phase (its
-average combined batting+bowling win-probability-added falls furthest below
-a format-wide benchmark), then reward whoever in the pool is genuinely
-strong there.
+scoring players in isolation can't capture "this team is thin on death
+bowling", so this finds the pool's single neediest phase (vs a format-wide
+benchmark from player_phase_wpa) and rewards whoever is strong there, as its
+own component rather than folded into model_part.
 
-The benchmark is scoped to the pool's own gender (`player_phase_wpa` has no
-`gender` column of its own -- it's keyed by `player_id`, and `players.gender`
-is only ever set for the ~32 identifiers split by the cross-gender-collision
-fix, NULL for everyone else -- so scoping goes through a player's actual
-match participation via `player_match_wpa` join `matches.gender`, the same
-technique used throughout this codebase to resolve gender for players whose
-`players.gender` column is NULL). Playing styles and typical phase-WPA
-magnitudes genuinely differ between genders, so comparing a women's pool's
-phase strength against a benchmark blended with men's data (or vice versa)
-would be comparing against the wrong reference population entirely -- this
-used to do exactly that (a real, fixed bug, not just a known simplification).
+benchmark is scoped by gender via player_match_wpa join matches.gender, since
+player_phase_wpa has no gender column and players.gender is mostly NULL.
 """
 from __future__ import annotations
 
@@ -66,7 +48,7 @@ def _pool_phase_averages(conn: sqlite3.Connection, player_ids: list[str], fmt: s
 
 def compute_team_need(conn: sqlite3.Connection, player_ids: list[str],
                        fmt: str = SETTINGS.format, gender: str = SETTINGS.gender) -> dict:
-    """The pool's single neediest phase, if any phase falls below benchmark."""
+    """the pool's single neediest phase, if any phase falls below benchmark."""
     benchmarks = _phase_benchmarks(conn, fmt, gender)
     pool_avgs = _pool_phase_averages(conn, player_ids, fmt)
     gaps = {ph: pool_avgs.get(ph, 0.0) - benchmarks.get(ph, 0.0)
@@ -83,9 +65,8 @@ def compute_team_need(conn: sqlite3.Connection, player_ids: list[str],
 
 def player_team_need_bonus(conn: sqlite3.Connection, player_id: str, team_need: dict,
                            fmt: str = SETTINGS.format) -> dict:
-    """Bonus for being strong in the team's single neediest phase — never a
-    penalty (a player simply gets nothing if she isn't the answer to the
-    team's specific gap, rather than being marked down for it).
+    """bonus for being strong in the team's neediest phase. never a penalty,
+    a player who isn't the answer to the gap just gets nothing.
     """
     phase = team_need.get("neediest_phase")
     if not phase:
@@ -97,12 +78,8 @@ def player_team_need_bonus(conn: sqlite3.Connection, player_id: str, team_need: 
         return {"bonus": 0.0, "phase": phase}
     combined = (row["batting_wpa_per_match"] or 0.0) + (row["bowling_wpa_per_match"] or 0.0)
     surplus = combined - team_need["benchmarks"].get(phase, 0.0)
-    # Checked against the real distribution (combined phase-WPA has a
-    # standard deviation of ~0.065-0.078 across phases): a one-std-dev
-    # surplus should read as a genuine, noticeable strength (~2-3 pts), and
-    # only a two-std-dev surplus — truly exceptional — should hit the cap.
-    # The first version of this used *200, which hit the cap for almost
-    # every player in the pool regardless of whether she was actually the
-    # answer to the team's specific gap; caught by eyeballing real output.
+    # scale tuned against phase-wpa's real std dev (~0.065-0.078) so a genuine
+    # surplus reads as a noticeable bonus without hitting the cap for everyone.
+    # an earlier *200 scale hit the cap for almost every player, caught by eyeballing output.
     bonus = round(max(0.0, min(TEAM_NEED_CAP, surplus * 35)), 1)
     return {"bonus": bonus, "phase": phase}

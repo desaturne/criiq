@@ -39,10 +39,8 @@ def _wicket_events(deliv: pd.DataFrame, name2id: dict) -> pd.DataFrame:
     wk = wk.merge(first[["match_id", "innings", "batter", "position"]],
                   left_on=["match_id", "innings", "player_dismissed"],
                   right_on=["match_id", "innings", "batter"], how="left")
-    # identifier, NOT player_id, despite the name -- gender is threaded
-    # alongside it (deliv already carries `gender`) so the final grouping
-    # below can disambiguate the handful of Cricsheet registry identifiers
-    # reused across two genuinely different people of different genders.
+    # this is the identifier, not player_id. gender travels alongside it so
+    # the grouping below can disambiguate identifiers reused across genders.
     wk["bowler_id"] = wk["bowler"].map(name2id)
     return wk[wk["credited"] & wk["bowler_id"].notna()]
 
@@ -85,8 +83,7 @@ def build_impact_for_format(conn, fmt: str) -> int:
     deliv["legal"] = (deliv["wides"].fillna(0) == 0).astype(int)
     deliv["striker_id"] = deliv["striker"].map(name2id)
     sit = deliv[deliv["innings"].isin([1, 2]) & deliv["striker_id"].notna()]
-    # gender kept alongside the identifier in every group key below, for the
-    # same reason as career.py/ml_features.py -- see identity.py.
+    # gender kept alongside identifier here too, same reason as career.py/ml_features.py, see identity.py.
     sit_runs = sit.groupby(["striker_id", "gender", "innings"]).agg(
         runs=("runs_off_bat", "sum"), balls=("legal", "sum"))
     outs = (deliv[deliv["player_dismissed"].notna()].assign(
@@ -126,16 +123,8 @@ def build_impact_for_format(conn, fmt: str) -> int:
         total_wk = int(bi["wkts"]) if bi is not None else 0
         top_pct = round(100 * top_scalps / total_wk, 1) if total_wk else None
 
-        # An "economical spell worth having" -- >=12 legal balls (2 overs, so
-        # a single tidy over doesn't count) at economy<=6.0/over. Threshold
-        # picked from the real distribution (`bowled` innings DB-wide,
-        # balls_bowled>=12): rate of qualifying innings per match has
-        # mean 0.402/median 0.389/75th-pctile 0.538 at this exact cutoff --
-        # its 75th-percentile (0.538) lines up almost exactly with
-        # top_order_scalps/matches's own 75th-percentile (0.538), so the two
-        # bonuses hit their (now-equal, see below) caps at a comparably-rare
-        # percentile of real bowlers, the same calibration discipline used
-        # for `big_innings` below.
+        # an economical spell needs >=12 legal balls (2 overs) at economy<=6.0/over.
+        # threshold calibrated so this bonus caps out at a similarly rare percentile as top_order_scalps.
         spells = bowled[bowled["balls_bowled"] >= 12]
         economical_spells = int((spells["runs_conceded"] / spells["balls_bowled"] * 6 <= 6.0).sum())
 
@@ -151,40 +140,21 @@ def build_impact_for_format(conn, fmt: str) -> int:
         set_sr, set_avg = _sit(1)
         chase_sr, chase_avg = _sit(2)
 
-        # "A wicket worth having" (top_order_scalps, credited toward dangerous
-        # top-order batters) needs a batting-side equivalent: "an innings worth
-        # having". >=30 runs was picked, not guessed -- checked against the live
-        # DB, (innings>=30)/matches has mean 0.135/median 0.100/75th-pctile 0.222,
-        # and a multiplier of 70 lines its mean and 75th-percentile up with
-        # top_order_scalps/matches's own mean 0.313/75th-pctile 0.538 under the
-        # existing *30 multiplier -- both bonuses hit their 15.0 cap at a
-        # comparably-rare percentile of real players, not an arbitrary round
-        # number on one side only.
+        # batting-side equivalent of top_order_scalps: an innings of >=30 runs.
+        # threshold and the *70 multiplier are calibrated so this bonus caps out at a similarly rare percentile.
         big_innings = int((batted["runs"] >= 30).sum())
 
         overall_contrib = (bat_contrib or 0) + (bowl_contrib or 0)
         contribution_part = min(35.0, overall_contrib * 0.9)
         winning_part = 25.0 * (win_pct or 0) / 100
         standout_part = 25.0 * min(1.0, (potm_awards / matches) / 0.12) if matches else 0
-        # Wicket-taking and economy now split the same 15pt bowling bonus
-        # equally (7.5 each) rather than economy counting for nothing --
-        # previously a bowler's *entire* bowling bonus came from top-order
-        # wicket-taking rate alone, so two bowlers with identical wicket-rates
-        # scored identically here even if one leaked boundaries every over and
-        # the other built pressure with dot balls. Both halves use the same
-        # halved multiplier (*15, not *30) so each still hits its own 7.5 cap
-        # at the same rate-percentile the original *30/cap-15 bowling bonus
-        # did -- the total 15pt ceiling for a bowler who's genuinely elite at
-        # *both* is unchanged from before this split, it's just no longer
-        # 100% wicket-driven.
+        # wicket-taking and economy split the 15pt bowling bonus equally (7.5 each),
+        # so economy actually counts instead of the bonus being 100% wicket-driven.
         wicket_rate_part = min(7.5, (top_scalps / matches) * 15) if matches else 0
         economy_part = min(7.5, (economical_spells / matches) * 15) if matches else 0
         bowling_part = wicket_rate_part + economy_part
         batting_impact_part = min(15.0, (big_innings / matches) * 70) if matches else 0
-        # A genuine dual-threat all-rounder can now earn both 15pt bonuses at
-        # once (impossible before this fix) -- clamp the total back to the
-        # intended 0-100 scale; pure specialists are unaffected, they only ever
-        # earn one of the two bonuses so their ceiling was already <=100.
+        # clamp to 0-100 since a genuine all-rounder can now earn both 15pt bonuses at once.
         importance = round(min(100.0, contribution_part + winning_part + standout_part
                                 + bowling_part + batting_impact_part), 1)
         components = {

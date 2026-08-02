@@ -47,10 +47,8 @@ def _ball(conn, mid, inn, over, b, bat_team, bowl_team, striker, nonstr, bowler,
 
 
 def _cricsheet_zip(matches: list[dict]) -> bytes:
-    """Builds a minimal real-shaped Cricsheet csv2 zip in memory -- one
-    `{match_id}.csv` (deliveries) + `{match_id}_info.csv` (info) pair per
-    match -- so `ingest_source` is exercised against the actual file format,
-    not a shortcut fixture.
+    """builds a minimal real-shaped Cricsheet csv2 zip in memory: one deliveries csv
+    and one info csv per match, so ingest_source is exercised against the real file format.
     """
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as z:
@@ -165,13 +163,8 @@ def test_registry_conservative_and_recency(conn):
 
 
 def test_recall_flag_never_overrides_a_genuinely_inactive_player(tmp_path):
-    # Real bug found via a live-DB demo check: "RK Parwin" last appeared for
-    # India in 2012 (>13 years before the most recent match in the data) yet
-    # kept surfacing in 2026 team recommendations. Root cause: recall_flag's
-    # old formula (`days_since > recall_flag_days`, 180) fires for *every*
-    # unranked INACTIVE player, since inactive_window_days (1095) is larger
-    # than recall_flag_days -- roster.py's INACTIVE exclusion checks
-    # `recall_flag==0`, so it was silently defeated for anyone unranked.
+    # real bug: an inactive player kept surfacing in recommendations because
+    # recall_flag's old formula fired for every unranked INACTIVE player.
     c = connect(tmp_path / "recall.db")
     init_schema(c)
     _add_player_meta(c, "Old Timer", "id_stale", "801")
@@ -192,14 +185,9 @@ def test_recall_flag_never_overrides_a_genuinely_inactive_player(tmp_path):
 
 
 def test_domestic_activity_flagged_without_faking_the_international_status(tmp_path):
-    # The user's exact scenario: gone quiet internationally, but still
-    # playing -- just domestically. An earlier version of this fix made the
-    # *status label itself* domestic-aware, which was wrong: a genuinely
-    # INACTIVE-internationally player showed as "ACTIVE", which is a lie a
-    # selector could act on. The corrected design: `retirement_status` stays
-    # an honest, international-only fact; `recent_domestic_activity` is a
-    # separate, explicit flag consumed by model-training's roster.py for
-    # eligibility -- it must never overwrite the status label.
+    # scenario: gone quiet internationally but still playing domestically.
+    # retirement_status stays an honest international-only fact; recent_domestic_activity
+    # is a separate eligibility flag for roster.py, and must never overwrite the status label.
     c = connect(tmp_path / "domform.db")
     init_schema(c)
     _add_player_meta(c, "OO OldStar", "id_oldstar", "901")
@@ -222,19 +210,13 @@ def test_domestic_activity_flagged_without_faking_the_international_status(tmp_p
     gone = c.execute("SELECT * FROM player_registry WHERE player_id=?",
                       (identity.player_id_for("id_gone"),)).fetchone()
 
-    # `days_since_last_appearance` (informational, union-based) still
-    # follows the domestic appearance...
+    # days_since_last_appearance follows the domestic appearance.
     assert star["days_since_last_appearance"] == 0
-    # ...but the STATUS is a true international fact: her only international
-    # appearance was ~3 years 11 months before as-of (2025-12-20), well past
-    # inactive_window_days -- she genuinely is INACTIVE internationally, and
-    # the label must say so, not "ACTIVE".
+    # but the status is a true international-only fact: she's genuinely INACTIVE internationally.
     assert star["retirement_status"] == "INACTIVE"
-    # The distinct, honest carve-out flag: this is what tells model-training
-    # she shouldn't be silently excluded, without lying about her status.
+    # the carve-out flag tells model-training not to exclude her, without lying about her status.
     assert star["recent_domestic_activity"] == 1
-    # The control: no domestic follow-up at all -- genuinely stale, and no
-    # carve-out flag either.
+    # control: no domestic follow-up at all, so no carve-out flag either.
     assert gone["retirement_status"] == "INACTIVE"
     assert gone["recent_domestic_activity"] == 0
     c.close()
@@ -242,8 +224,7 @@ def test_domestic_activity_flagged_without_faking_the_international_status(tmp_p
 
 def test_winprob_empirical_learns_and_calibrates():
     from criiq_data.winprob import EmpiricalWinProb
-    # Synthetic chase: the batting team wins iff the ask is gettable
-    # (runs_required <= balls_remaining), plus a losing set of hopeless states.
+    # synthetic chase: batting team wins iff the ask is gettable, plus a set of hopeless states.
     rows = []
     for rem in range(6, 120, 6):
         for wk in range(0, 8):
@@ -256,8 +237,7 @@ def test_winprob_empirical_learns_and_calibrates():
     balls = pd.DataFrame(rows)
     model = EmpiricalWinProb(alpha=1.0).fit(balls)
 
-    # query the buckets the training actually covered: gettable ask (rem//2) wins,
-    # a doubled ask (rem*2) is hopeless
+    # query buckets the training covered: gettable ask (rem//2) wins, doubled ask (rem*2) is hopeless.
     easy = pd.DataFrame([{"innings": 2, "balls_remaining": 60, "wickets": 2,
                           "runs_required": 30, "balls_bowled": 60, "score": 0}])
     hard = pd.DataFrame([{"innings": 2, "balls_remaining": 12, "wickets": 6,
@@ -294,11 +274,8 @@ def test_wpa_credits_striker_and_debits_bowler(conn, tmp_path, monkeypatch):
     monkeypatch.setattr(winprob, "MODELS_DIR", tmp_path)
     model = winprob.EmpiricalWinProb()
     model.grids = {
-        # M1 (innings 1), bin widths BALLS_BIN=6/SCORE_BIN=10: balls 1-5 (score
-        # 1..7, balls_bowled 1..5) all land on (k_bowled=0, k_wk=0, k_score=0).
-        # Ball 6 is both the over's 6th ball *and* the wicket ball, so it moves
-        # to (k_bowled=1, k_wk=1, k_score=0) -- a clean, hand-verifiable single
-        # win-probability swing to test attribution on.
+        # M1 innings 1: balls 1-5 land on bucket (0,0,0); ball 6 (the wicket ball)
+        # moves to (1,1,0), a clean single win-probability swing to test attribution on.
         "set_full": pd.DataFrame([
             {"k_bowled": 0, "k_wk": 0, "k_score": 0, "wp": 0.55},
             {"k_bowled": 1, "k_wk": 1, "k_score": 0, "wp": 0.45},
@@ -321,10 +298,9 @@ def test_wpa_credits_striker_and_debits_bowler(conn, tmp_path, monkeypatch):
         "SELECT bowling_wpa FROM player_match_wpa WHERE player_id=? AND match_id='M1'",
         (bowl_id,)).fetchone()
 
-    # only the wicket ball moves the bucket (0.55 -> 0.45): every prior ball
-    # in the over lands on the same bucket, so their deltas are exactly zero.
+    # only the wicket ball moves the bucket (0.55 -> 0.45); every prior ball has a zero delta.
     assert m1_bat["batting_wpa"] == pytest.approx(-0.10)
-    # the bowling team's probability moved the opposite way, by construction.
+    # bowling team's probability moved the opposite way, by construction.
     assert m1_bowl["bowling_wpa"] == pytest.approx(0.10)
 
     phase_row = conn.execute(
@@ -378,9 +354,7 @@ def test_domestic_matches_tagged_and_kept_out_of_international_phase_wpa(conn, t
         (bat_id,)).fetchone()
     assert m1_row["team_type"] == "international"
 
-    # player_phase_wpa (the international career aggregate) must not blend in
-    # D1 -- still just the 2 international matches from the shared fixture
-    # (M1 and M2, both int'l), not 3.
+    # player_phase_wpa (the international aggregate) must not blend in D1, still just M1 and M2.
     phase_row = conn.execute(
         "SELECT matches FROM player_phase_wpa WHERE player_id=? AND format='T20' "
         "AND phase='powerplay'", (bat_id,)).fetchone()
@@ -394,8 +368,8 @@ def test_domestic_matches_tagged_and_kept_out_of_international_phase_wpa(conn, t
 
 
 def test_registry_flags_inconsistent_selection(tmp_path):
-    # Team A plays 10 matches in one recent season. A regular is picked for all
-    # of them (ACTIVE); an in-and-out player is picked for only 2 (INCONSISTENT).
+    # Team A plays 10 matches; a regular is picked for all of them (ACTIVE), an
+    # in-and-out player for only 2 (INCONSISTENT).
     c = connect(tmp_path / "sel.db")
     init_schema(c)
     _add_player_meta(c, "Reg Regular", "id_reg", "901")
@@ -481,17 +455,12 @@ def test_importance_score_batting_bonus_symmetric_with_bowling(tmp_path):
         _add_match(c, mid, date, "Team A", "Team B", "Team A")
         c.execute("UPDATE matches SET player_of_match=? WHERE match_id=?", ("CC AllRounder", mid))
         _add_match_player(c, mid, "Team A", "CC AllRounder")
-        # Innings 1: Team A bats, CC alone scores 30 -- her whole team's total,
-        # so bat_contribution_pct comes out at exactly 100%.
+        # innings 1: Team A bats, CC alone scores 30, her whole team's total, so
+        # bat_contribution_pct comes out at exactly 100%.
         for b, runs in enumerate([4, 4, 4, 4, 4, 10], start=1):
             _ball(c, mid, 1, 0, b, "Team A", "Team B", "CC AllRounder", "ZZ Partner", "YY Bowler", runs)
-        # Innings 2: Team B bats, CC bowls a full 2-over spell (12 legal
-        # balls, 0 runs conceded off any of them -- economy 0.0, well under
-        # the economical-spell threshold) and removes the opening (top-order)
-        # batter on the first ball -- the team's only wicket, so
-        # bowl_contribution_pct is 100% too. A full spell (not just one ball)
-        # is needed so this fixture qualifies for *both* new bowling-bonus
-        # sub-parts (wicket-rate and economy), not just the wicket one.
+        # innings 2: Team B bats, CC bowls a full economical 2-over spell and takes the
+        # team's only wicket, so bowl_contribution_pct is 100% too.
         _ball(c, mid, 2, 0, 1, "Team B", "Team A", "XX Victim", "WW Partner", "CC AllRounder",
               0, wkt="bowled", dismissed="XX Victim")
         for over in range(2):
@@ -507,19 +476,13 @@ def test_importance_score_batting_bonus_symmetric_with_bowling(tmp_path):
     row = c.execute("SELECT * FROM player_impact WHERE player_id=?",
                      (identity.player_id_for("id_ar"),)).fetchone()
     comps = json.loads(row["importance_components"])
-    # A 30+ run innings every match (rate 1.0), a top-order wicket every
-    # match (rate 1.0), and an economical (0.0/over) spell every match
-    # (rate 1.0) all hit their respective caps -- wicket-rate and economy
-    # split the bowling bonus 7.5/7.5 (see impact.py), matching batting's
-    # 15.0 combined: before the batting bonus fix, batting_impact_part
-    # didn't exist at all; before the economy split, economy counted for
-    # nothing and bowling_impact_part was 100% wicket-driven.
+    # every rate hits its cap: wicket-rate and economy split the bowling bonus
+    # 7.5/7.5 (see impact.py), matching batting's 15.0 combined.
     assert comps["wicket_rate_part"] == 7.5
     assert comps["economy_part"] == 7.5
     assert comps["bowling_impact_part"] == 15.0
     assert comps["batting_impact_part"] == 15.0
-    # 35 (contribution, capped) + 25 (100% win rate) + 25 (100% PotM rate,
-    # capped) + 15 + 15 = 115, clamped to the intended 0-100 scale.
+    # components sum to 115 (over 100), clamped to the intended 0-100 scale.
     assert row["importance_score"] == 100.0
     c.close()
 
@@ -577,8 +540,8 @@ def test_ingest_routes_matches_after_data_cutoff_to_holdout_tables(tmp_path, mon
     assert c.execute("SELECT COUNT(*) FROM deliveries_holdout WHERE match_id='9002'").fetchone()[0] == 2
     assert c.execute("SELECT COUNT(*) FROM match_players_holdout WHERE match_id='9002'").fetchone()[0] == 2
 
-    # Re-running ingest against the same zip must not duplicate the holdout
-    # rows -- `_existing_match_ids` has to see holdout matches too.
+    # re-running ingest on the same zip must not duplicate holdout rows;
+    # _existing_match_ids has to see holdout matches too.
     ingest.ingest_source(c, src)
     assert c.execute("SELECT COUNT(*) FROM deliveries_holdout WHERE match_id='9002'").fetchone()[0] == 2
     c.close()
@@ -591,8 +554,7 @@ def test_venue_record(conn):
         (identity.player_id_for("id_bat"),)).fetchone()
     assert aa["matches"] == 2 and aa["runs"] == 20
     assert aa["bat_strike_rate"] == 200.0
-    # Both M1 and M2 (the shared fixture) have her batting in innings=1
-    # (batting first/setting) -- no chasing innings recorded for her at all.
+    # both M1 and M2 have her batting in innings=1 (setting), no chasing innings at all.
     assert aa["setting_runs"] == 20 and aa["setting_balls"] == 10
     assert aa["chasing_runs"] is None and aa["chasing_balls"] is None
 
@@ -670,14 +632,14 @@ def test_player_match_impact(conn):
     assert row["runs"] == 13 and row["won"] == 1
     assert row["bat_contribution_pct"] == 100.0  # AA scored all of Team A's runs
 
-    # BB Bowler M1: 6 balls [1,0,4,2,0,0(wkt)] -- 3 dots, 1 boundary, 1 wicket.
+    # BB Bowler M1: 6 balls [1,0,4,2,0,0(wkt)], 3 dots, 1 boundary, 1 wicket.
     m1 = conn.execute("SELECT * FROM player_match_impact WHERE player_id=? AND match_id='M1'",
                        (identity.player_id_for("id_bowl"),)).fetchone()
     assert m1["bowl_dot_pct"] == 50.0 and m1["bowl_boundary_pct"] == 16.7
     assert m1["bowl_strike_rate"] == 6.0
 
-    # BB Bowler M2: 4 balls [6,6,0,1] -- 1 dot, 2 boundaries, 0 wickets ->
-    # strike rate is None (undefined), not a divide-by-zero 0.
+    # BB Bowler M2: 4 balls [6,6,0,1], 1 dot, 2 boundaries, 0 wickets, so strike
+    # rate is None, not a divide-by-zero 0.
     m2 = conn.execute("SELECT * FROM player_match_impact WHERE player_id=? AND match_id='M2'",
                        (identity.player_id_for("id_bowl"),)).fetchone()
     assert m2["bowl_dot_pct"] == 25.0 and m2["bowl_boundary_pct"] == 50.0
@@ -991,17 +953,13 @@ def test_merge_external_roles_backfills_bowling_style_without_overwriting(conn):
 
 
 def test_colliding_identifier_splits_by_gender():
-    """A single Cricsheet registry identifier reused across two genuinely
-    different real people (one male, one female match) -- a confirmed,
-    real quirk in this data, not a bug in this codebase's own matching (see
-    identity.py's docstrings) -- must resolve to two distinct, stable
-    player_ids, and their career stats must never blend.
+    """a single Cricsheet identifier shared by two different real people (one male,
+    one female) must resolve to two distinct, stable player_ids, and their career stats must never blend.
     """
     c = connect(":memory:")
     init_schema(c)
 
-    # Both "AS Female" and "AS Male" share the SAME underlying identifier
-    # ("shared_id"), exactly like the real confirmed cases.
+    # "AS Female" and "AS Male" share the same underlying identifier, like the real confirmed cases.
     c.execute("INSERT INTO identifier_map(player_name, identifier) VALUES(?,?)",
               ("AS Female", "shared_id"))
     c.execute("INSERT INTO identifier_map(player_name, identifier) VALUES(?,?)",
@@ -1052,11 +1010,8 @@ def test_colliding_identifier_splits_by_gender():
 
 
 def test_batter_and_bowler_vs_team_breakdowns_include_safe_matchups(tmp_path):
-    # A bowler who's contained a batter for 12 balls without ever dismissing
-    # her used to be entirely invisible in dismissal_matchup (the old
-    # `dismissals >= 1` filter) -- "never been dismissed by X" is exactly as
-    # real a matchup fact as "X has dismissed her 3 times", and a batter
-    # clicking into a matchup view should see both, not just the bogeymen.
+    # a bowler who's contained a batter for 12 balls without dismissing her used to be
+    # invisible in dismissal_matchup (the old dismissals >= 1 filter); "never dismissed" is a real matchup fact too.
     c = connect(tmp_path / "vs.db")
     init_schema(c)
     _add_player_meta(c, "AA Batter", "id_bat2", "701")
@@ -1100,7 +1055,7 @@ def test_batter_and_bowler_vs_team_breakdowns_include_safe_matchups(tmp_path):
     safe_view = matchups.bowler_vs_team_batters(c, safe_id, "T20", "Team A")
     assert safe_view["most_expensive"]["batter_name"] == "AA Batter"
     assert safe_view["most_expensive"]["runs"] == 48
-    assert safe_view["best_matchup"] is None  # never took a wicket -- no real "best matchup" to claim
+    assert safe_view["best_matchup"] is None  # never took a wicket, so no real "best matchup" to claim
     c.close()
 
 
@@ -1117,54 +1072,49 @@ def test_validate_deliveries_rejects_bad_rows():
 
 
 def test_archetype_classifier_is_six_driven_and_role_aware():
-    """`_archetype` classifies against the batter's own gender's population
-    bars (`th`). Uses women's-scale bars here; the same code runs for men's
-    higher-scale bars via `_gender_archetype_thresholds` at build time.
+    """_archetype classifies against the batter's own gender's population bars (th).
+    uses women's-scale bars here; men's higher-scale bars come from _gender_archetype_thresholds at build time.
     """
     from criiq_data.advanced import _archetype
 
     th = {"six_rate_high": 1.0, "sr_high": 100.0, "sr_low": 85.0,
           "boundary_high": 11.5, "rotation_high": 45.0, "death_sr_high": 130.0}
 
-    # Finisher: real death volume + genuinely destructive there (SR + sizes +
-    # boundaries all clear the bar) -- the RM Ghosh shape.
+    # finisher: real death volume and genuinely destructive there (SR, sizes, boundaries all clear the bar).
     finisher = {"balls": 876, "strike_rate": 145.0, "boundary_pct": 21.8, "six_rate": 5.1,
                 "rotation_pct": 41.0, "by_phase": {
                     "death": {"balls": 510, "strike_rate": 165.9, "boundary_pct": 25.7},
                     "middle": {"balls": 356, "strike_rate": 121.0, "boundary_pct": 17.0}}}
     assert _archetype(finisher, th) == "finisher"
 
-    # Power hitter: clears the rope well above the gender norm (six rate >= p75)
-    # at a high strike rate, but doesn't bat a real share at the death.
+    # power hitter: clears the rope well above the gender norm at a high strike rate, but doesn't bat much at the death.
     power = {"balls": 500, "strike_rate": 140.0, "boundary_pct": 18.0, "six_rate": 2.5,
              "rotation_pct": 35.0, "by_phase": {
                  "powerplay": {"balls": 300, "strike_rate": 140.0, "boundary_pct": 18.0},
                  "middle": {"balls": 200, "strike_rate": 130.0, "boundary_pct": 15.0}}}
     assert _archetype(power, th) == "power hitter"
 
-    # Anchor: bats a lot up top, rotates hard, below-median strike rate, few sixes.
+    # anchor: bats a lot up top, rotates hard, below-median strike rate, few sixes.
     anchor = {"balls": 500, "strike_rate": 80.0, "boundary_pct": 7.0, "six_rate": 0.2,
               "rotation_pct": 55.0, "by_phase": {
                   "powerplay": {"balls": 300, "strike_rate": 78.0, "boundary_pct": 7.0}}}
     assert _archetype(anchor, th) == "anchor"
 
-    # A big six rate alone is NOT enough without the strike rate to back it.
+    # a big six rate alone is not enough without the strike rate to back it.
     slogger = {"balls": 200, "strike_rate": 90.0, "boundary_pct": 10.0, "six_rate": 2.0,
                "rotation_pct": 30.0, "by_phase": {"middle": {"balls": 200, "strike_rate": 90.0, "boundary_pct": 10.0}}}
     assert _archetype(slogger, th) == "balanced"
 
-    # Tiny sample: a bowler who faced 7 balls at the death, decent strike rate,
-    # must NOT be tagged "finisher" off pure noise (a real false positive found
-    # on live data: N Shree Charani, 7 balls -> "finisher" before the gate).
+    # tiny sample: 7 balls at the death with a decent strike rate must not be tagged
+    # "finisher" off pure noise (real false positive: N Shree Charani, before the gate).
     tiny = {"balls": 7, "strike_rate": 128.6, "boundary_pct": 14.3, "six_rate": 0.0,
             "rotation_pct": 20.0, "by_phase": {"death": {"balls": 7, "strike_rate": 128.6, "boundary_pct": 14.3}}}
     assert _archetype(tiny, th) == "balanced"
 
 
 def test_gender_archetype_thresholds_are_scaled_per_gender():
-    """Men's and women's six-rate/SR distributions differ enough that a shared
-    absolute bar would be wrong; thresholds must come out higher for the
-    higher-hitting population.
+    """men's and women's six-rate/SR distributions differ enough that a shared bar
+    would be wrong; thresholds must come out higher for the higher-hitting population.
     """
     from criiq_data.advanced import _gender_archetype_thresholds
 
@@ -1181,13 +1131,9 @@ def test_gender_archetype_thresholds_are_scaled_per_gender():
 
 
 def test_selection_rate_denominator_is_gender_scoped(tmp_path):
-    # Real bug flagged by a domain expert on Nepal men: the selection-rate
-    # denominator (window_team_matches) keyed on team NAME alone, so a men's
-    # player's rate was measured against men's + women's matches combined,
-    # roughly halving it and wrongly flagging genuine regulars INCONSISTENT.
-    # Here "Testland" fields both a men's side (9 matches, above the
-    # min-window gate so a rate is computed) and a women's side (5). A man who
-    # played all 9 men's matches must read 9/9, not 9/14.
+    # real bug: window_team_matches keyed on team name alone, so a men's rate was
+    # measured against men's + women's matches combined, wrongly flagging regulars INCONSISTENT.
+    # "Testland" fields 9 men's + 5 women's matches; a man who played all 9 must read 9/9, not 9/14.
     c = connect(tmp_path / "gender_denom.db")
     init_schema(c)
     _add_player_meta(c, "Man Regular", "id_man", "901")
@@ -1196,8 +1142,7 @@ def test_selection_rate_denominator_is_gender_scoped(tmp_path):
         mid = f"MEN{i}"
         _add_match(c, mid, f"2026-{i+1:02d}-10", "Testland", "Rivalia", "Testland", gender="male")
         _add_match_player(c, mid, "Testland", "Man Regular")
-    # women's matches (with a real women's appearance, so they land in the
-    # appearance table) must NOT count toward the man's denominator
+    # women's matches must not count toward the man's denominator.
     for i in range(5):
         mid = f"WMN{i}"
         _add_match(c, mid, f"2025-{i+1:02d}-12", "Testland", "Rivalia", "Testland", gender="female")
@@ -1216,9 +1161,8 @@ def test_selection_rate_denominator_is_gender_scoped(tmp_path):
 
 
 def test_local_pass_promotes_role_field_keepers_and_never_demotes(tmp_path):
-    # is_keeper now also comes from existing wicket-keeper role fields (the
-    # men's-keeper gap fix), merged with MAX so an externally-researched keeper
-    # flag is preserved, never overwritten to 0 by the local pass.
+    # is_keeper also comes from existing wicket-keeper role fields, merged with MAX so an
+    # externally-researched keeper flag is never overwritten to 0 by the local pass.
     from criiq_data import role_finalize
     c = connect(tmp_path / "kp.db")
     init_schema(c)

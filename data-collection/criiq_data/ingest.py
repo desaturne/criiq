@@ -15,10 +15,8 @@ from .validate import quarantine, validate_deliveries
 
 log = get_logger("ingest")
 
-# International zips use purely numeric match ids ("1043989.csv"); some
-# domestic competitions don't (Blaze: "wi_201706.csv") -- match anything
-# ending in .csv that isn't the per-zip `all_matches.csv` summary file or an
-# `_info.csv` companion (excluded separately, in `ingest_source`).
+# international zips use numeric match ids, but some domestic ones don't
+# (e.g. "wi_201706.csv"), so match any .csv except all_matches.csv and _info.csv companions.
 _MATCH_RE = re.compile(r"^(.+)\.csv$")
 _NON_MATCH_FILES = {"all_matches.csv", "README.txt"}
 
@@ -76,9 +74,8 @@ def _win_margin(info: dict) -> str | None:
 
 
 def _existing_match_ids(conn) -> set[str]:
-    # Union of production and holdout: a match already routed to the holdout
-    # tables (see `ingest_source`) must not be re-fetched and re-inserted on
-    # every subsequent refresh, the same as an already-ingested production one.
+    # union of production and holdout tables, so a match already routed to holdout
+    # isn't re-fetched on the next refresh.
     ids = {r["match_id"] for r in conn.execute("SELECT match_id FROM matches")}
     ids.update(r["match_id"] for r in conn.execute("SELECT match_id FROM matches_holdout"))
     return ids
@@ -113,9 +110,8 @@ def ingest_source(conn, src: CricsheetSource) -> dict:
             info = _parse_info(z.read(info_name).decode("utf-8", errors="replace"))
 
             mtype = info["extra"].get("match_type", "")
-            # Cricsheet's own 'international' vs 'club' distinction -- stored,
-            # not used to drop the row (that was the old behaviour; domestic
-            # matches are now real, first-class data -- see config.py).
+            # Cricsheet's own international vs club distinction, stored but not used to drop rows
+            # since domestic matches are now real data too (see config.py).
             ttype = info["extra"].get("team_type", "international")
             if src.fmt == "T20" and mtype and mtype.upper() not in ("T20", "IT20"):
                 non_t20_skipped += 1
@@ -123,10 +119,8 @@ def ingest_source(conn, src: CricsheetSource) -> dict:
 
             teams = info["teams"]
             date = _norm_date(info["dates"][0] if info["dates"] else None)
-            # Forward-safeguard, not a present-day trim (see config.py's
-            # data_cutoff_date docstring): anything newer goes to the
-            # `_holdout` tables so it's available for genuine testing but can
-            # never leak into training/live scoring.
+            # forward safeguard, not a present-day trim (see config.py's data_cutoff_date):
+            # anything newer goes to the holdout tables so it can't leak into training.
             is_holdout = bool(date) and date > SETTINGS.data_cutoff_date
             matches_tbl = "matches_holdout" if is_holdout else "matches"
             match_players_tbl = "match_players_holdout" if is_holdout else "match_players"

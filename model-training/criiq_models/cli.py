@@ -7,14 +7,10 @@ from pathlib import Path
 
 import pandas as pd
 
-# Windows consoles often default to a legacy codepage (cp1252 etc.), not
-# UTF-8 -- without this, the em dashes explain.py's narrative sentences use
-# print as "�" (confirmed in both a plain terminal and PowerShell), which
-# would look broken in a live demo. Reconfiguring stdout/stderr here makes
-# `--pretty`'s output render correctly regardless of the console's default
-# codepage. `reconfigure` is Python 3.7+; guarded since some embedding
-# contexts (e.g. certain IDE test runners) wrap stdout in a stream that
-# doesn't support it.
+# Windows consoles often default to a legacy codepage, not UTF-8, so
+# explain.py's narrative text can print as garbled characters. reconfigure
+# fixes that; guarded since some embedding contexts wrap stdout in a stream
+# that doesn't support it.
 for _stream in (sys.stdout, sys.stderr):
     try:
         _stream.reconfigure(encoding="utf-8")
@@ -62,11 +58,9 @@ def _find_player(conn, name: str):
 
 
 def _resolve_venue_arg(conn, venue_arg: str | None) -> tuple[str | None, bool]:
-    """`--venue` takes a ground *name* now, not the raw `venue_id` slug --
-    resolves it here so every caller (recommend/explain) gets the same
-    ambiguity handling. Returns `(venue_id, ok)`; `ok=False` means an
-    ambiguous name was already reported and the caller should abort rather
-    than silently score with no venue at all.
+    """--venue takes a ground name, not the raw venue_id slug. resolves it
+    here so every caller gets the same ambiguity handling. returns
+    (venue_id, ok); ok=False means an ambiguous name was already reported.
     """
     if not venue_arg:
         return None, True
@@ -80,11 +74,10 @@ def _resolve_venue_arg(conn, venue_arg: str | None) -> tuple[str | None, bool]:
 
 
 def _resolve_player_name(conn, name: str) -> tuple[str | None, bool]:
-    """Fuzzy name -> player_id, with the same "did you mean" ambiguity
-    handling `_resolve_venue_arg` uses -- a name matching several real
-    players (a genuine, previously-found issue: several distinct real
-    players can share one short name) must not silently take the first
-    match. Returns `(player_id, ok)`; `ok=False` means already reported.
+    """fuzzy name -> player_id, with the same "did you mean" ambiguity
+    handling _resolve_venue_arg uses, since several real players can share
+    one short name. returns (player_id, ok); ok=False means already
+    reported.
     """
     matches = _find_player(conn, name)
     if not matches:
@@ -99,10 +92,10 @@ def _resolve_player_name(conn, name: str) -> tuple[str | None, bool]:
 
 
 def _resolve_player_list(conn, players: str | None, player_ids: str | None) -> tuple[list[str] | None, bool]:
-    """Resolve a comma-separated --players (fuzzy names, with the same "did
-    you mean" disambiguation) or --player-ids (raw ids) argument to a list of
-    player_ids. Returns `(ids, ok)`; `ok=False` means an unresolved/ambiguous
-    name was already reported. `(None, True)` when neither was given.
+    """resolves a comma-separated --players (fuzzy names) or --player-ids
+    (raw ids) argument to a list of player_ids. returns (ids, ok); ok=False
+    means an unresolved/ambiguous name was already reported. (None, True)
+    when neither was given.
     """
     if players:
         out = []
@@ -151,13 +144,9 @@ def cmd_teams(args):
 
 
 def cmd_winprob(args):
-    """Win probability for a single game state, straight from data-collection's
-    persisted empirical grids (`simulate.winprob_reader.WinProbLookup`) -- the
-    same lookup `simulate` uses per-ball, exposed standalone so a caller (e.g.
-    a live-scoring UI) can get one number without running a full match
-    simulation. Mirrors the shape of the backend's `ai_stub.get_win_probability`
-    stub (innings/wickets/balls_remaining/runs_required) so it's a drop-in
-    real replacement.
+    """win probability for a single game state, from the same persisted
+    empirical grids simulate uses per-ball, exposed standalone so a caller
+    can get one number without running a full simulation.
     """
     try:
         lookup = WinProbLookup.load(args.format, args.gender)
@@ -192,8 +181,8 @@ def cmd_recommend(args):
               f"(format={args.format}, gender={args.gender})")
         conn.close()
         return
-    # Optional: the opponent's specific XI, to counter-optimize against (matchups
-    # scope to exactly those players) and to build the head-to-head matrix.
+    # optional: the opponent's specific XI, to counter-optimize against and
+    # build the head-to-head matrix.
     opponent_players, ok = _resolve_player_list(conn, args.opponent_players, args.opponent_player_ids)
     if not ok:
         conn.close()
@@ -207,10 +196,9 @@ def cmd_recommend(args):
                 "is_keeper": p["is_keeper"], "batting_position_median": p["batting_position_median"],
                 "score": p["score"]}
 
-    # Best available player of each specialist batting role (finisher / power
-    # hitter / anchor) across the WHOLE scored pool -- surfaces e.g. the side's
-    # strongest finisher even when the win-probability rating leaves them
-    # outside the headline shortlist (see selection/optimize.role_highlights).
+    # best available player of each specialist batting role across the whole
+    # scored pool, even if their win-probability rating leaves them outside
+    # the headline shortlist (see selection/optimize.role_highlights).
     def _role_option(arch, p):
         inp = p["components"]["inputs"]
         detail = None
@@ -222,17 +210,15 @@ def cmd_recommend(args):
 
     role_options = [_role_option(arch, p) for arch, p in role_highlights(scored).items()]
 
-    # Head-to-head matrix: how the recommended XI matches up against the named
-    # opposition, player by player (only when an opponent XI was supplied).
+    # how the recommended XI matches up against the named opposition, player
+    # by player (only when an opponent XI was supplied).
     h2h = None
     if opponent_players:
         xi_ids_for_h2h = [p["player_id"] for p in result["xi"]]
         h2h = head_to_head_matrix(conn, xi_ids_for_h2h, opponent_players, args.format)
 
-    # Lopsided matchup: if this side is much stronger (many more ICC-ranked
-    # players), flag it and offer a rotation XI that rests the top performers,
-    # so the coach can see a viable bench side rather than fielding stars in a
-    # mismatch. Only when *we* are the stronger side.
+    # if this side is much stronger, offer a rotation XI that rests the top
+    # performers, only when we're the stronger side.
     sctx = strength_context(conn, args.team, args.opponent, args.format, args.gender)
     rotation_xi = None
     if sctx["lopsided"] and sctx["stronger_side"] == args.team:
@@ -264,12 +250,9 @@ def cmd_recommend(args):
             xi_out.append({**_brief(p), "reasoning": explain(p, alternative=alt, slot=category,
                                                               h2h_batting=h2h_bat, h2h_bowling=h2h_bowl)["summary"]})
 
-        # Top-`pool_size` recommended players, ranked by raw score -- this is
-        # a *shortlist* view (no slot/alternative framing, since "picked
-        # ahead of" only makes sense once the XI-constrained selection has
-        # actually happened), independent of who made the final constrained
-        # XI: a top-ranked keeper-less specialist can rank highly here and
-        # still not make the XI if the MILP needed her slot for a keeper.
+        # shortlist view of top-ranked players, independent of who made the
+        # final constrained XI (a top-ranked keeper-less specialist can rank
+        # highly here but still miss the XI if the MILP needed a keeper).
         pool_out = []
         for p in result["pool"]:
             h2h_bat = (h2h or {}).get("batting", {}).get(p["name"])
@@ -287,10 +270,8 @@ def cmd_recommend(args):
         conn.close()
         return
 
-    # Same players as `pool`, grouped into the three views a coach actually
-    # picks from (batting/all-rounder/bowling options) instead of one flat
-    # list -- a real frontend's "pick your XI" screen reads from this
-    # directly rather than re-deriving the grouping from role_bucket itself.
+    # same players as pool, grouped into the three views a coach actually
+    # picks from (batting/all-rounder/bowling) instead of one flat list.
     pools_out = {k: [p for p in v] for k, v in role_pools(pool_out).items()}
 
     _pp({
@@ -331,13 +312,10 @@ def cmd_explain(args):
 
 
 def cmd_analyze_xi(args):
-    """Scores and checks a COACH'S OWN hand-picked XI -- distinct from
-    `recommend`, which finds the algorithm's best one. Every real selector
-    sometimes overrides the model (form momentum, a tactical call, team
-    chemistry); this is the honest scorecard for that specific choice:
-    her own score/reasoning for each of the 11, whether the pick satisfies
-    the same batting/bowling/keeper/opener constraints `recommend`'s XI is
-    held to, and exactly how it compares to the provably-optimal one.
+    """scores and checks a coach's own hand-picked XI, distinct from
+    recommend which finds the algorithm's best one. reports each player's
+    score/reasoning, whether the pick satisfies the same constraints
+    recommend's XI is held to, and how it compares to the optimal one.
     """
     conn = connect()
     venue_id, ok = _resolve_venue_arg(conn, args.venue)
@@ -366,11 +344,8 @@ def cmd_analyze_xi(args):
     scored = scorer.score_many(pool_ids, args.opponent, venue_id)
     analysis = analyze_xi(scored, player_ids)
 
-    # A bare player_id in this warning is nearly useless for catching a real
-    # mistake (e.g. a name that fuzzy-matched to the wrong real person, or a
-    # correctly-resolved player who just isn't in *this* team's pool) --
-    # resolve to a name here (analyze_xi has no DB access, so it can't) so
-    # the warning is actually actionable.
+    # resolve to a name here since a bare player_id isn't actionable, and
+    # analyze_xi has no DB access to do this itself.
     if analysis["missing_player_ids"]:
         named = []
         for pid in analysis["missing_player_ids"]:
@@ -406,9 +381,9 @@ def cmd_analyze_xi(args):
 
 
 def _resolve_xi(conn, players_arg: str | None, player_ids_arg: str | None, label: str):
-    """Resolves a literal, user-supplied 11-player XI (names or ids, in
-    batting order) -- distinct from `_resolve_player_list`'s optional list,
-    this requires exactly 11 and reports a specific error otherwise.
+    """resolves a literal, user-supplied 11-player XI (names or ids, in
+    batting order). unlike _resolve_player_list, this requires exactly 11
+    and reports a specific error otherwise.
     """
     ids, ok = _resolve_player_list(conn, players_arg, player_ids_arg)
     if not ok:
@@ -423,16 +398,12 @@ def _resolve_xi(conn, players_arg: str | None, player_ids_arg: str | None, label
 
 
 def _batting_groups(conn, player_ids: list, fmt: str) -> list:
-    """Splits `player_ids` into role-based bands for `ga_batting.
-    optimize_batting_order`'s grouped search (see that module's docstring):
-    the two lowest recorded `batting_position_median` as the openers band
-    (the GA can still interchange which of the two goes in first), the rest
-    of the batting-relevant players (specialist batters, all-rounders, the
-    keeper) as the top/middle band, and specialist bowlers (`role_bucket ==
-    "bowler"`) as the tail band -- mirrors `selection/optimize.py`'s own
-    `_team_sheet_order` categorization. A player with no recorded batting
-    position sorts last for the opener cut, so the openers band still
-    always gets exactly 2 players even with sparse position data.
+    """splits player_ids into role-based bands for ga_batting.
+    optimize_batting_order's grouped search: two lowest batting_position_median
+    as openers, remaining batting-relevant players as top/middle, specialist
+    bowlers as tail. mirrors selection/optimize.py's _team_sheet_order.
+    players with no recorded position sort last so openers still always
+    gets exactly 2.
     """
     rows = [(pid, *resolve_role(conn, pid, fmt)) for pid in player_ids]
     rows.sort(key=lambda r: r[3] if r[3] is not None else float("inf"))
@@ -444,14 +415,10 @@ def _batting_groups(conn, player_ids: list, fmt: str) -> list:
 
 
 def _primary_bowlers(conn, bowler_pool: list, fmt: str) -> list:
-    """The up to 5 recognized specialist bowlers in `bowler_pool`
-    (`role_bucket == "bowler"`) -- `ga_bowling.optimize_bowling_rotation`'s
-    default assumption that these bowlers take the full quota between them.
-    If fewer than 5 true specialists exist, tops up with the next-best
-    bowling options (all-rounders) ranked by real bowling workload (matches
-    with `balls_bowled > 0`, the same signal `career_bowl_matches` uses
-    elsewhere in this repo), mirroring a real captain's forced situation
-    when the side is short of frontline bowling options.
+    """the up to 5 specialist bowlers in bowler_pool, which
+    ga_bowling.optimize_bowling_rotation assumes take the full quota
+    between them. tops up with the next-best all-rounders by bowling
+    workload if fewer than 5 specialists exist.
     """
     specialists, others = [], []
     for pid in bowler_pool:
@@ -488,9 +455,9 @@ def _name_map(conn, player_ids: list) -> dict:
 
 
 def _parse_force_dismissal(conn, spec: str) -> dict:
-    """`"NAME_OR_ID:OVER:BALL"` -- the batter, and the (0-indexed over,
-    1-indexed ball-in-over) at which they're forced out, for the "what
-    happens when this player goes out here" scenario.
+    """"NAME_OR_ID:OVER:BALL": the batter and the (0-indexed over, 1-indexed
+    ball) at which they're forced out, for the "what happens if this player
+    goes out here" scenario.
     """
     who, over_s, ball_s = spec.rsplit(":", 2)
     matches = _find_player(conn, who)

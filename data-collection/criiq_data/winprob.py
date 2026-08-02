@@ -1,33 +1,10 @@
-"""Ball-by-ball win probability across all phases of a T20 game.
+"""ball-by-ball win probability across all phases of a T20 game.
 
-Win probability is P(the batting team wins | the game state at this ball). It is
-computed at every legal ball, so plotting it down an innings gives a curve that
-spans powerplay -> middle -> death for both innings.
-
-This module ships an *empirical* estimator: it bins historical ball-states and
-takes the actual win frequency, shrunk toward the innings prior so sparse buckets
-stay stable. Setting (innings 1) and chasing (innings 2) are fundamentally
-different problems (the target is known only in the chase), so they get separate
-grids. The estimator implements a small ``fit`` / ``predict`` interface, so a
-calibrated scikit-learn model can be dropped in behind the same surface later
-without touching the build/CLI code.
-
-Training data is ``data/features/ball_state_<fmt>.parquet`` (built by
-``ml_features``); the fitted grids and a per-ball win-probability parquet are
-written under ``data/models`` and ``data/features``.
-
-Fit and persisted **per (format, gender)**, never blended: men's and women's
-T20 have genuinely different typical scores and required-run-rate
-distributions (see the project's broader gender-isolation discipline), so a
-single shared model would answer "how winnable is this state" against the
-wrong reference population for both genders. This used to be a real bug —
-`build_for_format` fit one model across every ball for a format regardless
-of gender — fixed by fitting/scoring each gender's balls independently
-(`_fit_and_score_one_gender`) and persisting under `winprob_{fmt}_{gender}_*`
-rather than `winprob_{fmt}_*`. The combined per-ball output parquet
-(``win_prob_<fmt>.parquet``) still holds both genders' rows together (it
-already carries a `gender` column) — only the *fitting/scoring* is
-gender-split, not that file's shape.
+fits an empirical estimator (bins historical ball-states, shrinks the win
+frequency toward the innings prior) separately for setting and chasing
+innings, and separately per (format, gender) since men's and women's T20
+score differently. training data comes from ball_state_<fmt>.parquet
+(built by ml_features); output goes to data/models and data/features.
 """
 from __future__ import annotations
 
@@ -44,8 +21,7 @@ from .logging_utils import get_logger
 
 log = get_logger("winprob")
 
-# Bin widths for the empirical grid. Coarse enough to stay well-populated with
-# shrinkage; the scikit-learn upgrade is what buys smooth, fine-grained curves.
+# bin widths for the empirical grid, coarse enough to stay well-populated for shrinkage.
 _BALLS_BIN = 6      # one over
 _RR_BIN = 5         # runs-required band (chase)
 _SCORE_BIN = 10     # score band (set)
@@ -138,11 +114,9 @@ class EmpiricalWinProb:
 
     # --- persistence -----------------------------------------------------
     def save(self, fmt: str, gender: str) -> str:
-        """Persisted per (format, gender) -- men's and women's cricket have
-        genuinely different scoring/required-run-rate distributions, so a
-        shared model would be miscalibrated for both (see winprob.py's module
-        docstring). Filenames mirror model-training's `_artifacts_dir(fmt,
-        gender)` gender-scoping fix for the exact same reason.
+        """persisted per (format, gender), since men's and women's cricket
+        have different scoring distributions and a shared model would be
+        miscalibrated for both.
         """
         MODELS_DIR.mkdir(parents=True, exist_ok=True)
         for name, grid in self.grids.items():
@@ -175,8 +149,8 @@ def _logloss(p: np.ndarray, y: np.ndarray) -> float:
 
 
 def _test_mask(match_ids: pd.Series) -> np.ndarray:
-    # Deterministic hold-out BY MATCH (never by ball): balls from one game are
-    # highly correlated, so a random ball split would leak and flatter the score.
+    # deterministic hold-out by match, never by ball: balls from one game are
+    # correlated, so a random ball split would leak and flatter the score.
     cut = int(SETTINGS.winprob_test_fraction * 100)
     return match_ids.map(lambda mid: (zlib.crc32(str(mid).encode()) % 100) < cut).to_numpy()
 
@@ -187,11 +161,9 @@ def _ball_state_path(fmt: str):
 
 # --- build ---------------------------------------------------------------
 def _fit_and_score_one_gender(balls: pd.DataFrame, fmt: str, gender: str) -> tuple[pd.DataFrame, dict | None]:
-    """Fit + persist one gender's own win-prob model, and score that
-    gender's own balls with it. Men's and women's T20 have genuinely
-    different scoring/required-run-rate distributions (see module docstring)
-    -- a shared model fit across both would be miscalibrated for both, so
-    this must never see the other gender's rows at any point.
+    """fit + persist one gender's own win-prob model, and score that gender's
+    own balls with it. never mixes genders in fitting, since a shared model
+    would be miscalibrated for both (see module docstring).
     """
     labelled = balls.dropna(subset=["label_batting_team_won"]).copy()
     labelled["label_batting_team_won"] = labelled["label_batting_team_won"].astype(int)
@@ -218,8 +190,7 @@ def _fit_and_score_one_gender(balls: pd.DataFrame, fmt: str, gender: str) -> tup
             "logloss_baseline": round(_logloss(base, y), 4),
         }
 
-    # Final model on ALL of this gender's labelled data, then persist +
-    # attach per-ball WP to this gender's own rows only.
+    # final model trained on all of this gender's labelled data, then persisted.
     model = EmpiricalWinProb().fit(labelled)
     model.save(fmt, gender)
 

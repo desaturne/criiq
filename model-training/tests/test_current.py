@@ -9,9 +9,8 @@ from tests.conftest import (add_domestic_form, add_match, add_match_impact,
 
 
 def test_resolve_role_prefers_player_role_final_over_registry(conn):
-    # registry says "bowler" (noisy Wikidata-derived), but the finalized,
-    # data-driven role (batting position + Wikipedia keeper lookup) says
-    # she's actually a wicket-keeper batter — the final source must win.
+    # registry says "bowler" but the finalized role data says she's actually
+    # a wicket-keeper batter, so the final source must win.
     register_player(conn, "p1", "A Player", role="bowler")
     set_final_role(conn, "p1", "batter", is_keeper=True, batting_position_median=5.0)
     conn.commit()
@@ -33,12 +32,9 @@ def test_resolve_role_falls_back_to_registry_when_no_final_role(conn):
 
 
 def test_domestic_form_shrinks_toward_international_career_baseline(conn):
-    # No leakage concern at live-scoring time (unlike historical.py) --
-    # player_domestic_form is read as-is. The internationally-quiet-but-
-    # domestically-active scenario this whole feature exists for: her
-    # international career WPA is thin/low, her recent domestic form is
-    # strong -- the blended feature should land between the two, not equal
-    # either one outright.
+    # no leakage concern here (unlike historical.py), player_domestic_form is
+    # read as-is. her international WPA is low but domestic form is strong,
+    # so the blended feature should land between the two.
     register_player(conn, "p1", "A Player")
     add_match(conn, "m0", "2020-01-01", "India", "Australia")
     add_match_impact(conn, "p1", "m0", "2020-01-01", "India", "Australia", won=1)
@@ -49,13 +45,11 @@ def test_domestic_form_shrinks_toward_international_career_baseline(conn):
 
     feats = build_model_features(conn, "p1", "Australia", None, "T20")
     assert feats["domestic_form_matches"] == 5
-    # shrink((5, capped at domestic_form_max_effective_matches=10) toward
-    # career_batting_wpa=0.01, k=shrinkage_prior_matches=8):
+    # shrink(5 domestic matches toward career_batting_wpa=0.01, k=8):
     # (5*0.20 + 8*0.01) / 13
     assert feats["domestic_form_batting_wpa"] == pytest.approx((5 * 0.20 + 8 * 0.01) / 13)
     assert feats["career_batting_wpa"] == pytest.approx(0.01)
-    # blended value sits strictly between the thin international baseline
-    # and the raw domestic form -- neither dominates outright.
+    # blended value sits strictly between the two, neither dominates outright.
     assert 0.01 < feats["domestic_form_batting_wpa"] < 0.20
 
 
@@ -75,8 +69,8 @@ def test_venue_context_includes_setting_chasing_and_bogey_bowler(conn):
     add_venue_record(conn, "p1", "lords-london", "Lord's, London", matches=3,
                       setting_average=45.0, setting_strike_rate=130.0,
                       chasing_average=20.0, chasing_strike_rate=110.0)
-    # Two Australian bowlers have dismissed her at Lord's -- Bowler X twice
-    # (the real bogey, by count not rate), Bowler Y once with a higher rate.
+    # two Australian bowlers dismissed her at Lord's: Bowler X twice (the
+    # real bogey, by count not rate), Bowler Y once at a higher rate.
     add_venue_matchup(conn, "p1", "bx", "lords-london", "Bowler X", "Australia",
                        balls=20, runs=25, dismissals=2)
     add_venue_matchup(conn, "p1", "by", "lords-london", "Bowler Y", "Australia",
