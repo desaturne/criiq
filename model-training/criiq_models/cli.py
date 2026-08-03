@@ -24,19 +24,21 @@ from .evaluate.rank_backtest import rank_backtest
 from .features.historical import build_training_table
 from .recommend.explain import explain
 from .recommend.matchup_matrix import head_to_head_matrix
-from .recommend.render import render_team_sheet, render_xi_analysis
+from .recommend.render import render_player_explanation, render_team_sheet, render_xi_analysis
 from .recommend.score import RecommendationScorer
+from .recommend.shap_explain import explain_prediction
 from .recommend.strength import strength_context
-from .recommend.train import load_metadata, train
+from .recommend.train import load_background, load_metadata, train
 from .roster import known_teams, team_pool
 from .venues import resolve_venue
 from .selection.optimize import analyze_xi, role_highlights, role_pools, select_xi, slot_category
 from .features.common import bowling_capable
-from .features.current import resolve_role
+from .features.current import build_model_features, resolve_role
 from .simulate.engine import simulate_match
 from .simulate.ga_batting import optimize_batting_order
 from .simulate.ga_bowling import optimize_bowling_rotation
 from .simulate.keymoments import detect_key_moments
+from .simulate.lineup_explain import explain_batting_order, explain_bowling_rotation
 from .simulate.outcomes import build_outcome_model, build_player_profiles
 from .simulate.report import (SIMULATION_ARTIFACTS_DIR, aggregate_win_probability, plot_win_probability,
                                save_simulation_artifacts)
@@ -191,6 +193,16 @@ def cmd_recommend(args):
     scored = scorer.score_many(pool_ids, args.opponent, venue_id, opponent_players=opponent_players)
     result = select_xi(scored)
 
+    background = load_background(args.format, args.gender) if args.shap else None
+
+    def _shap_entry(p):
+        if not args.shap:
+            return {}
+        if not p["components"]["model_applied"]:
+            return {"shap": {"error": f"model not applied: {p['components']['cold_start_reason']}"}}
+        feats = build_model_features(conn, p["player_id"], args.opponent, venue_id, args.format)
+        return {"shap": explain_prediction(scorer.models, feats, background)}
+
     def _brief(p):
         return {"player_id": p["player_id"], "name": p["name"], "role_bucket": p["role_bucket"],
                 "is_keeper": p["is_keeper"], "batting_position_median": p["batting_position_median"],
@@ -232,7 +244,7 @@ def cmd_recommend(args):
             "constraints": rot.get("constraints"),
         }
 
-    if args.explain or args.pretty:
+    if args.explain or args.pretty or args.shap:
         xi_ids = {p["player_id"] for p in result["xi"]}
         not_selected = [p for p in scored if p["player_id"] not in xi_ids]
 
@@ -248,7 +260,8 @@ def cmd_recommend(args):
             h2h_bat = (h2h or {}).get("batting", {}).get(p["name"])
             h2h_bowl = (h2h or {}).get("bowling", {}).get(p["name"])
             xi_out.append({**_brief(p), "reasoning": explain(p, alternative=alt, slot=category,
-                                                              h2h_batting=h2h_bat, h2h_bowling=h2h_bowl)["summary"]})
+                                                              h2h_batting=h2h_bat, h2h_bowling=h2h_bowl)["summary"],
+                            **_shap_entry(p)})
 
         # shortlist view of top-ranked players, independent of who made the
         # final constrained XI (a top-ranked keeper-less specialist can rank
@@ -257,7 +270,8 @@ def cmd_recommend(args):
         for p in result["pool"]:
             h2h_bat = (h2h or {}).get("batting", {}).get(p["name"])
             h2h_bowl = (h2h or {}).get("bowling", {}).get(p["name"])
-            pool_out.append({**_brief(p), "reasoning": explain(p, h2h_batting=h2h_bat, h2h_bowling=h2h_bowl)["summary"]})
+            pool_out.append({**_brief(p), "reasoning": explain(p, h2h_batting=h2h_bat, h2h_bowling=h2h_bowl)["summary"],
+                              **_shap_entry(p)})
     else:
         xi_out = [_brief(p) for p in result["xi"]]
         pool_out = [_brief(p) for p in result["pool"]]
@@ -307,7 +321,25 @@ def cmd_explain(args):
         player_id = args.player_id
     scorer = RecommendationScorer(conn, args.format, args.gender)
     scored = scorer.score(player_id, args.opponent, venue_id)
-    _pp(explain(scored))
+    result = explain(scored)
+
+    shap_result = None
+    if args.shap:
+        if not scored["components"]["model_applied"]:
+            shap_result = {"error": f"model not applied: {scored['components']['cold_start_reason']}"}
+        else:
+            feats = build_model_features(conn, player_id, args.opponent, venue_id, args.format)
+            background = load_background(args.format, args.gender)
+            shap_result = explain_prediction(scorer.models, feats, background)
+        result["shap"] = shap_result
+
+    if args.pretty:
+        print(render_player_explanation(scored.get("name") or player_id, args.opponent, venue_id,
+                                         scored["score"], result["summary"], shap_result=shap_result))
+        conn.close()
+        return
+
+    _pp(result)
     conn.close()
 
 
@@ -693,6 +725,12 @@ def cmd_optimize_bowling(args):
 
     names = _name_map(conn, bowling_ids + batting_ids)
 
+    explanation = None
+    if args.explain:
+        explanation = explain_bowling_rotation(result["rotation"], batting_ids, outcome_model, batter_profiles,
+                                                bowler_profiles, result["overs_per_bowler"],
+                                                result["expected_runs_conceded"], rng_seed=args.seed)
+
     if args.json:
         _pp({
             "bowling_team": args.bowling_team, "batting_team": args.batting_team,
@@ -703,6 +741,7 @@ def cmd_optimize_bowling(args):
             "expected_runs_conceded": result["expected_runs_conceded"],
             "primary_bowlers": [{"player_id": b, "name": names.get(b, b)} for b in (primary_bowlers or [])],
             "fitness_history": result.get("fitness_history"),
+            "explanation": explanation,
         })
         conn.close()
         return
@@ -714,6 +753,20 @@ def cmd_optimize_bowling(args):
     for i, bowler in enumerate(result["rotation"]):
         print(f"  over {i + 1:2d}: {names.get(bowler, bowler)}")
     print("overs per bowler:", {names.get(b, b): n for b, n in result["overs_per_bowler"].items()})
+
+    if explanation:
+        print()
+        print(f"vs a naive even split across the pool (ignoring phase fit): expected "
+              f"{explanation['baseline_runs_conceded']} runs conceded "
+              f"({explanation['improvement_over_baseline']:+.2f} runs saved by this rotation)")
+        for b in explanation["bowlers"]:
+            name = names.get(b["player_id"], b["player_id"])
+            phase_desc = ", ".join(f"{n} {phase}" for phase, n in b["phase_overs"].items())
+            rank_bits = [f"{phase} economy rank {info['rank']}" + (f" of {info['size']}" if info.get("size") else "")
+                         for phase, info in b["phase_rank"].items()]
+            rank_desc = (f" (career-wide, among everyone who's played for this real-world team: "
+                         f"{'; '.join(rank_bits)})") if rank_bits else ""
+            print(f"  {name}: {b['overs']} over(s) -- {phase_desc}{rank_desc}")
 
     out_path = Path(args.out_dir) / "bowling_rotation.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -761,6 +814,12 @@ def cmd_optimize_batting(args):
     names = _name_map(conn, batting_ids + bowling_ids)
     metric_name = "win_probability" if args.target else "expected_score"
 
+    explanation = None
+    if args.explain:
+        explanation = explain_batting_order(result["batting_order"], result["batting_groups"], bowler_pool,
+                                             outcome_model, batter_profiles, bowler_profiles, args.target,
+                                             result[metric_name], metric_name, rng_seed=args.seed)
+
     if args.json:
         _pp({
             "batting_team": args.batting_team, "bowling_team": args.bowling_team,
@@ -773,6 +832,7 @@ def cmd_optimize_batting(args):
                 for label, group in zip(["openers", "top/middle order", "tail"], batting_groups)
             ],
             "fitness_history": result.get("fitness_history"),
+            "explanation": explanation,
         })
         conn.close()
         return
@@ -784,6 +844,18 @@ def cmd_optimize_batting(args):
     print(f"best batting order vs {args.bowling_team} ({metric_name}: {result[metric_name]}):")
     for i, pid in enumerate(result["batting_order"]):
         print(f"  {i + 1:2d}. {names.get(pid, pid)}")
+
+    if explanation:
+        print()
+        print(f"vs a naive strike-rate-sorted order: baseline {metric_name} "
+              f"{explanation['baseline_metric']} ({explanation['improvement_over_baseline']:+.4f} "
+              f"{metric_name} gained by this order)")
+        swap = explanation["most_costly_adjacent_swap"]
+        if swap:
+            p1, p2 = swap["player_ids"]
+            print(f"most order-sensitive pair: swapping positions {swap['positions'][0]} and "
+                  f"{swap['positions'][1]} ({names.get(p1, p1)} / {names.get(p2, p2)}) would change "
+                  f"{metric_name} by {swap['delta']:+.4f}")
 
     out_path = Path(args.out_dir) / "batting_order.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -836,6 +908,9 @@ def build_parser() -> argparse.ArgumentParser:
                          "against and build a head-to-head matrix for, e.g. \"V Kohli,RG Sharma,...\"")
     r.add_argument("--opponent-player-ids", dest="opponent_player_ids",
                     help="opponent XI as comma-separated player_ids (alternative to --opponent-players)")
+    r.add_argument("--shap", action="store_true",
+                    help="include a per-feature SHAP contribution breakdown for each XI/pool player's "
+                         "model_part prediction (implies --explain)")
     r.set_defaults(func=cmd_recommend)
 
     e = sub.add_parser("explain", help="component breakdown for one player")
@@ -845,6 +920,10 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--venue", default=None)
     e.add_argument("--format", default=SETTINGS.format)
     e.add_argument("--gender", default=SETTINGS.gender)
+    e.add_argument("--shap", action="store_true",
+                    help="include a per-feature SHAP contribution breakdown for the model_part prediction")
+    e.add_argument("--pretty", action="store_true",
+                    help="render human-readable text instead of JSON")
     e.set_defaults(func=cmd_explain)
 
     a = sub.add_parser("analyze-xi", help="score + check a coach's own hand-picked XI against the same "
@@ -925,6 +1004,10 @@ def build_parser() -> argparse.ArgumentParser:
     ob.add_argument("--json", action="store_true",
                      help="print the rotation result as structured JSON instead of the human-readable "
                           "report; skips writing bowling_rotation.json to --out-dir")
+    ob.add_argument("--explain", action="store_true",
+                     help="explain the rotation: expected runs saved vs a naive even split, and each "
+                          "bowler's phase allocation with their career-wide economy rank in that phase "
+                          "among everyone who's played for their real-world team")
     ob.set_defaults(func=cmd_optimize_bowling)
 
     obat = sub.add_parser("optimize-batting", help="genetic-algorithm search over the batting order to "
@@ -956,6 +1039,9 @@ def build_parser() -> argparse.ArgumentParser:
     obat.add_argument("--json", action="store_true",
                        help="print the batting order result as structured JSON instead of the "
                             "human-readable report; skips writing batting_order.json to --out-dir")
+    obat.add_argument("--explain", action="store_true",
+                       help="explain the order: expected gain vs a naive strike-rate-sorted order, and "
+                            "the single adjacent swap that would hurt this order's metric the most")
     obat.set_defaults(func=cmd_optimize_batting)
 
     wp = sub.add_parser("winprob", help="win probability for a single game state, from the persisted "

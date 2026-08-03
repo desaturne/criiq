@@ -130,10 +130,8 @@ class BatterProfile:
 class BowlerProfile:
     economy: float | None = None
     wickets_per_match: float | None = None
-    # per-phase economy rank within their own team (rank 1 = most economical),
-    # used by engine.select_bowler to pick a realistic bowling rotation.
-    # None per phase with no qualifying sample.
     phase_rank: dict = field(default_factory=dict)
+    phase_rank_size: dict = field(default_factory=dict)
 
 
 def _venue_strike_rates(conn: sqlite3.Connection, player_id: str, fmt: str,
@@ -163,11 +161,13 @@ def build_batter_profile(conn: sqlite3.Connection, player_id: str, fmt: str,
     return BatterProfile(strike_rate=base_sr, setting_strike_rate=setting_sr, chasing_strike_rate=chasing_sr)
 
 
-def _phase_ranks(conn: sqlite3.Connection, player_id: str, fmt: str) -> dict:
+def _phase_ranks(conn: sqlite3.Connection, player_id: str, fmt: str) -> tuple:
     rows = conn.execute(
-        "SELECT phase, bowl_team_rank FROM player_phase WHERE player_id=? AND format=?",
+        "SELECT phase, bowl_team_rank, bowl_team_size FROM player_phase WHERE player_id=? AND format=?",
         (player_id, fmt)).fetchall()
-    return {r["phase"]: r["bowl_team_rank"] for r in rows if r["bowl_team_rank"] is not None}
+    ranks = {r["phase"]: r["bowl_team_rank"] for r in rows if r["bowl_team_rank"] is not None}
+    sizes = {r["phase"]: r["bowl_team_size"] for r in rows if r["bowl_team_rank"] is not None}
+    return ranks, sizes
 
 
 def build_bowler_profile(conn: sqlite3.Connection, player_id: str, fmt: str, opponent: str = "") -> BowlerProfile:
@@ -178,10 +178,11 @@ def build_bowler_profile(conn: sqlite3.Connection, player_id: str, fmt: str, opp
     wpm = feats.get("form_bowl_wickets_per_match")
     if wpm is None or pd.isna(wpm):
         wpm = feats.get("career_bowl_wickets_per_match")
+    phase_rank, phase_rank_size = _phase_ranks(conn, player_id, fmt)
     return BowlerProfile(
         economy=None if econ is None or pd.isna(econ) else float(econ),
         wickets_per_match=None if wpm is None or pd.isna(wpm) else float(wpm),
-        phase_rank=_phase_ranks(conn, player_id, fmt))
+        phase_rank=phase_rank, phase_rank_size=phase_rank_size)
 
 
 def build_player_profiles(conn: sqlite3.Connection, fmt: str, team1_ids: list, team2_ids: list,
