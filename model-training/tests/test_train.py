@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from sklearn.dummy import DummyRegressor
 
+from criiq_models.config import SETTINGS
+from criiq_models.features.schema import MODEL_FEATURES
 from criiq_models.recommend import train as train_module
 from tests.conftest import add_match, add_match_impact, add_match_wpa, register_player
 
@@ -24,7 +26,7 @@ def _stub_fit_one(df, target, gender=None):
     """
     rows = df.dropna(subset=[target])
     model = DummyRegressor().fit(rows[["career_matches"]].fillna(0), rows[target])
-    return model, {"n_rows": int(len(rows))}
+    return model, {"n_rows": len(rows)}
 
 
 def test_artifacts_dir_is_scoped_by_format_and_gender(tmp_path, monkeypatch):
@@ -93,8 +95,6 @@ def test_train_persists_a_shap_background_sample(conn, tmp_path, monkeypatch):
     metadata = train_module.train(conn, "T20", "female")
 
     background = train_module.load_background("T20", "female")
-    from criiq_models.config import SETTINGS
-    from criiq_models.features.schema import MODEL_FEATURES
     assert background is not None
     assert list(background.columns) == MODEL_FEATURES
     assert len(background) == min(metadata["n_rows_total"], SETTINGS.shap_background_size)
