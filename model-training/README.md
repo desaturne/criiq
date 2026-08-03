@@ -675,10 +675,12 @@ of `MODEL_FEATURES` — additive, so `base_value + sum(contributions) ==
 predicted_value` to float precision, and verified to match `score.py`'s own
 `predicted_batting_wpa`/`predicted_bowling_wpa` exactly.
 
-`--shap` is available on both `explain` (one player: `--pretty` prints the
-full per-feature breakdown) and `recommend` (every XI/pool player: `--pretty`
-prints a compact one-line top-driver summary per player instead, since the
-full breakdown for 20+ players would swamp a team sheet — the full numbers
+`--shap` is available on both `explain` (one player: JSON includes the full
+per-feature breakdown; `--pretty` renders a compact human-readable summary —
+top contributions plus one combined "rest" line) and `recommend` (every
+XI/pool player: `--pretty` prints a compact one-line top-driver summary per
+player instead, since the full breakdown for 20+ players would swamp a team
+sheet — the full numbers
 are always in the plain-JSON `"shap"` key on each player regardless). On
 `recommend`, passing `--shap` alone implies `--explain` the same way
 `--pretty` already does.
