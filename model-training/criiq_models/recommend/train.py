@@ -26,6 +26,7 @@ from ..features.schema import CATEGORICAL_FEATURES, MODEL_FEATURES, NUMERIC_FEAT
 
 MODEL_FILENAME = {target: f"model_{target}.joblib" for target in TARGETS}
 METADATA_FILENAME = "training_metadata.json"
+BACKGROUND_FILENAME = "shap_background.joblib"
 
 
 def _artifacts_dir(fmt: str, gender: str):
@@ -123,6 +124,11 @@ def train(conn: sqlite3.Connection, fmt: str = SETTINGS.format,
         metadata["targets"][target] = metrics
 
     (artifacts_dir / METADATA_FILENAME).write_text(json.dumps(metadata, indent=2))
+
+    background = table[MODEL_FEATURES].sample(
+        n=min(SETTINGS.shap_background_size, len(table)), random_state=SETTINGS.random_state)
+    joblib.dump(background, artifacts_dir / BACKGROUND_FILENAME)
+
     return metadata
 
 
@@ -141,3 +147,10 @@ def load_metadata(fmt: str = SETTINGS.format, gender: str = SETTINGS.gender) -> 
     if not path.exists():
         return None
     return json.loads(path.read_text())
+
+
+def load_background(fmt: str = SETTINGS.format, gender: str = SETTINGS.gender) -> pd.DataFrame | None:
+    path = _artifacts_dir(fmt, gender) / BACKGROUND_FILENAME
+    if not path.exists():
+        return None
+    return joblib.load(path)

@@ -90,6 +90,9 @@ class Settings:
 
     finisher_low_impact_threshold: float = 5.0
 
+    shap_background_size: int = 100
+    shap_top_features: int = 8
+
 
 SETTINGS = Settings()
 
