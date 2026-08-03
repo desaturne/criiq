@@ -80,3 +80,27 @@ def test_load_models_and_metadata_are_scoped_when_nothing_trained_yet(tmp_path, 
 
     assert train_module.load_models("T20", "male") == {}
     assert train_module.load_metadata("T20", "male") is None
+
+
+def test_train_persists_a_shap_background_sample(conn, tmp_path, monkeypatch):
+    monkeypatch.setattr(train_module, "RECOMMENDATION_ARTIFACTS_DIR", tmp_path)
+    monkeypatch.setattr(train_module, "_fit_one", _stub_fit_one)
+
+    register_player(conn, "p_female", "A Player", role="batter")
+    _seed_gender(conn, "female", "p_female", "Australia")
+    conn.commit()
+
+    metadata = train_module.train(conn, "T20", "female")
+
+    background = train_module.load_background("T20", "female")
+    from criiq_models.features.schema import MODEL_FEATURES
+    assert background is not None
+    assert list(background.columns) == MODEL_FEATURES
+    assert len(background) == min(metadata["n_rows_total"], background.shape[0])
+    assert len(background) <= metadata["n_rows_total"]
+
+
+def test_load_background_is_scoped_when_nothing_trained_yet(tmp_path, monkeypatch):
+    monkeypatch.setattr(train_module, "RECOMMENDATION_ARTIFACTS_DIR", tmp_path)
+
+    assert train_module.load_background("T20", "male") is None
