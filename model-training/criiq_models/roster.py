@@ -79,8 +79,11 @@ def team_pool(conn: sqlite3.Connection, team: str, fmt: str = SETTINGS.format,
     hard-excludes RETIRED_* always. excludes INACTIVE unless
     include_inactive, recall_flag is set, or recent_domestic_activity is
     true, so a genuinely-inactive-internationally player isn't dropped just
-    for that. this is an eligibility carve-out, not a correction to
-    retirement_status itself, which stays an honest international-only fact.
+    for that. also excludes UNKNOWN (the 540-1095-day no-international-
+    appearance band that recently-retired players fall into) unless
+    include_inactive or recent_domestic_activity. these are eligibility
+    carve-outs, not corrections to retirement_status itself, which stays an
+    honest international-only fact.
     """
     teams = player_current_teams(conn, fmt, gender)
     teams = teams[teams["team"] == team]
@@ -97,8 +100,32 @@ def team_pool(conn: sqlite3.Connection, team: str, fmt: str = SETTINGS.format,
     inactive = ((merged["retirement_status"] == SETTINGS.inactive_status)
                 & (merged["recall_flag"].fillna(0) == 0)
                 & (merged["recent_domestic_activity"].fillna(0) == 0))
-    keep = ~excluded & (include_inactive | ~inactive)
-    return merged.loc[keep, "player_id"].tolist()
+    # UNKNOWN is "no international appearance for 540-1095 days". A player who
+    # retires from a format sits here for ~3 years before ageing into
+    # INACTIVE, and RETIRED_* only exists if the manual override CSV was
+    # filled in, so without this UNKNOWN players who have plainly stopped
+    # playing internationally stay selectable (V Kohli and RG Sharma, both
+    # retired from T20Is in June 2024, were being offered for India's XI).
+    # recall_flag is deliberately NOT a carve-out here the way it is for
+    # INACTIVE: every UNKNOWN row has recall_flag=1 by construction (the flag
+    # marks exactly this staleness band), so honouring it would cancel the
+    # exclusion outright. Recent domestic cricket still earns a way back in.
+    unknown = ((merged["retirement_status"] == SETTINGS.unknown_status)
+               & (merged["recent_domestic_activity"].fillna(0) == 0))
+    keep = ~excluded & (include_inactive | ~(inactive | unknown))
+    pool = merged.loc[keep, "player_id"].tolist()
+
+    # dormant associate sides (Maldives, Mongolia, Greece, ...) play so
+    # rarely that their whole squad is UNKNOWN, which would leave them with
+    # no XI to field at all. drop back to the pre-UNKNOWN rule for those
+    # teams only -- their last known squad is more useful than an empty
+    # pool, and a side with any active core never reaches this branch (India
+    # men keep 22 of 42 even with a whole generation newly retired).
+    if not include_inactive and len(pool) < SETTINGS.xi_size:
+        fallback = merged.loc[~excluded & ~inactive, "player_id"].tolist()
+        if len(fallback) > len(pool):
+            return fallback
+    return pool
 
 
 def known_teams(conn: sqlite3.Connection, fmt: str = SETTINGS.format,
