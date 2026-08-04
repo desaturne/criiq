@@ -30,6 +30,15 @@ def row_to_dict(row):
 
 OPENER_POSITION_THRESHOLD = 2.5  # mirrors model-training's SETTINGS.opener_position_threshold
 
+# Eligibility clauses, mirroring criiq_models' roster.team_pool (see the long
+# note in list_players). Kept as named constants so the two stay comparable.
+_XI_SIZE = 11
+_NOT_RETIRED = "r.retirement_status NOT IN ('RETIRED_ALL', 'RETIRED_FORMAT')"
+_NOT_STALE = ("NOT (r.retirement_status IN ('INACTIVE', 'UNKNOWN') "
+              "     AND COALESCE(r.recent_domestic_activity, 0) = 0)")
+_NOT_STALE_INACTIVE_ONLY = ("NOT (r.retirement_status = 'INACTIVE' "
+                            "     AND COALESCE(r.recent_domestic_activity, 0) = 0)")
+
 
 def position_label(role_bucket: str | None, is_keeper: bool, batting_position_median: float | None) -> str:
     """Mirrors criiq_models/selection/optimize.py's slot_category, plus a keeper override."""
@@ -94,31 +103,54 @@ def list_players(search: str = "", role: str = "", status: str = "", country: st
     if status:
         where.append("r.retirement_status = ?")
         params.append(status.upper())
+
+    def _candidates(eligibility: list[str]):
+        sql = f"""
+            FROM players p
+            JOIN player_registry r ON r.player_id = p.player_id
+            LEFT JOIN player_cards c ON c.player_id = p.player_id
+            WHERE {' AND '.join(where + eligibility)}
+        """
+        rows = criiq_db.execute(
+            f"SELECT p.player_id, p.cricsheet_identifier {sql} "
+            f"ORDER BY c.matches_played DESC, p.canonical_name",
+            params,
+        ).fetchall()
+        if country:
+            members = roster_index.team_members(country)
+            rows = [r for r in rows if r["cricsheet_identifier"] in members]
+        if gender in ("male", "female"):
+            members = roster_index.gender_members(gender)
+            rows = [r for r in rows if r["cricsheet_identifier"] in members]
+        return rows
+
+    if status:
+        # explicit status= wins outright (the Squads roster page's filter),
+        # so retired/inactive players stay reachable when asked for by name.
+        candidates = _candidates([])
     else:
         # Default view excludes retired/inactive players everywhere -- a
         # squad-building or simulation picker showing them mixed in with
-        # real current players is misleading. Pass status=INACTIVE explicitly
-        # (e.g. the Squads roster page's status filter) to still see them.
-        where.append("r.retirement_status != 'INACTIVE'")
-
-    base_sql = f"""
-        FROM players p
-        JOIN player_registry r ON r.player_id = p.player_id
-        LEFT JOIN player_cards c ON c.player_id = p.player_id
-        WHERE {' AND '.join(where)}
-    """
-    candidates = criiq_db.execute(
-        f"SELECT p.player_id, p.cricsheet_identifier {base_sql} "
-        f"ORDER BY c.matches_played DESC, p.canonical_name",
-        params,
-    ).fetchall()
-
-    if country:
-        members = roster_index.team_members(country)
-        candidates = [r for r in candidates if r["cricsheet_identifier"] in members]
-    if gender in ("male", "female"):
-        members = roster_index.gender_members(gender)
-        candidates = [r for r in candidates if r["cricsheet_identifier"] in members]
+        # real current players is misleading.
+        #
+        # This MUST mirror criiq_models' roster.team_pool, or the XI pickers
+        # offer players the recommender would never pick. It previously only
+        # dropped INACTIVE, which let every UNKNOWN through -- that is the
+        # 540-1095-day no-international-appearance band a just-retired player
+        # sits in, so recently-retired internationals were selectable here
+        # (and in the simulator) while /recommendations behaved differently.
+        # RETIRED_* only exist when the manual override CSV is populated;
+        # they are listed so this stays correct once it is.
+        candidates = _candidates([_NOT_RETIRED, _NOT_STALE])
+        # Same dormant-side fallback team_pool applies: an associate team
+        # that hasn't played in years is entirely UNKNOWN, and showing an
+        # empty picker for it is worse than showing its last known squad.
+        # INACTIVE always carries recall_flag=0, so dropping the flag from
+        # this clause matches team_pool's INACTIVE rule exactly.
+        if country and len(candidates) < _XI_SIZE:
+            relaxed = _candidates([_NOT_RETIRED, _NOT_STALE_INACTIVE_ONLY])
+            if len(relaxed) > len(candidates):
+                candidates = relaxed
 
     total = len(candidates)
     page_ids = [r["player_id"] for r in candidates[(page - 1) * limit: (page - 1) * limit + limit]]

@@ -62,8 +62,19 @@ class Settings:
     min_openers: int = 2
 
     # eligibility: which registry statuses are selectable at all.
+    # RETIRED_* only ever come from the manual override CSV
+    # (data-collection's overrides.py / status_overrides table). The
+    # pipeline's own classifier never emits them, so when that CSV is
+    # unpopulated -- which is the normal case -- this tuple matches nothing
+    # and is not, on its own, a working retirement filter. UNKNOWN below is
+    # what actually catches retired players in that situation.
     excluded_statuses: tuple[str, ...] = ("RETIRED_ALL", "RETIRED_FORMAT")
     inactive_status: str = "INACTIVE"
+    # "no international appearance in active_window..inactive_window days"
+    # (540-1095). A player who has just retired from a format lands here for
+    # roughly three years before ageing into INACTIVE, so treating UNKNOWN as
+    # selectable is what put retired internationals into the pool.
+    unknown_status: str = "UNKNOWN"
 
     # playing-xi constraints.
     xi_size: int = 11
