@@ -27,12 +27,12 @@ export function BuildXiPage() {
 
   const loadPlayers = () => {
     setLoading(true);
-    return api.listPlayers({ limit: 100, country: team, gender })
+    return api.listPlayers({ limit: 100, country: team, gender, opponent: opposition })
       .then(res => setPlayers(res.players.map(mapApiPlayerListItem)))
       .finally(() => setLoading(false));
   };
 
-  useEffect(() => { loadPlayers(); }, [team, gender]);
+  useEffect(() => { loadPlayers(); }, [team, gender, opposition]);
 
   useEffect(() => {
     if ((location.state as { openSquad?: boolean } | null)?.openSquad) {
@@ -136,7 +136,7 @@ export function BuildXiPage() {
               onSelect={s => setSelection(p.id, s)}
               comparing={compareIds.includes(p.id)}
               onToggleCompare={() => toggleCompare(p.id)}
-              onViewProfile={() => navigate("/players/" + p.id)}
+              onViewProfile={(selectedOpposition) => navigate(`/players/${p.id}?opposition=${encodeURIComponent(selectedOpposition)}`)}
             />
           ))}
         </div>

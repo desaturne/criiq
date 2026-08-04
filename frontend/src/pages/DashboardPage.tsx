@@ -27,11 +27,17 @@ export function DashboardPage() {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    api.listPlayers({ search, country: team, gender, limit: 100 })
-      .then(res => { if (!cancelled) setPlayers(res.players.map(mapApiPlayerListItem)); })
-      .finally(() => { if (!cancelled) setLoading(false); });
+    (async () => {
+      try {
+        const res = await api.listPlayers({ search, country: team, gender, opponent: opposition, limit: 100 });
+        if (cancelled) return;
+        if (!cancelled) setPlayers(res.players.map(mapApiPlayerListItem));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
     return () => { cancelled = true; };
-  }, [search, team, gender]);
+  }, [search, team, gender, opposition]);
 
   const toggleCompare = (id: string) => {
     setCompareIds(prev =>
@@ -124,7 +130,7 @@ export function DashboardPage() {
               key={p.id} player={p} index={i} opposition={opposition}
               comparing={compareIds.includes(p.id)}
               onToggleCompare={() => toggleCompare(p.id)}
-              onViewProfile={() => navigate("/players/" + p.id)}
+              onViewProfile={(selectedOpposition) => navigate(`/players/${p.id}?opposition=${encodeURIComponent(selectedOpposition)}`)}
             />
           ))}
         </div>
