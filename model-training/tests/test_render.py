@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from criiq_models.recommend.render import render_team_sheet, render_xi_analysis
+from criiq_models.recommend.render import render_player_explanation, render_team_sheet, render_xi_analysis
 
 
 def _explained(pid, name, score, bucket, is_keeper=False, reasoning=None):
@@ -88,6 +88,78 @@ def test_render_xi_analysis_shows_violations_and_optimal_comparison():
     assert "5.0 points below the AI's own optimal XI" in text
     assert "Bowl One" in text  # what the coach's pick is missing, named explicitly
     assert "Bat Two" in text  # in this XI but not the optimal one
+
+
+def test_render_team_sheet_shows_shap_one_liner_for_xi_and_pool():
+    shap_ok = {
+        "batting_wpa": {"base_value": 0.0, "predicted_value": 0.01, "contributions": {},
+                         "top_contributions": [{"feature": "career_matches", "value": 0.0077}]},
+        "bowling_wpa": {"error": "a background sample is required to explain this "
+                                  "VotingRegressor's non-Pipeline sub-estimator"},
+    }
+    pool = [
+        _explained("p1", "Star Batter", 40.0, "batter",
+                    reasoning=["Star Batter rates 40.0/100."]),
+        _explained("p3", "Bench Bowler", 12.0, "bowler",
+                   reasoning=["Bench Bowler rates 12.0/100."]),
+    ]
+    pool[0]["shap"] = shap_ok
+    xi = [dict(pool[0])]
+    constraints = {"min_batting_capable": 1, "min_bowling_capable": 1, "min_keepers": 0, "min_openers": 0}
+
+    text = render_team_sheet("India", "Australia", None, xi, pool,
+                              {"trained_at": "2026-01-01", "n_rows_total": 100,
+                               "format": "T20", "gender": "female"},
+                              constraints)
+
+    assert "[SHAP] batting_wpa top driver: career_matches (+0.0077)" in text
+    assert "bowling_wpa: a background sample is required" in text
+    assert text.count("[SHAP]") == 2  # once in the pool listing, once in the XI listing
+
+
+def test_render_player_explanation_shows_narrative_and_shap_breakdown():
+    shap_result = {
+        "batting_wpa": {
+            "base_value": 0.0046,
+            "predicted_value": 0.0472,
+            "contributions": {"career_matches": 0.0077, "career_bat_sr": 0.0052, "role_bucket": -0.0001},
+            "top_contributions": [{"feature": "career_matches", "value": 0.0077},
+                                   {"feature": "career_bat_sr", "value": 0.0052}],
+        },
+        "bowling_wpa": {"error": "a background sample is required to explain this "
+                                  "VotingRegressor's non-Pipeline sub-estimator"},
+    }
+
+    text = render_player_explanation("S Mandhana", "Australia", None, 37.5,
+                                      ["S Mandhana rates 37.5/100 for this matchup against Australia."],
+                                      shap_result=shap_result)
+
+    assert "PLAYER EXPLANATION: S Mandhana vs AUSTRALIA" in text
+    assert "Score: 37.5/100" in text
+    assert "S Mandhana rates 37.5/100" in text
+    assert "SHAP BREAKDOWN -- batting_wpa" in text
+    assert "career_matches" in text and "+0.007700" in text
+    assert "(+ 1 more features, combined)" in text
+    assert "SHAP BREAKDOWN -- bowling_wpa" in text
+    assert "a background sample is required" in text
+
+
+def test_render_player_explanation_shows_cold_start_shap_error():
+    text = render_player_explanation("Tiny Sample", "Australia", None, 20.0,
+                                      ["Tiny Sample rates 20.0/100 for this matchup against Australia."],
+                                      shap_result={"error": "model not applied: career_matches (1) < "
+                                                             "min_matches_for_model (10)"})
+
+    assert "SHAP BREAKDOWN" in text
+    assert "model not applied" in text
+    assert "SHAP BREAKDOWN -- error" not in text
+
+
+def test_render_player_explanation_without_shap():
+    text = render_player_explanation("S Mandhana", "Australia", None, 37.5,
+                                      ["S Mandhana rates 37.5/100 for this matchup against Australia."])
+
+    assert "SHAP BREAKDOWN" not in text
 
 
 def test_render_xi_analysis_no_violations_reads_as_meeting_constraints():

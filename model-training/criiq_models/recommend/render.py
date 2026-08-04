@@ -23,6 +23,20 @@ _POOL_SECTIONS = [
 ]
 
 
+def _shap_one_liner(shap_result: dict) -> str:
+    if set(shap_result) == {"error"}:
+        return f"[SHAP] {shap_result['error']}"
+    bits = []
+    for target, result in shap_result.items():
+        if "error" in result:
+            bits.append(f"{target}: {result['error']}")
+            continue
+        top = result["top_contributions"][0] if result["top_contributions"] else None
+        if top:
+            bits.append(f"{target} top driver: {top['feature']} ({top['value']:+.4f})")
+    return "[SHAP] " + "; ".join(bits) if bits else ""
+
+
 def render_team_sheet(team: str, opponent: str, venue_id: str | None,
                        xi_explained: list[dict], pool_explained: list[dict],
                        model_metadata: dict | None, constraints: dict | None,
@@ -71,6 +85,8 @@ def render_team_sheet(team: str, opponent: str, venue_id: str | None,
         lines.append(f"  {i:2d}. {p['name']:<22s} {role:<12s}{tags:<10s} {p['score']:>5.1f}/100")
         for sentence in p.get("reasoning", []):
             lines.append(_wrap(f"- {sentence}"))
+        if p.get("shap"):
+            lines.append(_wrap(_shap_one_liner(p["shap"])))
         lines.append("")
 
     lines.append(f"  ROSTER: {len(pool_explained)} PLAYERS ACROSS 3 ROLE POOLS (ranked by score)")
@@ -113,6 +129,8 @@ def render_team_sheet(team: str, opponent: str, venue_id: str | None,
         lines.append(f"  {i:2d}. {p['name']:<22s} {role:<12s}{tag:<5s} {p['score']:>5.1f}/100")
         for sentence in p.get("reasoning", []):
             lines.append(_wrap(f"- {sentence}"))
+        if p.get("shap"):
+            lines.append(_wrap(_shap_one_liner(p["shap"])))
         lines.append("")
 
     if constraints:
@@ -165,6 +183,56 @@ def render_team_sheet(team: str, opponent: str, venue_id: str | None,
         for i, p in enumerate(rotation_xi["xi"], start=1):
             tag = " (wk)" if p.get("is_keeper") else ""
             lines.append(f"  {i:2d}. {p['name']:<22s} {p['role_bucket']:<12s}{tag:<5s} {p['score']:>5.1f}/100")
+
+    lines.append(bar)
+    return "\n".join(lines)
+
+
+def _render_shap_target(lines: list[str], target: str, result: dict) -> None:
+    lines.append("  " + "-" * (_WIDTH - 2))
+    lines.append(f"  SHAP BREAKDOWN -- {target}")
+    lines.append("  " + "-" * (_WIDTH - 2))
+    if "error" in result:
+        lines.append(_wrap(result["error"]))
+        return
+
+    lines.append(f"  base value:      {result['base_value']:>10.6f}")
+    lines.append(f"  predicted value: {result['predicted_value']:>10.6f}")
+    lines.append("")
+    top = result["top_contributions"]
+    shown = {c["feature"] for c in top}
+    rest_sum = sum(v for f, v in result["contributions"].items() if f not in shown)
+    n_rest = len(result["contributions"]) - len(shown)
+    for c in top:
+        lines.append(f"    {c['feature']:<32s} {c['value']:>+10.6f}")
+    if n_rest > 0:
+        lines.append(f"    {'(+ ' + str(n_rest) + ' more features, combined)':<32s} {rest_sum:>+10.6f}")
+
+
+def render_player_explanation(name: str, opponent: str, venue_id: str | None, score: float,
+                               summary: list[str], shap_result: dict | None = None) -> str:
+    lines: list[str] = []
+    bar = "=" * _WIDTH
+    venue_note = f" at venue {venue_id}" if venue_id else ""
+    lines.append(bar)
+    lines.append(f"  PLAYER EXPLANATION: {name} vs {opponent.upper()}{venue_note}")
+    lines.append(f"  Score: {score}/100")
+    lines.append(bar)
+    lines.append("")
+    for sentence in summary:
+        lines.append(_wrap(f"- {sentence}"))
+    lines.append("")
+
+    if shap_result is not None:
+        if set(shap_result) == {"error"}:
+            lines.append("  " + "-" * (_WIDTH - 2))
+            lines.append("  SHAP BREAKDOWN")
+            lines.append("  " + "-" * (_WIDTH - 2))
+            lines.append(_wrap(shap_result["error"]))
+        else:
+            for target, result in shap_result.items():
+                _render_shap_target(lines, target, result)
+        lines.append("")
 
     lines.append(bar)
     return "\n".join(lines)
