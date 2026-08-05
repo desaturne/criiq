@@ -14,12 +14,9 @@ import { SelectionState } from "../types/index";
 
 const COUNTRY_OPTIONS = ["India", "Australia", "England", "South Africa", "New Zealand", "Pakistan"];
 
-// A floor on the displayed AVERAGE only -- individual player scores stay
-// exactly as the model rates them (a tough opponent legitimately should
-// pull a real player's own score down, and ranking depends on that being
-// honest). Squad Strength is a single presentational number, not something
-// XI selection reads, so flooring it here can't touch who gets picked.
-const SQUAD_STRENGTH_FLOOR = 30;
+// Squad/Bench Strength display: rescales the real 0-100 score onto a 30-100 range.
+const SQUAD_STRENGTH_BASE = 30;
+const rescaleStrength = (rawScore: number) => SQUAD_STRENGTH_BASE + rawScore * (100 - SQUAD_STRENGTH_BASE) / 100;
 
 interface Recommendation { rank: number; player_id: string; player_name: string; role: string; score: number; reasons: string[]; in_xi: boolean; }
 
@@ -146,17 +143,18 @@ export function RecommendationsPage() {
     (generatedParams.team !== team || generatedParams.opponent !== opponent ||
      generatedParams.venue !== venue || generatedParams.format !== format ||
      generatedParams.gender !== gender || generatedParams.opponentXiKey !== liveOpponentXiKey);
+  // Whoever's currently marked "Select" (not the AI's fixed XI), so toggling Select/Reserve/Exclude moves squadStrength below.
+  const selectedXi = useMemo(() => ranked.filter(r => selections[r.player_id] === "select"), [ranked, selections]);
   const squadStrength = useMemo(() => {
-    const xi = ranked.filter(r => r.in_xi);
-    if (!xi.length) return 0;
-    return Math.max(SQUAD_STRENGTH_FLOOR, xi.reduce((s, r) => s + r.score, 0) / xi.length);
-  }, [ranked]);
+    if (!selectedXi.length) return 0;
+    return rescaleStrength(selectedXi.reduce((s, r) => s + r.score, 0) / selectedXi.length);
+  }, [selectedXi]);
   // Same average, over whoever the coach has marked "Reserve" instead of the
   // AI's constrained XI -- how deep the depth actually is, not just the 11.
   const benchPlayers = useMemo(() => ranked.filter(r => selections[r.player_id] === "reserve"), [ranked, selections]);
   const benchStrength = useMemo(() => {
     if (!benchPlayers.length) return 0;
-    return Math.max(SQUAD_STRENGTH_FLOOR, benchPlayers.reduce((s, r) => s + r.score, 0) / benchPlayers.length);
+    return rescaleStrength(benchPlayers.reduce((s, r) => s + r.score, 0) / benchPlayers.length);
   }, [benchPlayers]);
 
   const teamLocked = !!user?.country;
@@ -204,15 +202,11 @@ export function RecommendationsPage() {
     }
   };
 
-  // Adopt the AI's constrained XI as the manual selection: mark every in_xi
-  // player "select" and the rest of this pool "undecided", leaving any
-  // selections for players outside this pool untouched.
+  // Fully replaces selections with just this pool's picks -- selections isn't scoped per matchup, so a merge would let a stale pick (even a previously saved squad for a different opponent) persist across sessions.
   const applyAiXiToSelections = (pool: Recommendation[]) => {
-    setSelections(prev => {
-      const next = { ...prev };
-      pool.forEach(r => { next[r.player_id] = r.in_xi ? "select" : "undecided"; });
-      return next;
-    });
+    const next: Record<string, SelectionState> = {};
+    pool.forEach(r => { next[r.player_id] = r.in_xi ? "select" : "undecided"; });
+    setSelections(next);
   };
   const resetToAiXi = () => applyAiXiToSelections(ranked);
 
@@ -522,7 +516,9 @@ export function RecommendationsPage() {
                   Squad Strength
                   {oppXiComplete && <span className="text-[10px] font-normal text-[#AAFF57] opacity-0 group-hover:opacity-100 transition-opacity">Tap to analyze →</span>}
                 </h3>
-                <p className="text-[11px] text-muted-foreground mt-0.5">Avg score of the AI's {ranked.filter(r => r.in_xi).length}-player XI, this matchup</p>
+                <p className="text-[11px] text-muted-foreground mt-0.5">
+                  {selectedXi.length > 0 ? `Avg score of your ${selectedXi.length}-player XI, this matchup` : "Avg score of your selected XI, this matchup"}
+                </p>
                 <p className="text-[12px] text-muted-foreground mt-1.5">
                   {selectedCount === 0
                     ? "Tap Select on players below to build your own XI"
