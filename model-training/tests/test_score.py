@@ -34,7 +34,8 @@ def test_cold_start_skips_model_and_score_is_bounded(conn):
     assert 0.0 <= scored["score"] <= 100.0
 
     parts_sum = (c["model_part"] + c["matchup_part"] + c["phase_fit_part"]
-                 + c["standing_part"] + c["risk_part"] + c["strike_rate_part"])
+                 + c["standing_part"] + c["risk_part"] + c["strike_rate_part"]
+                 + c["opponent_strength_part"])
     assert scored["score"] == round(max(0.0, min(100.0, parts_sum)), 1)
 
 

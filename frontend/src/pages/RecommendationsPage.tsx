@@ -13,6 +13,13 @@ import { SelectionState } from "../types/index";
 
 const COUNTRY_OPTIONS = ["India", "Australia", "England", "South Africa", "New Zealand", "Pakistan"];
 
+// A floor on the displayed AVERAGE only -- individual player scores stay
+// exactly as the model rates them (a tough opponent legitimately should
+// pull a real player's own score down, and ranking depends on that being
+// honest). Squad Strength is a single presentational number, not something
+// XI selection reads, so flooring it here can't touch who gets picked.
+const SQUAD_STRENGTH_FLOOR = 30;
+
 interface Recommendation { rank: number; player_id: string; player_name: string; role: string; score: number; reasons: string[]; in_xi: boolean; }
 
 // Bolds the numeric/percentage tokens in a reasoning sentence (e.g. "+5.8%",
@@ -33,6 +40,63 @@ function Highlighted({ text }: { text: string }) {
   );
 }
 
+const SHAP_TARGET_LABELS: Record<string, string> = { batting_wpa: "Batting impact", bowling_wpa: "Bowling impact" };
+
+// A diverging bar anchored at a shared zero baseline (center) -- magnitude
+// grows outward either side, color marks the sign, and the value is repeated
+// as a signed number so the sign is never color-only.
+function ShapBar({ feature, value, maxAbs }: { feature: string; value: number; maxAbs: number }) {
+  const pct = maxAbs > 0 ? Math.min(100, (Math.abs(value) / maxAbs) * 100) : 0;
+  const positive = value >= 0;
+  return (
+    <div className="flex items-center gap-2 text-[11px]">
+      <span className="w-32 flex-shrink-0 truncate text-muted-foreground">{feature.replace(/_/g, " ")}</span>
+      <div className="flex-1 flex items-center h-3">
+        <div className="w-1/2 flex justify-end">
+          {!positive && <div className="h-2 bg-red-400/70 rounded-l-sm" style={{ width: `${pct}%` }} />}
+        </div>
+        <div className="w-px h-3 bg-border flex-shrink-0" />
+        <div className="w-1/2 flex justify-start">
+          {positive && <div className="h-2 bg-[#AAFF57]/70 rounded-r-sm" style={{ width: `${pct}%` }} />}
+        </div>
+      </div>
+      <span className="w-16 flex-shrink-0 text-right text-muted-foreground" style={{ fontVariantNumeric: "tabular-nums" }}>
+        {positive ? "+" : ""}{(value * 100).toFixed(2)}%
+      </span>
+    </div>
+  );
+}
+
+// Renders whichever of batting_wpa/bowling_wpa SHAP actually explained --
+// a pure bowler's batting model (or vice versa) commonly comes back
+// {"error": "..."} for lack of a background sample, so those are skipped
+// rather than shown as a broken section; the plain-language reasons above
+// already cover the "why" for a player SHAP can't explain at all.
+function ShapSection({ result }: { result: api.ShapExplainResult | "loading" | "error" | undefined }) {
+  if (!result) return null;
+  if (result === "loading") return <p className="text-[11px] text-muted-foreground mt-3">Loading feature impact…</p>;
+  if (result === "error" || !result.shap || "error" in result.shap) return null;
+  const targets = Object.entries(result.shap).filter(([, t]) => t && !t.error && t.top_contributions?.length);
+  if (!targets.length) return null;
+  return (
+    <div className="mt-3 pt-3 border-t border-border/60 space-y-3">
+      <p className="text-[12px] text-muted-foreground font-medium">Feature impact (model contribution)</p>
+      {targets.map(([key, target]) => {
+        const contributions = target.top_contributions!;
+        const maxAbs = Math.max(...contributions.map(c => Math.abs(c.value)), 1e-9);
+        return (
+          <div key={key}>
+            <p className="text-[10px] uppercase tracking-wide text-muted-foreground/70 mb-1">{SHAP_TARGET_LABELS[key] || key}</p>
+            <div className="space-y-1">
+              {contributions.map(c => <ShapBar key={c.feature} feature={c.feature} value={c.value} maxAbs={maxAbs} />)}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export function RecommendationsPage() {
   const navigate = useNavigate();
   const { user } = useApp();
@@ -50,6 +114,9 @@ export function RecommendationsPage() {
   const { selections, setSelections } = useApp();
   const [confirming, setConfirming] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  // Keyed by player_id (not player_name -- names can collide) and fetched
+  // lazily on first expand, since it's a separate per-player model call.
+  const [shapById, setShapById] = useState<Record<string, api.ShapExplainResult | "loading" | "error">>({});
   const [ranked, setRanked] = useState<Recommendation[]>([]);
   const [opponentXi, setOpponentXi] = useState<{ player_id: string; player_name: string; role: string; score: number }[] | null>(null);
   const [showOpponentXi, setShowOpponentXi] = useState(false);
@@ -77,8 +144,16 @@ export function RecommendationsPage() {
      generatedParams.gender !== gender || generatedParams.opponentXiKey !== liveOpponentXiKey);
   const squadStrength = useMemo(() => {
     const xi = ranked.filter(r => r.in_xi);
-    return xi.length ? xi.reduce((s, r) => s + r.score, 0) / xi.length : 0;
+    if (!xi.length) return 0;
+    return Math.max(SQUAD_STRENGTH_FLOOR, xi.reduce((s, r) => s + r.score, 0) / xi.length);
   }, [ranked]);
+  // Same average, over whoever the coach has marked "Reserve" instead of the
+  // AI's constrained XI -- how deep the depth actually is, not just the 11.
+  const benchPlayers = useMemo(() => ranked.filter(r => selections[r.player_id] === "reserve"), [ranked, selections]);
+  const benchStrength = useMemo(() => {
+    if (!benchPlayers.length) return 0;
+    return Math.max(SQUAD_STRENGTH_FLOOR, benchPlayers.reduce((s, r) => s + r.score, 0) / benchPlayers.length);
+  }, [benchPlayers]);
 
   const teamLocked = !!user?.country;
 
@@ -125,19 +200,35 @@ export function RecommendationsPage() {
     }
   };
 
+  // Adopt the AI's constrained XI as the manual selection: mark every in_xi
+  // player "select" and the rest of this pool "undecided", leaving any
+  // selections for players outside this pool untouched.
+  const applyAiXiToSelections = (pool: Recommendation[]) => {
+    setSelections(prev => {
+      const next = { ...prev };
+      pool.forEach(r => { next[r.player_id] = r.in_xi ? "select" : "undecided"; });
+      return next;
+    });
+  };
+  const resetToAiXi = () => applyAiXiToSelections(ranked);
+
   const handleGenerate = async () => {
     setLoading(true);
     setError(null);
     try {
-      const recRes = await api.recommendations({
-        team, opponent, venue, format, gender,
-        // A named XI is what the engine counters; only fall back to
-        // auto-predicting one when the coach hasn't named it.
-        ...(oppXiComplete
-          ? { opponent_player_ids: oppXiIds }
-          : { auto_opponent_xi: true }),
-      });
+      // The button below is only enabled once the opposition XI is fully
+      // named, so this always has a complete XI to counter -- no
+      // auto-predicted-opponent fallback anymore (the coach names it or
+      // doesn't generate at all).
+      const recRes = await api.recommendations({ team, opponent, venue, format, gender, opponent_player_ids: oppXiIds });
       setRanked(recRes.recommendations);
+      // `selections` is shared across pages and never tied to a specific
+      // matchup -- without this, a manual Select/Reserve/Exclude toggle made
+      // for a *previous* opponent (or team/venue/format) silently keeps
+      // showing as selected against this new one, since the player_ids
+      // usually overlap heavily (same team's roster either way). Every fresh
+      // generation starts from the AI's own pick for THIS matchup instead.
+      applyAiXiToSelections(recRes.recommendations);
       setOpponentXi(recRes.opponent_xi);
       setCounteredXi(recRes.countered_opponent_xi);
       setGeneratedParams({ team, opponent, venue, format, gender, opponentXiKey: oppXiComplete ? [...oppXiIds].sort().join(",") : "" });
@@ -147,17 +238,6 @@ export function RecommendationsPage() {
     } finally {
       setLoading(false);
     }
-  };
-
-  // Adopt the AI's constrained XI as the manual selection: mark every in_xi
-  // player "select" and the rest of this pool "undecided", leaving any
-  // selections for players outside this pool untouched.
-  const resetToAiXi = () => {
-    setSelections(prev => {
-      const next = { ...prev };
-      ranked.forEach(r => { next[r.player_id] = r.in_xi ? "select" : "undecided"; });
-      return next;
-    });
   };
 
   // "Simulate This XI" -- the coach's constrained 11 is already known
@@ -230,6 +310,19 @@ export function RecommendationsPage() {
     { key: "others",       label: "Others",       match: r => !["batter", "all-rounder", "bowler"].includes(r) },
   ];
 
+  // Fetches SHAP for a card the first time it's expanded; subsequent
+  // toggles reuse the cached result instead of re-hitting the model.
+  const handleExplainToggle = (rec: Recommendation) => {
+    const next = expandedId === rec.player_name ? null : rec.player_name;
+    setExpandedId(next);
+    if (next && !shapById[rec.player_id]) {
+      setShapById(prev => ({ ...prev, [rec.player_id]: "loading" }));
+      api.explainPlayer(rec.player_id, { opponent, venue, format, gender })
+        .then(res => setShapById(prev => ({ ...prev, [rec.player_id]: res })))
+        .catch(() => setShapById(prev => ({ ...prev, [rec.player_id]: "error" })));
+    }
+  };
+
   const renderCard = (rec: Recommendation, i: number) => {
     const color = colorFor(rec.player_name);
     const relative = rec.score / topScore;
@@ -252,7 +345,7 @@ export function RecommendationsPage() {
             <div className="text-[10px] text-muted-foreground capitalize">{rec.role}</div>
           </div>
           <RadialGauge value={rec.score} decimals={1} size={44} strokeWidth={3.5} color={gaugeColor} />
-          <button onClick={() => setExpandedId(expandedId === rec.player_name ? null : rec.player_name)} className="text-[11px] text-muted-foreground hover:text-foreground flex items-center gap-0.5 px-2">
+          <button onClick={() => handleExplainToggle(rec)} className="text-[11px] text-muted-foreground hover:text-foreground flex items-center gap-0.5 px-2">
             Explain <ChevronDown size={10} className={`transition-transform ${expandedId === rec.player_name ? "rotate-180" : ""}`} />
           </button>
           <SelectionControl state={selections[rec.player_id] || "undecided"} onChange={s => setSelections(prev => ({ ...prev, [rec.player_id]: s }))} />
@@ -270,6 +363,7 @@ export function RecommendationsPage() {
                     </li>
                   ))}
                 </ul>
+                <ShapSection result={shapById[rec.player_id]} />
               </div>
             </motion.div>
           )}
@@ -392,10 +486,10 @@ export function RecommendationsPage() {
             )}
             {!oppXiComplete && (
               <p className="mt-3 text-[11px] text-muted-foreground">
-                Without a full XI named, the engine predicts their likely XI and counters that instead.
+                Name all {XI_SIZE} opposition players (or use Auto-pick above) to enable Generate Recommendation.
               </p>
             )}
-            <button onClick={handleGenerate} disabled={loading}
+            <button onClick={handleGenerate} disabled={loading || !oppXiComplete}
               className="w-full mt-3 py-2.5 bg-[#AAFF57] text-[#0D0D06] font-semibold text-sm rounded-lg hover:opacity-90 active:scale-[0.98] transition-all flex items-center justify-center gap-2 disabled:opacity-60">
               {loading ? <><RefreshCw size={14} className="animate-spin" /> Analysing…</> : <><Zap size={14} /> Generate Recommendation</>}
             </button>
@@ -426,6 +520,18 @@ export function RecommendationsPage() {
                 </p>
               </div>
             </div>
+            {/* Bench strength — same average, over whoever's marked Reserve
+                instead of the AI's XI. Only shown once there's a bench to
+                measure; otherwise it's a 0 gauge with nothing behind it. */}
+            {benchPlayers.length > 0 && (
+              <div className="flex items-center gap-4">
+                <RadialGauge value={benchStrength} decimals={1} size={64} strokeWidth={5} color="#60A5FA" label="Score" />
+                <div className="min-w-0">
+                  <h3 className="font-display text-sm font-semibold text-foreground">Bench Strength</h3>
+                  <p className="text-[11px] text-muted-foreground mt-0.5">Avg score of the {benchPlayers.length} player{benchPlayers.length === 1 ? "" : "s"} marked Reserve</p>
+                </div>
+              </div>
+            )}
             <div className="flex flex-col sm:flex-row gap-2 w-full lg:w-auto lg:ml-auto">
               <button onClick={resetToAiXi}
                 className="py-2 px-4 border border-[#AAFF57]/40 text-[#AAFF57] text-[12px] rounded-lg hover:bg-[#AAFF57]/10 active:scale-[0.98] transition-all flex items-center justify-center gap-1.5 whitespace-nowrap">

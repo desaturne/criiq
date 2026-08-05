@@ -93,6 +93,14 @@ def analyze_xi(team: str, opponent: str, player_ids: list[str], venue: str | Non
     return run_cli(args)
 
 
+# One player at a time (the "explain" subcommand), so a coach expanding one card's SHAP doesn't cost the whole pool.
+def explain_player(player_id: str, opponent: str, venue: str | None = None,
+                   fmt: str = DEFAULT_FORMAT, gender: str = DEFAULT_GENDER) -> dict:
+    args = ["explain", "--player-id", player_id, "--opponent", opponent, "--format", normalize_format(fmt),
+            "--gender", gender, "--shap", *_opt("--venue", venue)]
+    return run_cli(args)
+
+
 def simulate(team1: str, team2: str, team1_player_ids: list[str], team2_player_ids: list[str], toss_winner: str,
              n_simulations: int = 20, venue: str | None = None, force_dismissal: str | None = None,
              fmt: str = DEFAULT_FORMAT, gender: str = DEFAULT_GENDER) -> dict:

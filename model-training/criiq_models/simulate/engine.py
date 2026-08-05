@@ -106,30 +106,32 @@ def select_bowler(bowler_pool: list, bowler_balls: dict, last_over_bowler: str |
     # only prefer a phase specialist when there's real spare capacity left,
     # recomputed every over. a static pool-size check isn't safe since slack
     # can be unevenly spent already or the pool can contain duplicates.
+    # A minimal legal pool (5 bowlers for 20 overs) has zero slack from over 1, so this is the common case, not an edge case.
     overs_remaining = max_overs - over_idx if over_idx is not None else None
     total_remaining_capacity = sum(
         max(0, max_overs_per_bowler * BALLS_PER_OVER - bowler_balls.get(b, 0)) for b in set(bowler_pool))
     has_slack = (overs_remaining is not None
                  and total_remaining_capacity > overs_remaining * BALLS_PER_OVER)
-    if bowler_profiles is not None and has_slack:
+
+    def _tier(b, phase):
+        profile = bowler_profiles.get(b) if bowler_profiles else None
+        ranks = profile.phase_rank if profile is not None else None
+        rank_here = ranks.get(phase) if ranks else None
+        if ranks and rank_here is not None and rank_here == min(ranks.values()):
+            tier = 0                      # proven best for this phase, use them now
+        elif not ranks:
+            tier = 1                      # no phase signal, safe neutral filler
+        else:
+            tier = 2                      # specialist in a different phase, hold them back if possible
+        return tier, rank_here if rank_here is not None else float("inf")
+
+    if bowler_profiles is not None:
         phase = _phase(over_idx)
-
-        def _key(b):
-            profile = bowler_profiles.get(b)
-            ranks = profile.phase_rank if profile is not None else None
-            rank_here = ranks.get(phase) if ranks else None
-            if ranks and rank_here is not None and rank_here == min(ranks.values()):
-                # proven best for this phase, use them now
-                tier = 0
-            elif not ranks:
-                # no phase signal, safe neutral option
-                tier = 1
-            else:
-                # specialist in a different phase, hold them back if possible
-                tier = 2
-            return (tier, rank_here if rank_here is not None else float("inf"), bowler_balls.get(b, 0))
-
-        eligible.sort(key=_key)
+        if has_slack:
+            eligible.sort(key=lambda b: (*_tier(b, phase), bowler_balls.get(b, 0)))
+        else:
+            # no spare capacity: overs-bowled comes first for legality, tier only breaks ties between equally-rested bowlers.
+            eligible.sort(key=lambda b: (bowler_balls.get(b, 0), *_tier(b, phase)))
         return eligible[0]
 
     eligible.sort(key=lambda b: bowler_balls.get(b, 0))

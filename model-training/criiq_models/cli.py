@@ -189,7 +189,7 @@ def cmd_recommend(args):
     if not ok:
         conn.close()
         return
-    scorer = RecommendationScorer(conn, args.format, args.gender)
+    scorer = RecommendationScorer(conn, args.format, args.gender, team=args.team)
     scored = scorer.score_many(pool_ids, args.opponent, venue_id, opponent_players=opponent_players)
     result = select_xi(scored)
 
@@ -372,7 +372,7 @@ def cmd_analyze_xi(args):
     else:
         player_ids = [x.strip() for x in args.player_ids.split(",")]
 
-    scorer = RecommendationScorer(conn, args.format, args.gender)
+    scorer = RecommendationScorer(conn, args.format, args.gender, team=args.team)
     scored = scorer.score_many(pool_ids, args.opponent, venue_id)
     analysis = analyze_xi(scored, player_ids)
 

@@ -67,6 +67,25 @@ export const getPlayerVsOpponent = (id: string, opponent: string) =>
   apiFetch(`/players/${encodeURIComponent(id)}/vs/${encodeURIComponent(opponent)}`);
 export const comparePlayers = (ids: string[]) => apiFetch(`/players/compare${qs({ ids: ids.join(",") })}`);
 
+// Per-feature SHAP breakdown for one player's predicted win-probability-added,
+// for the "Explain" expander on RecommendationsPage. A separate call per
+// player (not folded into /recommendations) so a coach expanding one card
+// doesn't pay for computing SHAP across the whole ~20-player pool.
+export interface ShapContribution { feature: string; value: number; }
+export interface ShapTargetExplanation {
+  base_value?: number; predicted_value?: number;
+  contributions?: Record<string, number>; top_contributions?: ShapContribution[];
+  error?: string;
+}
+export interface ShapExplainResult {
+  player_id: string; name: string; score: number; summary: string[];
+  // Either a per-target breakdown (e.g. "batting_wpa"/"bowling_wpa"), or a
+  // top-level {error} when the model wasn't applied to this player at all.
+  shap: Record<string, ShapTargetExplanation> | { error: string };
+}
+export const explainPlayer = (playerId: string, params: { opponent: string; venue?: string; format?: string; gender?: string }) =>
+  apiFetch(`/players/${encodeURIComponent(playerId)}/explain${qs(params)}`) as Promise<ShapExplainResult>;
+
 export const addPlayer = (body: {
   name: string; role: string; country?: string | null;
   batting_hand?: string | null; bowling_style?: string | null; status?: string;

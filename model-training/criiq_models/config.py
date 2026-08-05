@@ -46,6 +46,13 @@ class Settings:
     # range the rest of the composite score uses.
     wpa_scale: float = 450.0
 
+    # opponent_strength_part (score.py): recent opponent win-rate signal; _weak applies below 50%, _strong at/above.
+    opponent_form_matches: int = 20
+    opponent_strength_cap_weak: float = 30.0
+    opponent_strength_scale_weak: float = 1.2
+    opponent_strength_cap_strong: float = 20.0
+    opponent_strength_scale_strong: float = 0.4
+
     # strike-rate soft penalty (score.py's strike_rate_part). a batting-capable
     # player below the gender-relative par strike rate gets a penalty, scaled
     # down by a game-awareness factor so experienced players keep most of

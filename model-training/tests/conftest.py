@@ -12,7 +12,7 @@ import pytest
 SCHEMA = """
 CREATE TABLE matches (
     match_id TEXT PRIMARY KEY, format TEXT, gender TEXT, date TEXT,
-    team1 TEXT, team2 TEXT, venue_id TEXT, team_type TEXT
+    team1 TEXT, team2 TEXT, venue_id TEXT, team_type TEXT, winner TEXT
 );
 CREATE TABLE match_players (
     match_id TEXT, team TEXT, player_name TEXT
@@ -117,10 +117,10 @@ def set_final_role(conn: sqlite3.Connection, player_id: str, primary_role: str,
 
 def add_match(conn: sqlite3.Connection, match_id: str, date: str, team1: str, team2: str,
               venue_id: str = "test-ground", gender: str = "female",
-              team_type: str = "international") -> None:
+              team_type: str = "international", winner: str | None = None) -> None:
     conn.execute("INSERT INTO matches(match_id, format, gender, date, team1, team2, venue_id, "
-                 "team_type) VALUES(?,'T20',?,?,?,?,?,?)",
-                 (match_id, gender, date, team1, team2, venue_id, team_type))
+                 "team_type, winner) VALUES(?,'T20',?,?,?,?,?,?,?)",
+                 (match_id, gender, date, team1, team2, venue_id, team_type, winner))
 
 
 def add_appearance(conn: sqlite3.Connection, match_id: str, team: str, name: str) -> None:

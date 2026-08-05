@@ -39,10 +39,12 @@ _FALLBACK_DISMISSAL_RATE_PRIOR = 0.05
 
 class RecommendationScorer:
     def __init__(self, conn: sqlite3.Connection, fmt: str = SETTINGS.format,
-                 gender: str = SETTINGS.gender, models: dict | None = None):
+                 gender: str = SETTINGS.gender, models: dict | None = None, team: str | None = None):
         self.conn = conn
         self.fmt = fmt
         self.gender = gender
+        # the team being scored FOR, if known -- lets _opponent_strength_part use head-to-head, not generic strength.
+        self.team = team
         # load_models/load_metadata are scoped by (fmt, gender), so pass these
         # through or a scorer could silently load the wrong gender's model.
         self.models = models if models is not None else load_models(fmt, gender)
@@ -51,12 +53,46 @@ class RecommendationScorer:
         # keyed by opponent since it doesn't depend on the player, so
         # score_many doesn't recompute it per player.
         self._opponent_roster_cache: dict[str, list[str]] = {}
+        self._opponent_strength_cache: dict[str, float] = {}
 
     def _opponent_roster(self, opponent: str) -> list[str]:
         if opponent not in self._opponent_roster_cache:
             self._opponent_roster_cache[opponent] = team_pool(
                 self.conn, opponent, self.fmt, self.gender)
         return self._opponent_roster_cache[opponent]
+
+    def _recent_win_pct(self, team: str, opponent: str | None) -> tuple[float, int]:
+        """team's recent win rate, generally (opponent=None) or head-to-head; returns (win_pct, sample_size)."""
+        if opponent is None:
+            where, params = "(team1=? OR team2=?)", (team, team)
+        else:
+            where, params = "((team1=? AND team2=?) OR (team1=? AND team2=?))", (team, opponent, opponent, team)
+        rows = self.conn.execute(
+            f"SELECT winner FROM matches WHERE format=? AND gender=? AND team_type='international' "
+            f"AND winner IS NOT NULL AND {where} ORDER BY date DESC LIMIT ?",
+            (self.fmt, self.gender, *params, SETTINGS.opponent_form_matches)).fetchall()
+        if not rows:
+            return 0.0, 0
+        return 100.0 * sum(1 for r in rows if r["winner"] == team) / len(rows), len(rows)
+
+    def _opponent_strength_part(self, opponent: str) -> float:
+        """bonus/penalty for facing this opponent, head-to-head when self.team is known else generic strength."""
+        if opponent not in self._opponent_strength_cache:
+            opponent_win_pct_generic, _ = self._recent_win_pct(opponent, None)
+            if self.team:
+                team_win_pct_h2h, h2h_n = self._recent_win_pct(self.team, opponent)
+                opponent_win_pct_h2h = 100.0 - team_win_pct_h2h
+                opponent_win_pct = shrink(opponent_win_pct_h2h, h2h_n, opponent_win_pct_generic,
+                                           prior_strength=SETTINGS.shrinkage_prior_matches)
+            else:
+                opponent_win_pct = opponent_win_pct_generic
+            # below 50%: opponent weaker than us, steeper slope; at/above: stronger, gentler slope.
+            cap, scale = ((SETTINGS.opponent_strength_cap_weak, SETTINGS.opponent_strength_scale_weak)
+                          if opponent_win_pct < 50.0 else
+                          (SETTINGS.opponent_strength_cap_strong, SETTINGS.opponent_strength_scale_strong))
+            part = max(-cap, min(cap, (50.0 - opponent_win_pct) * scale))
+            self._opponent_strength_cache[opponent] = round(part, 1)
+        return self._opponent_strength_cache[opponent]
 
     def _compute_priors(self) -> dict:
         scope_ids = player_current_teams(self.conn, self.fmt, self.gender)["player_id"]
@@ -248,14 +284,18 @@ class RecommendationScorer:
         risk_part = round(risk_part, 1)
 
         strike_rate_part, awareness = self._strike_rate_penalty(feats, ctx, bucket)
+        opponent_strength_part = self._opponent_strength_part(opponent)
 
+        # not floored here: this ranks/selects players against each other, so a per-player floor would flatten a tough matchup and break selection -- any floor belongs on the squad-average, applied by the caller.
         total = round(max(0.0, min(100.0, model_part + matchup_part + phase_fit_part
-                                    + standing_part + risk_part + strike_rate_part)), 1)
+                                    + standing_part + risk_part + strike_rate_part
+                                    + opponent_strength_part)), 1)
 
         components = {
             "model_part": model_part, "matchup_part": matchup_part,
             "phase_fit_part": phase_fit_part, "standing_part": standing_part,
             "risk_part": risk_part, "strike_rate_part": strike_rate_part,
+            "opponent_strength_part": opponent_strength_part,
             # only set by score_many (pool-wide, not per-player), since a
             # lone score() call has no pool to compare against.
             "team_need_part": 0.0, "team_need_phase": None,

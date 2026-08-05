@@ -12,6 +12,7 @@ import json
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+import model_bridge
 import roster_index
 from auth import require_user
 from database import app_db, criiq_db
@@ -396,6 +397,19 @@ def player_vs_opponent(player_id: str, opponent: str):
     if not row:
         raise HTTPException(404, f"No record vs {opponent} for that player")
     return {"data": row_to_dict(row), "error": None}
+
+
+# --------------------------------------------------------------------------
+# 6b. GET /players/{id}/explain — per-feature SHAP breakdown for one matchup
+# --------------------------------------------------------------------------
+@router.get("/players/{player_id}/explain")
+def player_explain(player_id: str, opponent: str, venue: str | None = None,
+                   format: str = "T20", gender: str = "female"):
+    try:
+        result = model_bridge.explain_player(player_id, opponent, venue=venue, fmt=format, gender=gender)
+    except model_bridge.ModelBridgeError as exc:
+        raise HTTPException(422, str(exc))
+    return {"data": result, "error": None}
 
 
 # --------------------------------------------------------------------------

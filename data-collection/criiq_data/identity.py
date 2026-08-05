@@ -95,8 +95,8 @@ def _slug(text: str) -> str:
 
 
 def _derived_roles(conn) -> dict[tuple[str, str | None], str]:
-    """(identifier, gender) -> role. gender-scoped so the rare identifier
-    reused across two different people doesn't blend their roles together.
+    """(identifier, gender) -> role, from ball counts in each player's most recent `impact_recent_matches`, not career totals.
+    gender-scoped so the rare identifier reused across two different people doesn't blend their roles together.
     """
     idmap = pd.read_sql_query(
         "SELECT im.player_name, im.identifier, m.gender FROM identifier_map im "
@@ -105,20 +105,33 @@ def _derived_roles(conn) -> dict[tuple[str, str | None], str]:
     if idmap.empty:
         return {}
 
+    # per-match, not lifetime, so recency can be scoped per player below.
     bat = pd.read_sql_query(
-        "SELECT d.striker AS player_name, m.gender, COUNT(*) AS balls_faced "
+        "SELECT d.match_id, d.striker AS player_name, m.gender, m.date, COUNT(*) AS balls_faced "
         "FROM deliveries d JOIN matches m ON m.match_id = d.match_id "
-        "WHERE d.wides=0 GROUP BY d.striker, m.gender", conn)
+        "WHERE d.wides=0 GROUP BY d.match_id, d.striker, m.gender, m.date", conn)
     bowl = pd.read_sql_query(
-        "SELECT d.bowler AS player_name, m.gender, COUNT(*) AS balls_bowled "
+        "SELECT d.match_id, d.bowler AS player_name, m.gender, m.date, COUNT(*) AS balls_bowled "
         "FROM deliveries d JOIN matches m ON m.match_id = d.match_id "
-        "WHERE d.wides=0 AND d.noballs=0 GROUP BY d.bowler, m.gender", conn)
+        "WHERE d.wides=0 AND d.noballs=0 GROUP BY d.match_id, d.bowler, m.gender, m.date", conn)
 
-    m = idmap.merge(bat, on=["player_name", "gender"], how="left") \
-             .merge(bowl, on=["player_name", "gender"], how="left")
-    m["balls_faced"] = m["balls_faced"].fillna(0)
-    m["balls_bowled"] = m["balls_bowled"].fillna(0)
-    agg = m.groupby(["identifier", "gender"])[["balls_faced", "balls_bowled"]].sum()
+    # recent N matches PLAYED (match_players), not N matches with a recorded ball -- a DNB still counts as recent.
+    appearances = pd.read_sql_query(
+        "SELECT mp.player_name, m.gender, mp.match_id, m.date "
+        "FROM match_players mp JOIN matches m ON m.match_id = mp.match_id", conn).drop_duplicates()
+    idapp = idmap.merge(appearances, on=["player_name", "gender"], how="inner")
+    recent_keys = (idapp.sort_values("date", ascending=False)
+                   .groupby(["identifier", "gender"]).head(SETTINGS.impact_recent_matches)
+                   [["identifier", "gender", "match_id"]].drop_duplicates())
+
+    bat_id = idmap.merge(bat, on=["player_name", "gender"], how="inner") \
+                  .merge(recent_keys, on=["identifier", "gender", "match_id"], how="inner")
+    bowl_id = idmap.merge(bowl, on=["player_name", "gender"], how="inner") \
+                   .merge(recent_keys, on=["identifier", "gender", "match_id"], how="inner")
+
+    agg_bat = bat_id.groupby(["identifier", "gender"])["balls_faced"].sum()
+    agg_bowl = bowl_id.groupby(["identifier", "gender"])["balls_bowled"].sum()
+    agg = pd.concat([agg_bat, agg_bowl], axis=1).fillna(0)
 
     roles = {}
     for (ident, gender), row in agg.iterrows():
