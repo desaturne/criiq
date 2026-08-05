@@ -106,29 +106,32 @@ export function SquadStrengthModal({ team, opponent, venue, format, gender, squa
                   {target.battingTarget && (
                     <p className="text-[11px] text-foreground bg-[#AAFF57]/10 border border-[#AAFF57]/20 rounded-lg px-3 py-2 leading-relaxed">
                       <TrendingUp size={11} className="inline mr-1 text-[#AAFF57]" />
-                      With the bat, target <strong>{target.battingTarget.name}</strong> — {target.battingTarget.ourPlayer} has struck at{" "}
-                      <strong>{target.battingTarget.strikeRate}</strong> SR off them ({target.battingTarget.balls} balls faced).
+                      With the bat, target <strong>{target.battingTarget.name}</strong> — <strong>{target.battingTarget.count}</strong>{" "}
+                      of your batters ({target.battingTarget.players.join(", ")}) have struck at{" "}
+                      <strong>{(100 * target.battingTarget.runs / target.battingTarget.balls).toFixed(1)}</strong> combined SR off them ({target.battingTarget.balls} balls faced).
                     </p>
                   )}
                   {target.bowlingTarget && (
                     <p className="text-[11px] text-foreground bg-[#AAFF57]/10 border border-[#AAFF57]/20 rounded-lg px-3 py-2 leading-relaxed">
                       <TrendingUp size={11} className="inline mr-1 text-[#AAFF57]" />
-                      With the ball, target <strong>{target.bowlingTarget.name}</strong> — {target.bowlingTarget.ourPlayer} has dismissed them{" "}
-                      <strong>{target.bowlingTarget.dismissals}</strong> time{target.bowlingTarget.dismissals === 1 ? "" : "s"} in {target.bowlingTarget.balls} balls.
+                      With the ball, target <strong>{target.bowlingTarget.name}</strong> — <strong>{target.bowlingTarget.count}</strong>{" "}
+                      of your bowlers ({target.bowlingTarget.players.join(", ")}) have dismissed them{" "}
+                      <strong>{target.bowlingTarget.dismissals}</strong> time{target.bowlingTarget.dismissals === 1 ? "" : "s"} combined in {target.bowlingTarget.balls} balls.
                     </p>
                   )}
                   {target.bogey && (
                     <p className="text-[11px] text-foreground bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2 leading-relaxed">
                       <AlertTriangle size={11} className="inline mr-1 text-amber-400" />
-                      Watch out for <strong>{target.bogey.name}</strong> — dismissed {target.bogey.ourPlayer}{" "}
-                      <strong>{target.bogey.dismissals}</strong> time{target.bogey.dismissals === 1 ? "" : "s"} in {target.bogey.balls} balls.
+                      Watch out for <strong>{target.bogey.name}</strong> — has dismissed <strong>{target.bogey.count}</strong>{" "}
+                      of your batters ({target.bogey.players.join(", ")}), <strong>{target.bogey.dismissals}</strong> time{target.bogey.dismissals === 1 ? "" : "s"} in {target.bogey.balls} balls.
                     </p>
                   )}
                   {target.danger && (
                     <p className="text-[11px] text-foreground bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2 leading-relaxed">
                       <AlertTriangle size={11} className="inline mr-1 text-amber-400" />
-                      <strong>{target.danger.name}</strong> counters {target.danger.ourPlayer} well — economy{" "}
-                      <strong>{target.danger.economy}</strong> in {target.danger.balls} balls.
+                      <strong>{target.danger.name}</strong> counters <strong>{target.danger.count}</strong> of your bowlers{" "}
+                      ({target.danger.players.join(", ")}) well — combined economy{" "}
+                      <strong>{(6 * target.danger.runs / target.danger.balls).toFixed(2)}</strong> in {target.danger.balls} balls.
                     </p>
                   )}
                 </div>
@@ -208,36 +211,53 @@ function BattingOrderSection({ result }: { result: Awaited<ReturnType<typeof api
   );
 }
 
-// Picks the single strongest signal in each direction across the whole XI.
+interface TargetGroup { name: string; count: number; players: string[]; balls: number; runs: number; dismissals: number; }
+
+// Groups matchups by opposition player faced, tallying how many of our XI back it up.
+function _group(entries: (api.HeadToHeadBattingMatchup | api.HeadToHeadBowlingMatchup)[], ourPlayer: string,
+                groups: Map<string, TargetGroup>, filter: (m: { dismissals: number }) => boolean = () => true) {
+  for (const m of entries.filter(filter)) {
+    const g = groups.get(m.opponent) ?? { name: m.opponent, count: 0, players: [], balls: 0, runs: 0, dismissals: 0 };
+    if (!g.players.includes(ourPlayer)) { g.count++; g.players.push(ourPlayer); }
+    g.balls += m.balls; g.runs += m.runs ?? 0; g.dismissals += m.dismissals;
+    groups.set(m.opponent, g);
+  }
+}
+
+// 6 overs floor for a combined rate to count as signal rather than small-sample noise.
+const MIN_AGGREGATE_BALLS = 36;
+
+function _top(groups: Map<string, TargetGroup>, rank: (g: TargetGroup) => number, minBalls = 0) {
+  const pool = [...groups.values()];
+  const qualifying = pool.filter(g => g.balls >= minBalls);
+  return (qualifying.length ? qualifying : pool).sort((a, b) => rank(b) - rank(a))[0];
+}
+
 function buildTargetSummary(h2h: api.HeadToHeadTeam | null, ourNames: string[]) {
-  const battingTargets: { name: string; strikeRate: number; balls: number; ourPlayer: string }[] = [];
-  const bogeys: { name: string; dismissals: number; balls: number; ourPlayer: string }[] = [];
-  const bowlingTargets: { name: string; dismissals: number; balls: number; ourPlayer: string }[] = [];
-  const dangers: { name: string; economy: number; balls: number; ourPlayer: string }[] = [];
+  const battingTargets = new Map<string, TargetGroup>();
+  const bogeys = new Map<string, TargetGroup>();
+  const bowlingTargets = new Map<string, TargetGroup>();
+  const dangers = new Map<string, TargetGroup>();
 
   if (h2h) {
     for (const ourPlayer of ourNames) {
       const bat = h2h.batting[ourPlayer];
-      if (bat?.best?.strike_rate != null) {
-        battingTargets.push({ name: bat.best.opponent, strikeRate: bat.best.strike_rate, balls: bat.best.balls, ourPlayer });
-      }
-      if (bat?.bogey && bat.bogey.dismissals > 0) {
-        bogeys.push({ name: bat.bogey.opponent, dismissals: bat.bogey.dismissals, balls: bat.bogey.balls, ourPlayer });
+      if (bat) {
+        _group(bat.matchups, ourPlayer, battingTargets);
+        _group(bat.matchups, ourPlayer, bogeys, m => m.dismissals > 0);
       }
       const bowl = h2h.bowling[ourPlayer];
-      if (bowl?.best && bowl.best.dismissals > 0) {
-        bowlingTargets.push({ name: bowl.best.opponent, dismissals: bowl.best.dismissals, balls: bowl.best.balls, ourPlayer });
-      }
-      if (bowl?.most_expensive?.economy != null) {
-        dangers.push({ name: bowl.most_expensive.opponent, economy: bowl.most_expensive.economy, balls: bowl.most_expensive.balls, ourPlayer });
+      if (bowl) {
+        _group(bowl.matchups, ourPlayer, bowlingTargets, m => m.dismissals > 0);
+        _group(bowl.matchups, ourPlayer, dangers);
       }
     }
   }
 
   return {
-    battingTarget: battingTargets.sort((a, b) => b.strikeRate - a.strikeRate)[0],
-    bogey: bogeys.sort((a, b) => b.dismissals - a.dismissals)[0],
-    bowlingTarget: bowlingTargets.sort((a, b) => b.dismissals - a.dismissals)[0],
-    danger: dangers.sort((a, b) => b.economy - a.economy)[0],
+    battingTarget: _top(battingTargets, g => 100 * g.runs / g.balls, MIN_AGGREGATE_BALLS),
+    bogey: _top(bogeys, g => g.dismissals),
+    bowlingTarget: _top(bowlingTargets, g => g.dismissals),
+    danger: _top(dangers, g => 6 * g.runs / g.balls, MIN_AGGREGATE_BALLS),
   };
 }
