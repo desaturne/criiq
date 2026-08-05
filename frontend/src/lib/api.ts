@@ -110,11 +110,23 @@ export const getSelection = (matchId: string) =>
 export const saveSelection = (matchId: string, body: { xi: string[]; extra: string[]; excluded: string[] }) =>
   apiFetch(`/selection/${encodeURIComponent(matchId)}`, { method: "PUT", body: JSON.stringify(body) });
 
-export const recommendations = (body: { opponent: string; venue?: string; format?: string; team?: string; gender?: string; auto_opponent_xi?: boolean }) =>
+// `opponent_player_ids` is the coach's own pick of the opposition XI: our XI
+// is then chosen to counter exactly those players (real player-vs-player
+// matchup data). Must be exactly 11 ids or the backend rejects it. When given,
+// `auto_opponent_xi` is ignored -- there is nothing left to predict.
+export interface HeadToHeadEntry {
+  matchups: { opponent: string; balls: number; runs?: number; dismissals: number; dismissal_rate: number; strike_rate?: number; economy?: number }[];
+}
+export const recommendations = (body: {
+  opponent: string; venue?: string; format?: string; team?: string; gender?: string;
+  auto_opponent_xi?: boolean; opponent_player_ids?: string[];
+}) =>
   apiFetch("/recommendations", { method: "POST", body: JSON.stringify(body) }) as Promise<{
     match_context: any;
     recommendations: { rank: number; player_id: string; player_name: string; role: string; score: number; reasons: string[]; in_xi: boolean }[];
     opponent_xi: { player_id: string; player_name: string; role: string; score: number }[] | null;
+    head_to_head: { batting: Record<string, HeadToHeadEntry>; bowling: Record<string, HeadToHeadEntry> } | null;
+    countered_opponent_xi: boolean;
   }>;
 
 export const winProb = (params: { innings?: number; balls_remaining?: number; wickets?: number; runs_required?: number; gender?: string } = {}) =>

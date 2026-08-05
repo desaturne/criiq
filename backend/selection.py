@@ -19,6 +19,10 @@ from database import app_db
 
 router = APIRouter(tags=["selection"], dependencies=[Depends(require_user)])
 
+# mirrors criiq_models' SETTINGS.xi_size; a named opposition XI must be a
+# full XI, not a partial list.
+SETTINGS_XI_SIZE = 11
+
 
 # --------------------------------------------------------------------------
 # 15. GET + PUT /selection/{match_id} — the Playing XI panel
@@ -79,14 +83,31 @@ class RecommendationBody(BaseModel):
     # matches simulation.py's so both AI route groups agree.
     format: str = "T20"
     auto_opponent_xi: bool = False   # also recommend the opponent's probable XI, and use it to activate player-vs-player head-to-head matchups
+    # The opposition XI to pick against, named by the coach. When given, our
+    # XI is chosen to counter exactly these players (real player-vs-player
+    # matchup data) and auto_opponent_xi is ignored -- there is nothing left
+    # to predict. player_ids, never names: a display name can be ambiguous.
+    opponent_player_ids: list[str] | None = None
 
 
 @router.post("/recommendations")
 def recommendations(body: RecommendationBody):
+    if body.opponent_player_ids is not None:
+        ids = [pid for pid in body.opponent_player_ids if pid]
+        if len(ids) != SETTINGS_XI_SIZE:
+            raise HTTPException(
+                400, f"opponent_player_ids must name exactly {SETTINGS_XI_SIZE} players "
+                     f"(got {len(ids)}) — an XI is picked against a full opposition XI")
+        if len(set(ids)) != len(ids):
+            raise HTTPException(400, "opponent_player_ids lists the same player twice")
+
     result = ai_stub.get_recommendations(body.model_dump())
     return {"data": {"match_context": body.model_dump(),
                      "recommendations": result["recommendations"],
-                     "opponent_xi": result.get("opponent_xi")}, "error": None}
+                     "opponent_xi": result.get("opponent_xi"),
+                     "head_to_head": result.get("head_to_head"),
+                     "countered_opponent_xi": result.get("countered_opponent_xi", False)},
+            "error": None}
 
 
 # --------------------------------------------------------------------------

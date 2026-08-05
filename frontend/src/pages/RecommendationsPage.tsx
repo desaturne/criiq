@@ -53,15 +53,28 @@ export function RecommendationsPage() {
   const [ranked, setRanked] = useState<Recommendation[]>([]);
   const [opponentXi, setOpponentXi] = useState<{ player_id: string; player_name: string; role: string; score: number }[] | null>(null);
   const [showOpponentXi, setShowOpponentXi] = useState(false);
+  // The opposition XI the coach names. Our XI is picked to counter exactly
+  // these players, so it is an input to the engine, not an output of it.
+  const [oppRoster, setOppRoster] = useState<{ id: string; name: string; role: string }[]>([]);
+  const [oppRosterLoading, setOppRosterLoading] = useState(false);
+  const [oppXiIds, setOppXiIds] = useState<string[]>([]);
+  const [autoPicking, setAutoPicking] = useState(false);
+  const [counteredXi, setCounteredXi] = useState(false);
+  const XI_SIZE = 11;
+  const oppXiComplete = oppXiIds.length === XI_SIZE;
   const selectedCount = Object.values(selections).filter(s => s === "select").length;
   // Snapshot of whichever params actually produced `ranked` -- compared
   // against the live dropdowns below so changing Team/Opponent/Venue/Format
   // after generating shows an explicit "stale, regenerate" notice instead of
   // silently leaving old results on screen with no indication they're outdated.
-  const [generatedParams, setGeneratedParams] = useState<{ team: string; opponent: string; venue: string; format: string; gender: string } | null>(null);
+  const [generatedParams, setGeneratedParams] = useState<{ team: string; opponent: string; venue: string; format: string; gender: string; opponentXiKey: string } | null>(null);
+  // Editing the opposition XI after generating invalidates the result just as
+  // much as changing the venue does -- the XI is a model input, not a filter.
+  const liveOpponentXiKey = oppXiIds.length === XI_SIZE ? [...oppXiIds].sort().join(",") : "";
   const stale = generated && generatedParams !== null &&
     (generatedParams.team !== team || generatedParams.opponent !== opponent ||
-     generatedParams.venue !== venue || generatedParams.format !== format || generatedParams.gender !== gender);
+     generatedParams.venue !== venue || generatedParams.format !== format ||
+     generatedParams.gender !== gender || generatedParams.opponentXiKey !== liveOpponentXiKey);
   const squadStrength = useMemo(() => {
     const xi = ranked.filter(r => r.in_xi);
     return xi.length ? xi.reduce((s, r) => s + r.score, 0) / xi.length : 0;
@@ -73,14 +86,61 @@ export function RecommendationsPage() {
     if (user?.country) setTeam(user.country);
   }, [user?.country]);
 
+  // The opposition's selectable roster, to pick their XI from. Reloads on
+  // opponent/gender change, and clears the previous XI -- those ids belong to
+  // a different squad and must not silently carry over.
+  useEffect(() => {
+    let cancelled = false;
+    setOppRosterLoading(true);
+    setOppXiIds([]);
+    api.listPlayers({ country: opponent, gender, limit: 100 })
+      .then(res => {
+        if (cancelled) return;
+        setOppRoster(res.players.map((p: any) => ({ id: p.id, name: p.name, role: p.role })));
+      })
+      .catch(() => { if (!cancelled) setOppRoster([]); })
+      .finally(() => { if (!cancelled) setOppRosterLoading(false); });
+    return () => { cancelled = true; };
+  }, [opponent, gender]);
+
+  const toggleOppPlayer = (id: string) => setOppXiIds(prev =>
+    prev.includes(id) ? prev.filter(x => x !== id)
+      : prev.length < XI_SIZE ? [...prev, id] : prev
+  );
+
+  // Fills the opposition XI with the engine's own prediction of who they'll
+  // field, as a starting point the coach can then edit.
+  const handleAutoPickOpponent = async () => {
+    setAutoPicking(true);
+    setError(null);
+    try {
+      const res = await api.recommendations({ team: opponent, opponent: team, venue, format, gender });
+      const ids = res.recommendations.filter(r => r.in_xi).map(r => r.player_id);
+      const known = new Set(oppRoster.map(p => p.id));
+      setOppXiIds(ids.filter(id => known.has(id)).slice(0, XI_SIZE));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't auto-pick the opposition XI");
+    } finally {
+      setAutoPicking(false);
+    }
+  };
+
   const handleGenerate = async () => {
     setLoading(true);
     setError(null);
     try {
-      const recRes = await api.recommendations({ team, opponent, venue, format, gender, auto_opponent_xi: true });
+      const recRes = await api.recommendations({
+        team, opponent, venue, format, gender,
+        // A named XI is what the engine counters; only fall back to
+        // auto-predicting one when the coach hasn't named it.
+        ...(oppXiComplete
+          ? { opponent_player_ids: oppXiIds }
+          : { auto_opponent_xi: true }),
+      });
       setRanked(recRes.recommendations);
       setOpponentXi(recRes.opponent_xi);
-      setGeneratedParams({ team, opponent, venue, format, gender });
+      setCounteredXi(recRes.countered_opponent_xi);
+      setGeneratedParams({ team, opponent, venue, format, gender, opponentXiKey: oppXiComplete ? [...oppXiIds].sort().join(",") : "" });
       setGenerated(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't generate recommendations");
@@ -110,8 +170,16 @@ export function RecommendationsPage() {
     setError(null);
     try {
       const team1PlayerIds = ranked.filter(r => r.in_xi).map(r => r.player_id);
-      const oppRes = await api.recommendations({ team: opponent, opponent: team, venue, format, gender });
-      const team2PlayerIds = oppRes.recommendations.filter(r => r.in_xi).map(r => r.player_id);
+      // If the coach named the opposition XI, simulate against that exact XI
+      // -- re-predicting one here would simulate a different match than the
+      // one the recommendation was built for.
+      let team2PlayerIds: string[];
+      if (oppXiComplete) {
+        team2PlayerIds = oppXiIds;
+      } else {
+        const oppRes = await api.recommendations({ team: opponent, opponent: team, venue, format, gender });
+        team2PlayerIds = oppRes.recommendations.filter(r => r.in_xi).map(r => r.player_id);
+      }
       const prefill: SimulatorPrefill = { team1: team, team2: opponent, team1PlayerIds, team2PlayerIds, gender };
       navigate("/simulator", { state: prefill });
     } catch (err) {
@@ -217,9 +285,11 @@ export function RecommendationsPage() {
         <p className="text-sm text-muted-foreground mt-0.5">Data-driven team selection engine</p>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-        {/* Input panel */}
-        <div className="space-y-4">
+      <div className="space-y-5">
+        {/* Setup row: match parameters and the opposition XI side by side, so
+            both inputs are visible at once while the coach sets the matchup
+            up. The ranked output runs full-width underneath. */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 items-start">
           <div className="bg-card border border-border rounded-xl p-5">
             <div className="flex items-center justify-between mb-4">
               <h3 className="font-display text-base font-semibold text-foreground">Match Parameters</h3>
@@ -246,10 +316,14 @@ export function RecommendationsPage() {
               ].map(field => (
                 <div key={field.label} className="space-y-1">
                   <label className="text-[12px] text-muted-foreground">{field.label}</label>
-                  {field.label === "Team" && teamLocked ? (
+                  {/* A field with nothing to choose between renders as a plain
+                      value, not a <select>: the native dropdown arrow promises
+                      alternatives that don't exist (Format only supports T20I,
+                      and a signed-in coach's team is fixed to their country). */}
+                  {(field.label === "Team" && teamLocked) || field.opts.length <= 1 ? (
                     <button type="button" disabled
                       className="w-full text-sm bg-secondary border border-border rounded-lg px-3 py-2 text-foreground text-left cursor-default">
-                      {team}
+                      {field.value}
                     </button>
                   ) : (
                     <select value={field.value} onChange={e => field.set(e.target.value)}
@@ -260,11 +334,66 @@ export function RecommendationsPage() {
                 </div>
               ))}
             </div>
+          </div>
+
+          {/* Opposition XI — the coach names the 11 they're up against, and
+              our XI is picked to counter exactly those players (real
+              player-vs-player matchup data, not just team-level averages). */}
+          <div className="bg-card border border-border rounded-xl p-5">
+            <div className="flex items-center justify-between mb-1">
+              <h3 className="font-display text-base font-semibold text-foreground">Opposition XI</h3>
+              <span className={`text-[11px] px-2 py-0.5 rounded-full font-medium ${oppXiComplete ? "bg-[#AAFF57]/15 text-[#AAFF57]" : "bg-secondary text-muted-foreground"}`}>
+                {oppXiIds.length}/{XI_SIZE}
+              </span>
+            </div>
+            <p className="text-[12px] text-muted-foreground mb-3">
+              Pick the {XI_SIZE} {opponent} players you expect to face. Your XI is then chosen to counter them directly.
+            </p>
+
+            <button onClick={handleAutoPickOpponent} disabled={autoPicking || oppRosterLoading || !oppRoster.length}
+              className="w-full mb-3 py-2 border border-border text-[12px] font-medium rounded-lg text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-all flex items-center justify-center gap-1.5 disabled:opacity-50">
+              {autoPicking
+                ? <><RefreshCw size={12} className="animate-spin" /> Predicting…</>
+                : <><Sparkles size={12} /> Auto-pick their likely XI</>}
+            </button>
+
+            {oppRosterLoading ? (
+              <div className="py-6 text-center text-[12px] text-muted-foreground">Loading {opponent} squad…</div>
+            ) : !oppRoster.length ? (
+              <div className="py-6 text-center text-[12px] text-muted-foreground">No selectable {opponent} players found.</div>
+            ) : (
+              <div className="max-h-64 overflow-auto -mx-1 px-1 space-y-1">
+                {oppRoster.map(p => {
+                  const picked = oppXiIds.includes(p.id);
+                  const full = !picked && oppXiIds.length >= XI_SIZE;
+                  return (
+                    <button key={p.id} onClick={() => toggleOppPlayer(p.id)} disabled={full}
+                      className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-left transition-colors border ${
+                        picked ? "bg-[#AAFF57]/10 border-[#AAFF57]/30" : "border-transparent hover:bg-secondary"
+                      } ${full ? "opacity-40 cursor-not-allowed" : ""}`}>
+                      <span className={`w-3.5 h-3.5 rounded flex-shrink-0 flex items-center justify-center border ${
+                        picked ? "bg-[#AAFF57] border-[#AAFF57]" : "border-border"
+                      }`}>
+                        {picked && <CheckCircle2 size={10} className="text-[#0D0D06]" />}
+                      </span>
+                      <span className="text-[12px] text-foreground truncate flex-1">{p.name}</span>
+                      <span className="text-[10px] text-muted-foreground flex-shrink-0">{p.role}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
             {stale && (
               <div className="mt-3 flex items-start gap-2 text-[12px] text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2">
                 <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" />
-                <span>Match parameters changed since these results were generated — click Generate Recommendation to refresh.</span>
+                <span>Match parameters or the opposition XI changed since these results were generated — click Generate Recommendation to refresh.</span>
               </div>
+            )}
+            {!oppXiComplete && (
+              <p className="mt-3 text-[11px] text-muted-foreground">
+                Without a full XI named, the engine predicts their likely XI and counters that instead.
+              </p>
             )}
             <button onClick={handleGenerate} disabled={loading}
               className="w-full mt-3 py-2.5 bg-[#AAFF57] text-[#0D0D06] font-semibold text-sm rounded-lg hover:opacity-90 active:scale-[0.98] transition-all flex items-center justify-center gap-2 disabled:opacity-60">
@@ -272,51 +401,56 @@ export function RecommendationsPage() {
             </button>
           </div>
 
-          {/* Squad strength — real average score of the AI's constrained XI
-              within this pool (genuinely varies with team/opponent/venue,
-              unlike a pre-match "win probability": criiq_models' win-prob
-              model is a pure ball-by-ball game-state lookup with no team
-              identity input at all, so it can't answer "who's favoured"
-              before any XI exists — that only becomes a real number once two
-              full XIs are simulated on the Simulator page). */}
-          {generated && (
-            <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="bg-card border border-border rounded-xl p-5">
-              <h3 className="font-display text-base font-semibold text-foreground mb-1">Squad Strength</h3>
-              <p className="text-[11px] text-muted-foreground mb-4">Avg score of the AI's {ranked.filter(r => r.in_xi).length}-player XI, this matchup</p>
-              <div className="flex justify-center mb-4">
-                <RadialGauge value={squadStrength} decimals={1} size={100} strokeWidth={7} color="#AAFF57" label="Score" />
-              </div>
-              <div className="space-y-2 text-[12px] mb-4">
-                <p className="text-muted-foreground text-center">
+        </div>
+
+        {/* Squad strength — real average score of the AI's constrained XI
+            within this pool (genuinely varies with team/opponent/venue,
+            unlike a pre-match "win probability": criiq_models' win-prob
+            model is a pure ball-by-ball game-state lookup with no team
+            identity input at all, so it can't answer "who's favoured"
+            before any XI exists — that only becomes a real number once two
+            full XIs are simulated on the Simulator page). Laid out as a
+            full-width strip between the setup row and the ranked output. */}
+        {generated && (
+          <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}
+            className="bg-card border border-border rounded-xl p-5 flex flex-col lg:flex-row lg:items-center gap-5">
+            <div className="flex items-center gap-4">
+              <RadialGauge value={squadStrength} decimals={1} size={84} strokeWidth={6} color="#AAFF57" label="Score" />
+              <div className="min-w-0">
+                <h3 className="font-display text-base font-semibold text-foreground">Squad Strength</h3>
+                <p className="text-[11px] text-muted-foreground mt-0.5">Avg score of the AI's {ranked.filter(r => r.in_xi).length}-player XI, this matchup</p>
+                <p className="text-[12px] text-muted-foreground mt-1.5">
                   {selectedCount === 0
                     ? "Tap Select on players below to build your own XI"
                     : `${selectedCount}/11 selected${selectedCount > 11 ? " — remove " + (selectedCount - 11) : ""}`}
                 </p>
               </div>
+            </div>
+            <div className="flex flex-col sm:flex-row gap-2 w-full lg:w-auto lg:ml-auto">
               <button onClick={resetToAiXi}
-                className="w-full mb-2 py-2 border border-[#AAFF57]/40 text-[#AAFF57] text-[12px] rounded-lg hover:bg-[#AAFF57]/10 active:scale-[0.98] transition-all flex items-center justify-center gap-1.5">
+                className="py-2 px-4 border border-[#AAFF57]/40 text-[#AAFF57] text-[12px] rounded-lg hover:bg-[#AAFF57]/10 active:scale-[0.98] transition-all flex items-center justify-center gap-1.5 whitespace-nowrap">
                 <Sparkles size={13} /> Reset to AI's recommended XI
               </button>
               {selectedCount > 0 && (
                 <button onClick={handleConfirm} disabled={confirming || selectedCount > 11}
-                  className="w-full mb-2 py-2.5 bg-[#5FA800] text-white font-semibold text-[13px] rounded-lg hover:opacity-90 active:scale-[0.98] transition-all flex items-center justify-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed">
+                  className="py-2.5 px-4 bg-[#5FA800] text-white font-semibold text-[13px] rounded-lg hover:opacity-90 active:scale-[0.98] transition-all flex items-center justify-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap">
                   {confirming
                     ? <><RefreshCw size={14} className="animate-spin" /> Saving…</>
                     : <><CheckCircle2 size={14} /> Confirm Selection ({selectedCount}/11) → Squad</>}
                 </button>
               )}
               <button onClick={handleSimulateXI} disabled={simulating}
-                className="w-full py-2 border border-border text-foreground text-[12px] rounded-lg hover:border-[#AAFF57]/40 hover:text-[#AAFF57] transition-all flex items-center justify-center gap-1.5 disabled:opacity-60">
+                className="py-2 px-4 border border-border text-foreground text-[12px] rounded-lg hover:border-[#AAFF57]/40 hover:text-[#AAFF57] transition-all flex items-center justify-center gap-1.5 disabled:opacity-60 whitespace-nowrap">
                 {simulating
                   ? <><RefreshCw size={13} className="animate-spin" /> Preparing both XIs…</>
-                  : <><PlayCircle size={13} /> Simulate this XI — get a real win probability</>}
+                  : <><PlayCircle size={13} /> Simulate this XI</>}
               </button>
-            </motion.div>
-          )}
-        </div>
+            </div>
+          </motion.div>
+        )}
 
-        {/* Results */}
-        <div className="lg:col-span-2">
+        {/* Results — full width, below the setup row */}
+        <div>
           <AnimatePresence mode="wait">
             {!generated && !loading && !error && (
               <motion.div key="empty" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="h-64 flex flex-col items-center justify-center text-center bg-card border border-dashed border-border rounded-xl">
@@ -340,6 +474,21 @@ export function RecommendationsPage() {
                 <div className="flex items-center justify-between mb-3">
                   <p className="text-[13px] text-muted-foreground">Top {ranked.length} for <strong className="text-foreground">vs {opponent}</strong> at <strong className="text-foreground">{venue}</strong>, grouped by role — <span className="text-[#AAFF57]">green tag</span> marks the AI's constrained 11-player XI</p>
                   <span className="text-[12px] font-medium text-[#AAFF57]">{selectedCount}/11 selected</span>
+                </div>
+                {/* Makes it explicit whether this XI was actually countered
+                    against the named opposition (player-vs-player matchup
+                    data) or picked from form/team-level records alone. */}
+                <div className={`mb-3 flex items-start gap-2 text-[12px] rounded-lg px-3 py-2 border ${
+                  counteredXi
+                    ? "text-[#AAFF57] bg-[#AAFF57]/10 border-[#AAFF57]/25"
+                    : "text-muted-foreground bg-secondary border-border"
+                }`}>
+                  {counteredXi ? <CheckCircle2 size={13} className="flex-shrink-0 mt-0.5" /> : <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" />}
+                  <span>
+                    {counteredXi
+                      ? <>Countered against the named {opponent} XI — picks use real player-vs-player matchup records.</>
+                      : <>No opposition XI was named, so this XI is based on form and team-level records only.</>}
+                  </span>
                 </div>
                 {opponentXi && (
                   <div className="bg-card border border-border rounded-xl overflow-hidden mb-3">
@@ -376,7 +525,13 @@ export function RecommendationsPage() {
                         <div className="flex-1 h-px bg-border" />
                         {inXi > 0 && <span className="text-[10px] text-[#AAFF57]">{inXi} in XI</span>}
                       </div>
-                      {members.map((rec, i) => renderCard(rec, i))}
+                      {/* Two columns from xl up: the output is full-width now
+                          that the inputs sit above it, and a single column of
+                          these cards stretches badly on a wide screen. Each
+                          card expands independently, so a grid is safe. */}
+                      <div className="grid grid-cols-1 xl:grid-cols-2 gap-2 items-start">
+                        {members.map((rec, i) => renderCard(rec, i))}
+                      </div>
                     </div>
                   );
                 })}

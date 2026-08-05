@@ -27,10 +27,16 @@ def _fallback_recommendations(match_context: dict) -> list[dict]:
 
 
 def get_recommendations(match_context: dict) -> dict:
-    """Returns the model's full ranked pool (~20 players), each tagged in_xi,
-    plus (when `auto_opponent_xi` is set) the opponent's own probable XI, used
-    to activate real player-vs-player head-to-head matchup data instead of
-    only team-level aggregates.
+    """Returns the model's full ranked pool (~20 players), each tagged in_xi.
+
+    The opposition XI our side is picked against comes from one of two places:
+      * `opponent_player_ids` -- the coach named the opposition XI themselves.
+        Used verbatim, and no auto-pick model run is spent.
+      * `auto_opponent_xi` -- no named XI, so predict the opponent's probable
+        XI first and counter that instead.
+    Either way the ids activate real player-vs-player head-to-head matchup
+    data in the scorer rather than only team-level aggregates, which is what
+    makes "our XI, chosen against *this* XI" different from a generic pick.
     """
     team = match_context.get("team") or "India"
     opponent = match_context.get("opponent", "the opposition")
@@ -42,9 +48,14 @@ def get_recommendations(match_context: dict) -> dict:
     fmt = match_context.get("format") or model_bridge.DEFAULT_FORMAT
     venue = match_context.get("venue")
     auto_opponent_xi = bool(match_context.get("auto_opponent_xi"))
+    chosen_opponent_ids = [pid for pid in (match_context.get("opponent_player_ids") or []) if pid]
 
     opponent_xi_out, opponent_player_ids = None, None
-    if auto_opponent_xi:
+    if chosen_opponent_ids:
+        # The coach named the opposition XI. Take it as given -- picking a
+        # different XI here would silently answer a question they didn't ask.
+        opponent_player_ids = chosen_opponent_ids
+    elif auto_opponent_xi:
         try:
             opp = model_bridge.recommend(team=opponent, opponent=team, venue=venue, fmt=fmt, gender=gender)
             opponent_player_ids = [p["player_id"] for p in opp["xi"]]
@@ -58,7 +69,8 @@ def get_recommendations(match_context: dict) -> dict:
                                          opponent_player_ids=opponent_player_ids)
     except model_bridge.ModelBridgeError as exc:
         log.warning("recommend engine unavailable (%s) -- serving stub data", exc)
-        return {"recommendations": _fallback_recommendations(match_context), "opponent_xi": None}
+        return {"recommendations": _fallback_recommendations(match_context),
+                "opponent_xi": None, "head_to_head": None, "countered_opponent_xi": False}
 
     def _reasons(p: dict) -> list[str]:
         reasoning = p.get("reasoning") or []
@@ -71,7 +83,12 @@ def get_recommendations(match_context: dict) -> dict:
          "score": p["score"], "reasons": _reasons(p), "in_xi": p["player_id"] in xi_ids}
         for i, p in enumerate(result["pool"])
     ]
-    return {"recommendations": recs, "opponent_xi": opponent_xi_out}
+    return {"recommendations": recs, "opponent_xi": opponent_xi_out,
+            # per-player batting/bowling records against the named XI. Only
+            # populated when an opponent XI was supplied, so the UI can say
+            # whether a pick was actually matchup-driven or just form-driven.
+            "head_to_head": result.get("head_to_head"),
+            "countered_opponent_xi": bool(opponent_player_ids)}
 
 
 def _fallback_win_probability(state: dict) -> dict:
