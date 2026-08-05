@@ -42,6 +42,11 @@ function clamp01to100(n: number | null | undefined, fallback = 50): number {
   return Math.max(0, Math.min(100, Math.round(n)));
 }
 
+function normalizeWinPct(raw: number | null | undefined): number | null {
+  if (raw === null || raw === undefined || Number.isNaN(raw)) return null;
+  return raw <= 1 ? raw * 100 : raw;
+}
+
 /** GET /players list item -> Player. Leaner than the detail response (no
  * phase/vs-opponent breakdown — only /players/{id} and /players/{id}/vs/
  * {opponent} compute those), but career is the same real card_json.career
@@ -53,7 +58,7 @@ export function mapApiPlayerListItem(api: any): Player {
   const career = api.career || {};
   const bat = career.batting || {};
   const bowl = career.bowling || {};
-  return {
+  const player: Player = {
     id: String(api.id), name: api.name, role, archetype: role,
     battingHand: normalizeHand(api.batting_hand), bowlingStyle: api.bowling_style || "—",
     status: (api.status as PlayerStatus) || "UNKNOWN", team: api.country || "—",
@@ -74,6 +79,12 @@ export function mapApiPlayerListItem(api: any): Player {
     breakdown: { form: clamp01to100(api.form_score, 0), vsOpponent: 0, venueFit: 0, matchupAdvantage: 0 },
     position: api.position || "—", isKeeper: !!api.is_keeper,
   };
+
+  if (api.opponent_record) {
+    return applyVsOpponent(player, api.opponent_record, api.opponent_record.opponent || "opponent");
+  }
+
+  return player;
 }
 
 /** GET /players/{id} -> Player. Full card: identity, career, phase splits,
@@ -133,8 +144,9 @@ export function mapApiPlayerDetail(api: any): Player {
  * single "rating" column, so vsOpponent is derived from win_pct (falling
  * back to batting average against a generic 35-run benchmark). */
 export function applyVsOpponent(player: Player, api: any, opponent: string): Player {
-  const vsOpponent = api.win_pct != null
-    ? clamp01to100(api.win_pct * 100)
+  const normalizedWinPct = normalizeWinPct(api.win_pct);
+  const vsOpponent = normalizedWinPct != null
+    ? clamp01to100(normalizedWinPct)
     : api.bat_average != null
       ? clamp01to100((api.bat_average / 35) * 100)
       : player.vsOpponent;

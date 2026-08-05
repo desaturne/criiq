@@ -59,7 +59,7 @@ export const reviewCoachRegistration = (userId: number, status: "Active" | "Inac
   }) as Promise<{ id: number; status: string }>;
 
 // --- players -------------------------------------------------------------
-export const listPlayers = (params: { search?: string; role?: string; status?: string; country?: string; gender?: string; page?: number; limit?: number } = {}) =>
+export const listPlayers = (params: { search?: string; role?: string; status?: string; country?: string; gender?: string; opponent?: string; page?: number; limit?: number } = {}) =>
   apiFetch(`/players${qs(params)}`) as Promise<{ players: any[]; page: number; limit: number; total: number }>;
 
 export const getPlayer = (id: string) => apiFetch(`/players/${encodeURIComponent(id)}`);

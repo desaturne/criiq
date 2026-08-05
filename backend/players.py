@@ -80,7 +80,7 @@ def rfi_percentile(rfi: float | None) -> float | None:
 # --------------------------------------------------------------------------
 @router.get("/players")
 def list_players(search: str = "", role: str = "", status: str = "", country: str = "", gender: str = "",
-                 page: int = 1, limit: int = 20):
+                 opponent: str = "", page: int = 1, limit: int = 20):
     limit = max(1, min(limit, 100))
     page = max(1, page)
 
@@ -157,6 +157,7 @@ def list_players(search: str = "", role: str = "", status: str = "", country: st
 
     if not page_ids:
         rows = []
+        opponent_rows = []
     else:
         placeholders = ",".join("?" * len(page_ids))
         rows = criiq_db.execute(
@@ -173,9 +174,22 @@ def list_players(search: str = "", role: str = "", status: str = "", country: st
                 WHERE p.player_id IN ({placeholders})""",
             page_ids,
         ).fetchall()
+        opponent_rows = []
+        if opponent:
+            opponent_rows = criiq_db.execute(
+                f"""SELECT player_id, opponent, matches, won, win_pct, bat_average, bat_strike_rate,
+                           wickets, economy, dismissals
+                    FROM player_vs_opponent
+                    WHERE player_id IN ({placeholders}) AND LOWER(opponent) = LOWER(?)""",
+                [*page_ids, opponent],
+            ).fetchall()
         # player_id IN (...) doesn't preserve the ranked order from `candidates` -- restore it.
         order = {pid: i for i, pid in enumerate(page_ids)}
         rows = sorted(rows, key=lambda r: order[r["player_id"]])
+        opponent_map = {row["player_id"]: row_to_dict(row) for row in opponent_rows}
+
+    if not page_ids:
+        opponent_map = {}
 
     players = []
     for row in rows:
@@ -202,6 +216,7 @@ def list_players(search: str = "", role: str = "", status: str = "", country: st
             # itself uses to order a team sheet (opener/middle/tail/keeper),
             # not a guess -- see position_label()'s docstring.
             "position": position_label(row["primary_role"], bool(row["is_keeper"]), row["batting_position_median"]),
+            "opponent_record": opponent_map.get(row["player_id"]),
         })
 
     # Manually added players (from the Add Player form) appear on page 1.

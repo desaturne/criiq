@@ -13,7 +13,7 @@ export function PlayerCard({ player, index, opposition, selection = "undecided",
   player: Player; index: number; opposition: string;
   selection?: SelectionState; onSelect?: (s: SelectionState) => void;
   comparing: boolean; onToggleCompare: () => void;
-  onViewProfile?: () => void;
+  onViewProfile?: (opposition: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
 
@@ -42,7 +42,7 @@ export function PlayerCard({ player, index, opposition, selection = "undecided",
             <div>
               <h3 className="text-[14px] font-semibold text-foreground leading-tight truncate">
                 {onViewProfile ? (
-                  <button onClick={onViewProfile} className="cursor-pointer hover:text-accent transition-colors text-left">{player.name}</button>
+                  <button onClick={() => onViewProfile(opposition)} className="cursor-pointer hover:text-accent transition-colors text-left">{player.name}</button>
                 ) : player.name}
               </h3>
               <p className="text-[11px] text-muted-foreground mt-0.5">{player.archetype}</p>

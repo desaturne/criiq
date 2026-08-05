@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { motion } from "motion/react";
-import { useNavigate, useParams } from "react-router";
+import { useNavigate, useParams, useSearchParams } from "react-router";
 import { ChevronLeft, Star } from "lucide-react";
 import { PhaseBar } from "../components/common/PhaseBar";
 import { RadialGauge } from "../components/common/RadialGauge";
@@ -12,12 +12,16 @@ import { Player } from "../types/index";
 export function PlayerProfilePage() {
   const { id: playerId } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const selectedOpponent = searchParams.get("opposition")?.trim() || "";
   const [player, setPlayer] = useState<Player | null>(null);
   // Real per-opponent record (player_vs_opponent) and full advanced profile
   // (player_advanced.profile_json) — kept outside the shared Player type
   // since they're specific to this page, not needed anywhere else the type
   // is used.
   const [opponents, setOpponents] = useState<any[]>([]);
+  const [matchupOpponent, setMatchupOpponent] = useState<string | null>(null);
+  const [matchupRecord, setMatchupRecord] = useState<any | null>(null);
   const [advanced, setAdvanced] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
@@ -34,17 +38,26 @@ export function PlayerProfilePage() {
         setPlayer(mapped);
         setOpponents(detail.opponents || []);
         setAdvanced(detail.advanced || null);
-        const firstOpponent = detail.opponents?.[0]?.opponent;
-        if (firstOpponent) {
-          api.getPlayerVsOpponent(playerId, firstOpponent)
-            .then(vs => { if (!cancelled) setPlayer(p => p && applyVsOpponent(p, vs, firstOpponent)); })
-            .catch(() => { /* no head-to-head record vs this opponent — keep the default */ });
+        const activeOpponent = selectedOpponent || detail.opponents?.[0]?.opponent;
+        setMatchupOpponent(activeOpponent || null);
+        setMatchupRecord(null);
+        if (activeOpponent) {
+          api.getPlayerVsOpponent(playerId, activeOpponent)
+            .then(vs => {
+              if (!cancelled) {
+                setMatchupRecord(vs);
+                setPlayer(p => p && applyVsOpponent(p, vs, activeOpponent));
+              }
+            })
+            .catch(() => {
+              if (!cancelled) setMatchupRecord(null);
+            });
         }
       })
       .catch(() => { if (!cancelled) setNotFound(true); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [playerId]);
+  }, [playerId, selectedOpponent]);
 
   if (loading) {
     return <div className="p-5 max-w-screen-xl mx-auto py-16 text-center text-sm text-muted-foreground">Loading player…</div>;
@@ -83,9 +96,15 @@ export function PlayerProfilePage() {
           <div className="bg-amber-500/5 border border-amber-500/20 rounded-xl p-4">
             <div className="flex items-center gap-2 mb-2">
               <Star size={13} className="text-amber-400" />
-              <span className="text-[11px] font-medium text-amber-400 uppercase tracking-wider">Scouting Note</span>
+              <span className="text-[11px] font-medium text-amber-400 uppercase tracking-wider">
+                Scouting Note{matchupOpponent ? ` vs ${matchupOpponent}` : ""}
+              </span>
             </div>
-            <p className="text-[13px] text-foreground leading-relaxed">{player.vsInsight}</p>
+            <p className="text-[13px] text-foreground leading-relaxed">
+              {matchupOpponent && !matchupRecord
+                ? `No opposition record on file vs ${matchupOpponent} yet.`
+                : player.vsInsight}
+            </p>
           </div>
         </div>
 
@@ -125,12 +144,33 @@ export function PlayerProfilePage() {
 
           {/* vs opponent — real player_vs_opponent records, win% as the gauge value */}
           <div className="bg-card border border-border rounded-xl p-5">
-            <h3 className="font-display text-base font-semibold text-foreground mb-4">Opposition Record</h3>
+            <h3 className="font-display text-base font-semibold text-foreground mb-4">
+              Opposition Record{matchupOpponent ? ` vs ${matchupOpponent}` : ""}
+            </h3>
+            {matchupOpponent && matchupRecord ? (
+              <div className="mb-4 flex flex-col gap-2 rounded-lg border border-border bg-secondary/30 p-4 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <div className="text-sm font-medium text-foreground">{matchupOpponent}</div>
+                  <div className="text-[12px] text-muted-foreground">
+                    {matchupRecord.matches} matches
+                    {player.isBatsman ? ` · avg ${matchupRecord.bat_average ?? "—"} · SR ${matchupRecord.bat_strike_rate ?? "—"}` : ` · ${matchupRecord.wickets ?? 0} wickets · econ ${matchupRecord.economy ?? "—"}`}
+                  </div>
+                </div>
+                <div className="text-sm font-medium text-foreground">{Math.round(matchupRecord.win_pct ?? 0)}% win rate</div>
+              </div>
+            ) : null}
             {opponents.length === 0 ? (
               <p className="text-[12px] text-muted-foreground">No opposition record on file for this player yet.</p>
             ) : (
               <div className="flex flex-wrap gap-6">
-                {opponents.map(o => (
+                {[...opponents]
+                  .sort((a, b) => {
+                    if (!matchupOpponent) return 0;
+                    if (a.opponent === matchupOpponent) return -1;
+                    if (b.opponent === matchupOpponent) return 1;
+                    return 0;
+                  })
+                  .map(o => (
                   <div key={o.opponent} className="flex flex-col items-center gap-2">
                     <RadialGauge value={Math.round(o.win_pct ?? 0)} size={64} strokeWidth={4} color={player.color} label={`${Math.round(o.win_pct ?? 0)}%`} />
                     <span className="text-[11px] text-muted-foreground">{o.opponent}</span>
