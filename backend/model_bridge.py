@@ -128,7 +128,7 @@ def optimize_bowling(bowling_team: str, batting_team: str, bowling_player_ids: l
                       fmt: str = DEFAULT_FORMAT, gender: str = DEFAULT_GENDER) -> dict:
     args = ["optimize-bowling", "--bowling-team", bowling_team, "--batting-team", batting_team,
             "--bowling-player-ids", ",".join(bowling_player_ids), "--batting-player-ids", ",".join(batting_player_ids),
-            "--format", normalize_format(fmt), "--gender", gender, "--json",
+            "--format", normalize_format(fmt), "--gender", gender, "--json", "--explain",
             "--pop-size", str(pop_size), "--generations", str(generations),
             *_opt("--venue", venue)]
     return run_cli(args, timeout=300)
@@ -140,7 +140,7 @@ def optimize_batting(batting_team: str, bowling_team: str, batting_player_ids: l
                       fmt: str = DEFAULT_FORMAT, gender: str = DEFAULT_GENDER) -> dict:
     args = ["optimize-batting", "--batting-team", batting_team, "--bowling-team", bowling_team,
             "--batting-player-ids", ",".join(batting_player_ids), "--bowling-player-ids", ",".join(bowling_player_ids),
-            "--format", normalize_format(fmt), "--gender", gender, "--json",
+            "--format", normalize_format(fmt), "--gender", gender, "--json", "--explain",
             "--pop-size", str(pop_size), "--generations", str(generations),
             *_opt("--target", target), *_opt("--venue", venue)]
     return run_cli(args, timeout=300)

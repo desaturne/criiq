@@ -5,6 +5,7 @@ import { useNavigate } from "react-router";
 import { Zap, ChevronDown, RefreshCw, CheckCircle2, AlertTriangle, PlayCircle, Sparkles } from "lucide-react";
 import { RadialGauge } from "../components/common/RadialGauge";
 import { SelectionControl } from "../components/common/SelectionControl";
+import { SquadStrengthModal } from "../components/squad/SquadStrengthModal";
 import * as api from "../lib/api";
 import { colorFor, initialsFor } from "../lib/mappers";
 import { SimulatorPrefill } from "./SimulationPage";
@@ -120,6 +121,9 @@ export function RecommendationsPage() {
   const [ranked, setRanked] = useState<Recommendation[]>([]);
   const [opponentXi, setOpponentXi] = useState<{ player_id: string; player_name: string; role: string; score: number }[] | null>(null);
   const [showOpponentXi, setShowOpponentXi] = useState(false);
+  // Feeds the "who to target" summary in the Squad Strength modal below.
+  const [headToHead, setHeadToHead] = useState<api.HeadToHeadTeam | null>(null);
+  const [showSquadAnalysis, setShowSquadAnalysis] = useState(false);
   // The opposition XI the coach names. Our XI is picked to counter exactly
   // these players, so it is an input to the engine, not an output of it.
   const [oppRoster, setOppRoster] = useState<{ id: string; name: string; role: string }[]>([]);
@@ -230,6 +234,7 @@ export function RecommendationsPage() {
       // generation starts from the AI's own pick for THIS matchup instead.
       applyAiXiToSelections(recRes.recommendations);
       setOpponentXi(recRes.opponent_xi);
+      setHeadToHead(recRes.head_to_head);
       setCounteredXi(recRes.countered_opponent_xi);
       setGeneratedParams({ team, opponent, venue, format, gender, opponentXiKey: oppXiComplete ? [...oppXiIds].sort().join(",") : "" });
       setGenerated(true);
@@ -508,10 +513,15 @@ export function RecommendationsPage() {
         {generated && (
           <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}
             className="bg-card border border-border rounded-xl p-5 flex flex-col lg:flex-row lg:items-center gap-5">
-            <div className="flex items-center gap-4">
+            {/* Opens win rate / who-to-target / batting order analysis for the AI's XI. */}
+            <button onClick={() => setShowSquadAnalysis(true)} disabled={!oppXiComplete}
+              className="flex items-center gap-4 text-left rounded-xl -m-1.5 p-1.5 transition-colors hover:bg-secondary/50 disabled:hover:bg-transparent disabled:cursor-default group">
               <RadialGauge value={squadStrength} decimals={1} size={84} strokeWidth={6} color="#AAFF57" label="Score" />
               <div className="min-w-0">
-                <h3 className="font-display text-base font-semibold text-foreground">Squad Strength</h3>
+                <h3 className="font-display text-base font-semibold text-foreground flex items-center gap-1.5">
+                  Squad Strength
+                  {oppXiComplete && <span className="text-[10px] font-normal text-[#AAFF57] opacity-0 group-hover:opacity-100 transition-opacity">Tap to analyze →</span>}
+                </h3>
                 <p className="text-[11px] text-muted-foreground mt-0.5">Avg score of the AI's {ranked.filter(r => r.in_xi).length}-player XI, this matchup</p>
                 <p className="text-[12px] text-muted-foreground mt-1.5">
                   {selectedCount === 0
@@ -519,7 +529,7 @@ export function RecommendationsPage() {
                     : `${selectedCount}/11 selected${selectedCount > 11 ? " — remove " + (selectedCount - 11) : ""}`}
                 </p>
               </div>
-            </div>
+            </button>
             {/* Bench strength — same average, over whoever's marked Reserve
                 instead of the AI's XI. Only shown once there's a bench to
                 measure; otherwise it's a 0 gauge with nothing behind it. */}
@@ -646,6 +656,17 @@ export function RecommendationsPage() {
           </AnimatePresence>
         </div>
       </div>
+
+      {showSquadAnalysis && oppXiComplete && (
+        <SquadStrengthModal
+          team={team} opponent={opponent} venue={venue} format={format} gender={gender}
+          squadStrength={squadStrength} opponentPlayerIds={oppXiIds} headToHead={headToHead}
+          ourXi={ranked.filter(r => r.in_xi).map(r => ({
+            player_id: r.player_id, player_name: r.player_name, role: r.role, score: r.score, reasons: r.reasons,
+          }))}
+          onClose={() => setShowSquadAnalysis(false)}
+        />
+      )}
     </div>
   );
 }

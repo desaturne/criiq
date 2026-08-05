@@ -56,6 +56,50 @@ def _group_bounds(batting_groups: list) -> list:
     return bounds
 
 
+def _chase_strike_rate(profile) -> float | None:
+    if profile.chasing_strike_rate is not None:
+        return profile.chasing_strike_rate
+    return profile.strike_rate
+
+
+def _contingency_plan(batting_order: list, batting_groups: list, batter_profiles: dict) -> dict:
+    """Strike-rate-only heuristic: who to promote on an early collapse vs. a quick chase."""
+    bounds = _group_bounds(batting_groups)
+    promotable_start = bounds[0][1] + 1 if len(bounds) >= 2 else 0
+    promotable_end = bounds[-2][1] if len(bounds) >= 3 else len(batting_order) - 1
+    candidates = list(range(promotable_start, promotable_end + 1)) or list(range(len(batting_order)))
+
+    # Lowest base strike rate in the pool -- the most patient profile to rebuild with.
+    anchor_pos = min(candidates, key=lambda i: (batter_profiles[batting_order[i]].strike_rate
+                                                 if batter_profiles[batting_order[i]].strike_rate is not None
+                                                 else float("inf")))
+    anchor_id = batting_order[anchor_pos]
+    anchor_sr = batter_profiles[anchor_id].strike_rate
+
+    # Highest chasing strike rate in the pool -- the most direct accelerant available.
+    chase_pos = max(candidates, key=lambda i: (_chase_strike_rate(batter_profiles[batting_order[i]])
+                                                if _chase_strike_rate(batter_profiles[batting_order[i]]) is not None
+                                                else float("-inf")))
+    chase_id = batting_order[chase_pos]
+    chase_sr = _chase_strike_rate(batter_profiles[chase_id])
+
+    return {
+        "early_collapse": {
+            "player_id": anchor_id, "natural_position": anchor_pos + 1,
+            "strike_rate": None if anchor_sr is None else round(anchor_sr, 1),
+            "reason": "Lowest strike rate among the batters available to promote -- the most patient "
+                      "profile in this order, best suited to rebuild after early wickets rather than "
+                      "exposing a more attacking batter to a fresh, testing bowling spell.",
+        },
+        "quick_chase": {
+            "player_id": chase_id, "natural_position": chase_pos + 1,
+            "chasing_strike_rate": None if chase_sr is None else round(chase_sr, 1),
+            "reason": "Highest chasing strike rate among the batters available to promote -- send in "
+                      "ahead of schedule to accelerate the required run rate.",
+        },
+    }
+
+
 def explain_batting_order(batting_order: list, batting_groups: list, bowler_pool: list, outcome_model,
                            batter_profiles: dict, bowler_profiles: dict, target: int | None,
                            chosen_metric: float, metric_name: str, rng_seed: int | None = None,
@@ -100,6 +144,7 @@ def explain_batting_order(batting_order: list, batting_groups: list, bowler_pool
         "slots": slots,
         "adjacent_swaps": adjacent_swaps,
         "most_costly_adjacent_swap": most_costly_swap,
+        "contingency": _contingency_plan(batting_order, batting_groups, batter_profiles),
     }
 
 

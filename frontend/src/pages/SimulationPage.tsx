@@ -343,8 +343,43 @@ function OptimizeBowlingTab({ gender }: { gender: "female" | "male" }) {
                 </div>
               ))}
             </div>
+            <BowlingRotationReasoning result={result} />
           </motion.div>
         )}
+      </div>
+    </div>
+  );
+}
+
+// Renders the CLI's --explain payload: runs saved vs. a naive rotation, per-bowler phase fit.
+function BowlingRotationReasoning({ result }: { result: any }) {
+  const explanation = result.explanation;
+  if (!explanation) return null;
+  const nameById: Record<string, string> = Object.fromEntries(
+    (result.overs_per_bowler ?? []).map((b: any) => [b.player_id, b.name])
+  );
+  return (
+    <div className="mt-3 pt-3 border-t border-border/60 space-y-2">
+      <p className="text-[12px] text-muted-foreground font-medium">Why this rotation</p>
+      <p className="text-[11px] text-muted-foreground leading-relaxed">
+        Vs a naive even split across the pool (ignoring phase fit): expected{" "}
+        <strong className="text-foreground">{explanation.baseline_runs_conceded}</strong> runs conceded
+        (<strong className={explanation.improvement_over_baseline >= 0 ? "text-[#AAFF57]" : "text-red-400"}>
+          {explanation.improvement_over_baseline.toFixed(2)}
+        </strong> runs {explanation.improvement_over_baseline >= 0 ? "saved" : "cost"} by this rotation).
+      </p>
+      <div className="space-y-1.5">
+        {explanation.bowlers.map((b: any) => {
+          const phaseDesc = Object.entries(b.phase_overs).map(([phase, n]) => `${n} ${phase}`).join(", ");
+          const rankBits = Object.entries(b.phase_rank).map(([phase, info]: [string, any]) =>
+            `${phase} economy rank ${info.rank}${info.size ? ` of ${info.size}` : ""}`);
+          return (
+            <p key={b.player_id} className="text-[11px] text-muted-foreground leading-relaxed">
+              <span className="text-foreground font-medium">{nameById[b.player_id] ?? b.player_id}</span>: {b.overs} over(s) — {phaseDesc}
+              {rankBits.length > 0 && <span className="text-muted-foreground/80"> (career-wide, among everyone who's played for this team: {rankBits.join("; ")})</span>}
+            </p>
+          );
+        })}
       </div>
     </div>
   );
@@ -424,9 +459,75 @@ function OptimizeBattingTab({ gender }: { gender: "female" | "male" }) {
                 </div>
               ))}
             </div>
+            <BattingOrderReasoning result={result} />
           </motion.div>
         )}
       </div>
+    </div>
+  );
+}
+
+// Renders lineup_explain.py's --explain payload: baseline comparison, swap sensitivity, contingencies.
+function BattingOrderReasoning({ result }: { result: any }) {
+  const explanation = result.explanation;
+  if (!explanation) return null;
+  const nameById: Record<string, string> = Object.fromEntries(
+    (result.batting_order ?? []).map((b: any) => [b.player_id, b.name])
+  );
+  const name = (pid: string) => nameById[pid] ?? pid;
+  const metricLabel = result.metric_name === "win_probability" ? "win probability" : "expected score";
+  const swap = explanation.most_costly_adjacent_swap;
+  const { early_collapse, quick_chase } = explanation.contingency ?? {};
+
+  return (
+    <div className="mt-3 pt-3 border-t border-border/60 space-y-3">
+      <div>
+        <p className="text-[12px] text-muted-foreground font-medium mb-1">Why this order</p>
+        <p className="text-[11px] text-muted-foreground leading-relaxed">
+          Vs a naive strike-rate-sorted order ({explanation.baseline_description}): baseline {metricLabel}{" "}
+          <strong className="text-foreground">{explanation.baseline_metric}</strong>{" "}
+          (<strong className={explanation.improvement_over_baseline >= 0 ? "text-[#AAFF57]" : "text-red-400"}>
+            {explanation.improvement_over_baseline >= 0 ? "+" : ""}{explanation.improvement_over_baseline}
+          </strong> {metricLabel} {explanation.improvement_over_baseline >= 0 ? "gained" : "lost"} by this order).
+        </p>
+        {swap && (
+          <p className="text-[11px] text-muted-foreground leading-relaxed mt-1.5">
+            Most order-sensitive pair: swapping positions {swap.positions[0]} and {swap.positions[1]}{" "}
+            (<span className="text-foreground">{name(swap.player_ids[0])}</span> / <span className="text-foreground">{name(swap.player_ids[1])}</span>) would change {metricLabel} by{" "}
+            <strong className={swap.delta >= 0 ? "text-[#AAFF57]" : "text-red-400"}>{swap.delta >= 0 ? "+" : ""}{swap.delta}</strong>.
+          </p>
+        )}
+      </div>
+
+      {(early_collapse || quick_chase) && (
+        <div>
+          <p className="text-[12px] text-muted-foreground font-medium mb-1">In-match contingencies</p>
+          <div className="space-y-2">
+            {early_collapse && (
+              <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2">
+                <p className="text-[11px] font-semibold text-amber-400 mb-0.5">
+                  Early collapse — send in {name(early_collapse.player_id)}
+                </p>
+                <p className="text-[11px] text-muted-foreground leading-relaxed">
+                  Natural position {early_collapse.natural_position}
+                  {early_collapse.strike_rate != null && <> · strike rate {early_collapse.strike_rate}</>}. {early_collapse.reason}
+                </p>
+              </div>
+            )}
+            {quick_chase && (
+              <div className="bg-[#AAFF57]/10 border border-[#AAFF57]/25 rounded-lg px-3 py-2">
+                <p className="text-[11px] font-semibold text-[#AAFF57] mb-0.5">
+                  Quick run chase — promote {name(quick_chase.player_id)}
+                </p>
+                <p className="text-[11px] text-muted-foreground leading-relaxed">
+                  Natural position {quick_chase.natural_position}
+                  {quick_chase.chasing_strike_rate != null && <> · chasing strike rate {quick_chase.chasing_strike_rate}</>}. {quick_chase.reason}
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

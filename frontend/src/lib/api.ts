@@ -133,8 +133,28 @@ export const saveSelection = (matchId: string, body: { xi: string[]; extra: stri
 // is then chosen to counter exactly those players (real player-vs-player
 // matchup data). Must be exactly 11 ids or the backend rejects it. When given,
 // `auto_opponent_xi` is ignored -- there is nothing left to predict.
-export interface HeadToHeadEntry {
-  matchups: { opponent: string; balls: number; runs?: number; dismissals: number; dismissal_rate: number; strike_rate?: number; economy?: number }[];
+// Keyed by MY player's display name, not id (see matchup_matrix.py).
+export interface HeadToHeadBattingMatchup {
+  opponent: string; balls: number; runs?: number; dismissals: number;
+  dismissal_rate: number | null; strike_rate: number | null;
+}
+export interface HeadToHeadBowlingMatchup {
+  opponent: string; balls: number; runs?: number; dismissals: number;
+  wicket_rate: number | null; economy: number | null;
+}
+export interface HeadToHeadBattingEntry {
+  matchups: HeadToHeadBattingMatchup[];
+  bogey: HeadToHeadBattingMatchup | null;   // dismissed this batter most
+  best: HeadToHeadBattingMatchup | null;    // most runs scored off this bowler -- who to target
+}
+export interface HeadToHeadBowlingEntry {
+  matchups: HeadToHeadBowlingMatchup[];
+  best: HeadToHeadBowlingMatchup | null;            // most dismissals of this batter -- who to target
+  most_expensive: HeadToHeadBowlingMatchup | null;  // most runs conceded to this batter
+}
+export interface HeadToHeadTeam {
+  batting: Record<string, HeadToHeadBattingEntry>;
+  bowling: Record<string, HeadToHeadBowlingEntry>;
 }
 export const recommendations = (body: {
   opponent: string; venue?: string; format?: string; team?: string; gender?: string;
@@ -144,7 +164,7 @@ export const recommendations = (body: {
     match_context: any;
     recommendations: { rank: number; player_id: string; player_name: string; role: string; score: number; reasons: string[]; in_xi: boolean }[];
     opponent_xi: { player_id: string; player_name: string; role: string; score: number }[] | null;
-    head_to_head: { batting: Record<string, HeadToHeadEntry>; bowling: Record<string, HeadToHeadEntry> } | null;
+    head_to_head: HeadToHeadTeam | null;
     countered_opponent_xi: boolean;
   }>;
 
@@ -166,12 +186,49 @@ export const simulateMatch = (body: {
   n_simulations?: number; venue?: string; force_dismissal?: string; format?: string; gender?: string;
 }) => apiFetch("/simulate", { method: "POST", body: JSON.stringify(body) }) as Promise<any>;
 
+// Mirrors simulate/lineup_explain.py's explain_batting_order/explain_bowling_rotation.
+export interface BattingOrderContingencyPick {
+  player_id: string; natural_position: number; reason: string;
+  strike_rate?: number | null; chasing_strike_rate?: number | null;
+}
+export interface BattingOrderExplanation {
+  metric_name: string; chosen_metric: number; baseline_metric: number; baseline_description: string;
+  improvement_over_baseline: number;
+  slots: { position: number; player_id: string; strike_rate: number | null }[];
+  adjacent_swaps: { positions: [number, number]; player_ids: [string, string]; delta: number }[];
+  most_costly_adjacent_swap: { positions: [number, number]; player_ids: [string, string]; delta: number } | null;
+  contingency: { early_collapse: BattingOrderContingencyPick; quick_chase: BattingOrderContingencyPick };
+}
+export interface BowlingRotationExplanation {
+  expected_runs_conceded: number; baseline_runs_conceded: number; baseline_description: string;
+  improvement_over_baseline: number;
+  bowlers: { player_id: string; overs: number; phase_overs: Record<string, number>;
+             phase_rank: Record<string, { rank: number; size?: number }> }[];
+}
+
 export const optimizeBowling = (body: {
   bowling_team: string; batting_team: string; bowling_player_ids: string[]; batting_player_ids: string[];
   venue?: string; format?: string; gender?: string;
-}) => apiFetch("/optimize-bowling", { method: "POST", body: JSON.stringify(body) }) as Promise<any>;
+}) =>
+  apiFetch("/optimize-bowling", { method: "POST", body: JSON.stringify(body) }) as Promise<{
+    bowling_team: string; batting_team: string;
+    rotation: { over: number; player_id: string; name: string }[];
+    overs_per_bowler: { player_id: string; name: string; overs: number }[];
+    expected_runs_conceded: number;
+    primary_bowlers: { player_id: string; name: string }[];
+    fitness_history: number[] | null;
+    explanation: BowlingRotationExplanation | null;
+  }>;
 
 export const optimizeBatting = (body: {
   batting_team: string; bowling_team: string; batting_player_ids: string[]; bowling_player_ids: string[];
   target?: number; venue?: string; format?: string; gender?: string;
-}) => apiFetch("/optimize-batting", { method: "POST", body: JSON.stringify(body) }) as Promise<any>;
+}) =>
+  apiFetch("/optimize-batting", { method: "POST", body: JSON.stringify(body) }) as Promise<{
+    batting_team: string; bowling_team: string;
+    batting_order: { position: number; player_id: string; name: string }[];
+    metric_name: string; metric_value: number; target: number | null;
+    batting_groups: { label: string; player_ids: { player_id: string; name: string }[] }[] | null;
+    fitness_history: number[] | null;
+    explanation: BattingOrderExplanation | null;
+  }>;

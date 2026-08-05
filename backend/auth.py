@@ -25,9 +25,8 @@ from database import auth_db
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-# In development a default secret is fine; set JWT_SECRET in the environment
-# for anything shared or deployed.
-JWT_SECRET = os.environ.get("JWT_SECRET", "criiq-dev-secret-change-me")
+# Dev default only; set JWT_SECRET in the environment for anything deployed. Must be >= 32 bytes (HS256).
+JWT_SECRET = os.environ.get("JWT_SECRET", "criiq-local-dev-secret-change-me-before-deploying")
 TOKEN_HOURS = 12
 
 

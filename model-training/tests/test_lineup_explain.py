@@ -94,6 +94,44 @@ def test_explain_batting_order_with_target_uses_chasing_strike_rate():
     assert slot_map["b1"] == 90.0
 
 
+def test_explain_batting_order_contingency_never_promotes_an_opener_or_the_tail():
+    openers = BATTERS[:2]
+    top_middle = BATTERS[2:7]
+    tail = BATTERS[7:]
+    # openers highest, tail lowest -- a global min/max would wrongly pick them.
+    strike_rates = {**{b: 200.0 for b in openers}, **{b: 120.0 for b in top_middle}, **{b: 60.0 for b in tail}}
+    batter_profiles = _batter_profiles(strike_rates)
+    bowler_profiles = _bowler_profiles(BOWLERS5)
+
+    result = explain_batting_order(BATTERS, [openers, top_middle, tail], BOWLERS5, _model(),
+                                    batter_profiles, bowler_profiles, target=None, chosen_metric=100.0,
+                                    metric_name="expected_score", rng_seed=6, n_reps=4)
+
+    contingency = result["contingency"]
+    assert contingency["early_collapse"]["player_id"] in top_middle
+    assert contingency["quick_chase"]["player_id"] in top_middle
+
+
+def test_explain_batting_order_contingency_picks_lowest_and_highest_strike_rate():
+    batter_profiles = {
+        "b0": BatterProfile(strike_rate=150.0, chasing_strike_rate=100.0),
+        "b1": BatterProfile(strike_rate=90.0, chasing_strike_rate=180.0),
+        "b2": BatterProfile(strike_rate=120.0, chasing_strike_rate=130.0),
+    }
+    bowler_profiles = _bowler_profiles(BOWLERS5)
+
+    result = explain_batting_order(["b0", "b1", "b2"], [["b0", "b1", "b2"]], BOWLERS5, _model(),
+                                    batter_profiles, bowler_profiles, target=None, chosen_metric=100.0,
+                                    metric_name="expected_score", rng_seed=7, n_reps=4)
+
+    contingency = result["contingency"]
+    # b1 has the lowest base strike rate -- the anchor to send in after early wickets
+    assert contingency["early_collapse"]["player_id"] == "b1"
+    # b1 also has the highest chasing strike rate -- the accelerant for a quick chase
+    assert contingency["quick_chase"]["player_id"] == "b1"
+    assert contingency["quick_chase"]["chasing_strike_rate"] == 180.0
+
+
 def test_explain_bowling_rotation_reports_phase_overs_and_rank():
     rotation = (["w0", "w1", "w2", "w3", "w4"] * 4)[:20]
     overs_per_bowler = {b: rotation.count(b) for b in dict.fromkeys(rotation)}
