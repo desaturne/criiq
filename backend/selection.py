@@ -14,6 +14,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 import ai_stub  # calls the real model via model_bridge, falls back to stub data
+import model_bridge
+import players
 from auth import require_user
 from database import app_db
 
@@ -22,6 +24,13 @@ router = APIRouter(tags=["selection"], dependencies=[Depends(require_user)])
 # mirrors criiq_models' SETTINGS.xi_size; a named opposition XI must be a
 # full XI, not a partial list.
 SETTINGS_XI_SIZE = 11
+
+
+def _reject_retired(player_ids: list[str], fmt: str = model_bridge.DEFAULT_FORMAT) -> None:
+    retired = players.retired_names(player_ids, fmt)
+    if retired:
+        names = ", ".join(sorted(retired.values()))
+        raise HTTPException(422, f"Retired player(s) cannot be selected: {names}")
 
 
 # --------------------------------------------------------------------------
@@ -44,6 +53,17 @@ def get_selection(match_id: str):
         return {"data": {"match_id": match_id, "xi": [], "extra": [],
                          "excluded": [], "updated_at": None}, "error": None}
     squad = json.loads(row["squad_json"])
+    # Old rows can hold a since-retired player's id -- nothing else
+    # re-validates a saved selection, so strip and persist the cleanup here.
+    retired = players.retired_names(squad.get("xi", []) + squad.get("extra", []))
+    if retired:
+        squad["xi"] = [pid for pid in squad.get("xi", []) if pid not in retired]
+        squad["extra"] = [pid for pid in squad.get("extra", []) if pid not in retired]
+        app_db.execute(
+            "UPDATE selections SET squad_json = ? WHERE match_id = ?",
+            (json.dumps(squad), match_id),
+        )
+        app_db.commit()
     return {"data": {"match_id": match_id, **squad,
                      "updated_at": row["updated_at"]}, "error": None}
 
@@ -56,6 +76,9 @@ def save_selection(match_id: str, body: SelectionBody):
     everyone = body.xi + body.extra + body.excluded
     if len(everyone) != len(set(everyone)):
         raise HTTPException(400, "A player appears twice in the selection")
+    # excluded is where a coach puts players ruled out on purpose, retirees
+    # included -- only the actually-selectable lists need checking.
+    _reject_retired(body.xi + body.extra)
 
     squad_json = json.dumps(body.model_dump())
     app_db.execute(
@@ -100,6 +123,8 @@ def recommendations(body: RecommendationBody):
                      f"(got {len(ids)}) — an XI is picked against a full opposition XI")
         if len(set(ids)) != len(ids):
             raise HTTPException(400, "opponent_player_ids lists the same player twice")
+        # ai_stub.get_recommendations trusts these ids verbatim otherwise.
+        _reject_retired(ids, model_bridge.normalize_format(body.format))
 
     result = ai_stub.get_recommendations(body.model_dump())
     return {"data": {"match_context": body.model_dump(),

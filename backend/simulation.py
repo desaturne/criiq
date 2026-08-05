@@ -4,9 +4,19 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 import model_bridge
+import players
 from auth import require_user
 
 router = APIRouter(tags=["simulation"], dependencies=[Depends(require_user)])
+
+
+def _reject_retired(player_ids: list[str], fmt: str) -> None:
+    # These endpoints accept player_ids directly, so re-validate rather than
+    # trust that the caller only ever got them from the filtered /players list.
+    retired = players.retired_names(player_ids, fmt)
+    if retired:
+        names = ", ".join(sorted(retired.values()))
+        raise HTTPException(422, f"Retired player(s) cannot be selected: {names}")
 
 
 def _run(fn, /, *args, **kwargs) -> dict:
@@ -30,6 +40,7 @@ class AnalyzeXiBody(BaseModel):
 
 @router.post("/analyze-xi")
 def analyze_xi(body: AnalyzeXiBody):
+    _reject_retired(body.player_ids, model_bridge.normalize_format(body.format))
     result = _run(model_bridge.analyze_xi, team=body.team, opponent=body.opponent,
                   player_ids=body.player_ids, venue=body.venue, fmt=body.format, gender=body.gender)
     return {"data": result, "error": None}
@@ -55,6 +66,8 @@ class SimulateBody(BaseModel):
 def simulate(body: SimulateBody):
     if body.toss_winner not in (body.team1, body.team2):
         raise HTTPException(400, "toss_winner must equal team1 or team2")
+    fmt = model_bridge.normalize_format(body.format)
+    _reject_retired(body.team1_player_ids + body.team2_player_ids, fmt)
     result = _run(model_bridge.simulate, team1=body.team1, team2=body.team2,
                   team1_player_ids=body.team1_player_ids, team2_player_ids=body.team2_player_ids,
                   toss_winner=body.toss_winner, n_simulations=body.n_simulations,
@@ -81,6 +94,8 @@ class OptimizeBowlingBody(BaseModel):
 
 @router.post("/optimize-bowling")
 def optimize_bowling(body: OptimizeBowlingBody):
+    fmt = model_bridge.normalize_format(body.format)
+    _reject_retired(body.bowling_player_ids + body.batting_player_ids, fmt)
     result = _run(model_bridge.optimize_bowling, bowling_team=body.bowling_team,
                   batting_team=body.batting_team, bowling_player_ids=body.bowling_player_ids,
                   batting_player_ids=body.batting_player_ids, venue=body.venue,
@@ -107,6 +122,8 @@ class OptimizeBattingBody(BaseModel):
 
 @router.post("/optimize-batting")
 def optimize_batting(body: OptimizeBattingBody):
+    fmt = model_bridge.normalize_format(body.format)
+    _reject_retired(body.batting_player_ids + body.bowling_player_ids, fmt)
     result = _run(model_bridge.optimize_batting, batting_team=body.batting_team,
                   bowling_team=body.bowling_team, batting_player_ids=body.batting_player_ids,
                   bowling_player_ids=body.bowling_player_ids, target=body.target, venue=body.venue,

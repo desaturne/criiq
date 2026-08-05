@@ -39,6 +39,27 @@ _NOT_STALE = ("NOT (r.retirement_status IN ('INACTIVE', 'UNKNOWN') "
 _NOT_STALE_INACTIVE_ONLY = ("NOT (r.retirement_status = 'INACTIVE' "
                             "     AND COALESCE(r.recent_domestic_activity, 0) = 0)")
 
+_RETIRED_STATUSES = ("RETIRED_ALL", "RETIRED_FORMAT")
+
+
+def retired_names(player_ids: list[str], fmt: str = "T20") -> dict[str, str]:
+    """player_id -> canonical_name for any of player_ids retired as of fmt.
+
+    For re-validating ids that bypass the /players picker: saved selections,
+    a named opposition XI, direct API calls.
+    """
+    if not player_ids:
+        return {}
+    id_placeholders = ",".join("?" * len(player_ids))
+    status_placeholders = ",".join("?" * len(_RETIRED_STATUSES))
+    rows = criiq_db.execute(
+        f"SELECT p.player_id, p.canonical_name FROM players p "
+        f"JOIN player_registry r ON r.player_id = p.player_id "
+        f"WHERE r.format = ? AND r.player_id IN ({id_placeholders}) "
+        f"AND r.retirement_status IN ({status_placeholders})",
+        [fmt, *player_ids, *_RETIRED_STATUSES],
+    ).fetchall()
+    return {row["player_id"]: row["canonical_name"] for row in rows}
 
 def position_label(role_bucket: str | None, is_keeper: bool, batting_position_median: float | None) -> str:
     """Mirrors criiq_models/selection/optimize.py's slot_category, plus a keeper override."""
