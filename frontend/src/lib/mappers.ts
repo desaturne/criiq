@@ -42,6 +42,16 @@ function clamp01to100(n: number | null | undefined, fallback = 50): number {
   return Math.max(0, Math.min(100, Math.round(n)));
 }
 
+function phaseValue(phases: any[] | undefined, phase: string): number {
+  const row = phases?.find((p: any) => p.phase === phase);
+  if (!row) return 0;
+  // Prefer the percentile split used by the detail page; fall back to the
+  // bowler economy estimate when that is the only phase signal present.
+  if (row.bat_team_percentile != null) return clamp01to100(row.bat_team_percentile);
+  if (row.bowl_economy != null) return clamp01to100(100 - row.bowl_economy * 10);
+  return 0;
+}
+
 function normalizeWinPct(raw: number | null | undefined): number | null {
   if (raw === null || raw === undefined || Number.isNaN(raw)) return null;
   return raw <= 1 ? raw * 100 : raw;
@@ -58,6 +68,7 @@ export function mapApiPlayerListItem(api: any): Player {
   const career = api.career || {};
   const bat = career.batting || {};
   const bowl = career.bowling || {};
+  const phases: any[] = Array.isArray(api.phases) ? api.phases : [];
   const player: Player = {
     id: String(api.id), name: api.name, role, archetype: role,
     battingHand: normalizeHand(api.batting_hand), bowlingStyle: api.bowling_style || "—",
@@ -68,7 +79,7 @@ export function mapApiPlayerListItem(api: any): Player {
     // Not available from the list endpoint (only single-player detail/vs
     // endpoints compute these) — neutral defaults, not fabricated numbers.
     vsOpponent: 0, vsInsight: "Open the player profile for a full breakdown.",
-    powerplay: 0, middle: 0, death: 0,
+    powerplay: phaseValue(phases, "powerplay"), middle: phaseValue(phases, "middle"), death: phaseValue(phases, "death"),
     career: {
       matches: bat.innings ?? bowl.innings ?? 0,
       innings: bat.innings ?? 0, runs: bat.runs, avg: bat.average, sr: bat.strike_rate,

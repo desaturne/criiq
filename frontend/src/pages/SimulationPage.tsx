@@ -7,8 +7,8 @@ import { mapApiPlayerListItem } from "../lib/mappers";
 import { Player } from "../types/index";
 import { WinProbChart } from "../components/match/WinProbChart";
 import { Scorecard } from "../components/match/Scorecard";
-
-const TEAM_OPTS = ["India", "Australia", "England", "South Africa", "New Zealand", "Pakistan"];
+import { TeamSelect } from "../components/common/TeamSelect";
+import { VenueSelect } from "../components/common/VenueSelect";
 
 export interface SimulatorPrefill {
   team1: string; team2: string; team1PlayerIds: string[]; team2PlayerIds: string[]; gender: "female" | "male";
@@ -141,17 +141,6 @@ function useRecommendedXI(team: string, opponent: string, gender: "female" | "ma
   return { ids, loading };
 }
 
-function TeamPicker({ value, onChange, opts, label }: { value: string; onChange: (v: string) => void; opts: string[]; label: string }) {
-  return (
-    <div className="flex-1 space-y-1">
-      <label className="text-[11px] text-muted-foreground">{label}</label>
-      <select value={value} onChange={e => onChange(e.target.value)}
-        className="w-full text-sm bg-secondary border border-border rounded-lg px-3 py-2 text-foreground focus:outline-none focus:ring-2 focus:ring-[#AAFF57]/40">
-        {opts.map(o => <option key={o}>{o}</option>)}
-      </select>
-    </div>
-  );
-}
 
 function SimulateTab({ gender, prefill }: { gender: "female" | "male"; prefill?: SimulatorPrefill }) {
   const [team1, setTeam1] = useState(prefill?.team1 ?? "India");
@@ -178,6 +167,7 @@ function SimulateTab({ gender, prefill }: { gender: "female" | "male"; prefill?:
     if (skipAutoFill2) { setSkipAutoFill2(false); return; }
     if (recommended2.ids.length === 11) setTeam2Players(recommended2.ids);
   }, [recommended2.ids]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [venue, setVenue] = useState("");
   const [nSims, setNSims] = useState(20);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -188,7 +178,7 @@ function SimulateTab({ gender, prefill }: { gender: "female" | "male"; prefill?:
     try {
       const res = await api.simulateMatch({
         team1, team2, team1_player_ids: team1Players, team2_player_ids: team2Players,
-        toss_winner: team1, n_simulations: nSims, gender,
+        toss_winner: team1, n_simulations: nSims, gender, venue: venue || undefined,
       });
       setResult(res);
     } catch (err) {
@@ -204,9 +194,10 @@ function SimulateTab({ gender, prefill }: { gender: "female" | "male"; prefill?:
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
       <div className="space-y-3">
         <div className="flex gap-3">
-          <TeamPicker label="Team 1 (bats first, wins toss)" value={team1} onChange={setTeam1} opts={TEAM_OPTS.filter(o => o !== team2)} />
-          <TeamPicker label="Team 2" value={team2} onChange={setTeam2} opts={TEAM_OPTS.filter(o => o !== team1)} />
+          <TeamSelect label="Team 1 (bats first, wins toss)" value={team1} onChange={setTeam1} gender={gender} against={team2} />
+          <TeamSelect label="Team 2" value={team2} onChange={setTeam2} gender={gender} against={team1} />
         </div>
+        <VenueSelect value={venue} onChange={setVenue} team1={team1} team2={team2} />
         <XIPicker label={`${team1} XI`} players={team1Roster.players} loading={team1Roster.loading} selectedIds={team1Players} onChange={setTeam1Players}
           onUseRecommended={() => setTeam1Players(recommended1.ids)} recommendedLoading={recommended1.loading} />
         <XIPicker label={`${team2} XI`} players={team2Roster.players} loading={team2Roster.loading} selectedIds={team2Players} onChange={setTeam2Players}
@@ -291,6 +282,7 @@ function OptimizeBowlingTab({ gender }: { gender: "female" | "male" }) {
   const recommendedBatting = useRecommendedXI(battingTeam, bowlingTeam, gender);
   useEffect(() => { if (recommendedBowling.ids.length === 11) setBowlingPlayers(recommendedBowling.ids); }, [recommendedBowling.ids]);
   useEffect(() => { if (recommendedBatting.ids.length === 11) setBattingPlayers(recommendedBatting.ids); }, [recommendedBatting.ids]);
+  const [venue, setVenue] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<any>(null);
@@ -298,7 +290,7 @@ function OptimizeBowlingTab({ gender }: { gender: "female" | "male" }) {
   const run = async () => {
     setLoading(true); setError(null);
     try {
-      const res = await api.optimizeBowling({ bowling_team: bowlingTeam, batting_team: battingTeam, bowling_player_ids: bowlingPlayers, batting_player_ids: battingPlayers, gender });
+      const res = await api.optimizeBowling({ bowling_team: bowlingTeam, batting_team: battingTeam, bowling_player_ids: bowlingPlayers, batting_player_ids: battingPlayers, gender, venue: venue || undefined });
       setResult(res);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Optimization failed");
@@ -312,9 +304,10 @@ function OptimizeBowlingTab({ gender }: { gender: "female" | "male" }) {
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
       <div className="space-y-3">
         <div className="flex gap-3">
-          <TeamPicker label="Bowling team" value={bowlingTeam} onChange={setBowlingTeam} opts={TEAM_OPTS.filter(o => o !== battingTeam)} />
-          <TeamPicker label="Opposition (batting)" value={battingTeam} onChange={setBattingTeam} opts={TEAM_OPTS.filter(o => o !== bowlingTeam)} />
+          <TeamSelect label="Bowling team" value={bowlingTeam} onChange={setBowlingTeam} gender={gender} against={battingTeam} />
+          <TeamSelect label="Opposition (batting)" value={battingTeam} onChange={setBattingTeam} gender={gender} against={bowlingTeam} />
         </div>
+        <VenueSelect value={venue} onChange={setVenue} team1={bowlingTeam} team2={battingTeam} />
         <XIPicker label={`${bowlingTeam} XI (bowling)`} players={bowlingRoster.players} loading={bowlingRoster.loading} selectedIds={bowlingPlayers} onChange={setBowlingPlayers}
           onUseRecommended={() => setBowlingPlayers(recommendedBowling.ids)} recommendedLoading={recommendedBowling.loading} />
         <XIPicker label={`${battingTeam} XI (batting)`} players={battingRoster.players} loading={battingRoster.loading} selectedIds={battingPlayers} onChange={setBattingPlayers}
@@ -396,6 +389,7 @@ function OptimizeBattingTab({ gender }: { gender: "female" | "male" }) {
   const recommendedBowling = useRecommendedXI(bowlingTeam, battingTeam, gender);
   useEffect(() => { if (recommendedBatting.ids.length === 11) setBattingPlayers(recommendedBatting.ids); }, [recommendedBatting.ids]);
   useEffect(() => { if (recommendedBowling.ids.length === 11) setBowlingPlayers(recommendedBowling.ids); }, [recommendedBowling.ids]);
+  const [venue, setVenue] = useState("");
   const [target, setTarget] = useState<string>("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -406,7 +400,7 @@ function OptimizeBattingTab({ gender }: { gender: "female" | "male" }) {
     try {
       const res = await api.optimizeBatting({
         batting_team: battingTeam, bowling_team: bowlingTeam, batting_player_ids: battingPlayers, bowling_player_ids: bowlingPlayers,
-        target: target ? Number(target) : undefined, gender,
+        target: target ? Number(target) : undefined, gender, venue: venue || undefined,
       });
       setResult(res);
     } catch (err) {
@@ -421,9 +415,10 @@ function OptimizeBattingTab({ gender }: { gender: "female" | "male" }) {
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
       <div className="space-y-3">
         <div className="flex gap-3">
-          <TeamPicker label="Batting team" value={battingTeam} onChange={setBattingTeam} opts={TEAM_OPTS.filter(o => o !== bowlingTeam)} />
-          <TeamPicker label="Opposition (bowling)" value={bowlingTeam} onChange={setBowlingTeam} opts={TEAM_OPTS.filter(o => o !== battingTeam)} />
+          <TeamSelect label="Batting team" value={battingTeam} onChange={setBattingTeam} gender={gender} against={bowlingTeam} />
+          <TeamSelect label="Opposition (bowling)" value={bowlingTeam} onChange={setBowlingTeam} gender={gender} against={battingTeam} />
         </div>
+        <VenueSelect value={venue} onChange={setVenue} team1={battingTeam} team2={bowlingTeam} />
         <XIPicker label={`${battingTeam} XI (batting)`} players={battingRoster.players} loading={battingRoster.loading} selectedIds={battingPlayers} onChange={setBattingPlayers}
           onUseRecommended={() => setBattingPlayers(recommendedBatting.ids)} recommendedLoading={recommendedBatting.loading} />
         <XIPicker label={`${bowlingTeam} XI (bowling)`} players={bowlingRoster.players} loading={bowlingRoster.loading} selectedIds={bowlingPlayers} onChange={setBowlingPlayers}

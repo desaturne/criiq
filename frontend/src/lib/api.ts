@@ -97,6 +97,7 @@ export const updatePlayer = (id: string, body: {
 }) => apiFetch(`/players/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(body) });
 
 export const deletePlayer = (id: string) => apiFetch(`/players/${encodeURIComponent(id)}`, { method: "DELETE" });
+export const retirePlayer = (id: string) => apiFetch(`/players/${encodeURIComponent(id)}/retire`, { method: "POST" }) as Promise<{ id: string; status: string }>;
 
 // --- matches / dashboard ---------------------------------------------------
 export const listMatches = (params: { completedLimit?: number; gender?: string; country?: string; team1?: string; team2?: string } = {}) =>
@@ -105,7 +106,16 @@ export const listMatches = (params: { completedLimit?: number; gender?: string; 
     team1: params.team1, team2: params.team2,
   })}`) as Promise<{ upcoming: any[]; completed: any[] }>;
 
-export const listTeams = (gender?: string) => apiFetch(`/teams${qs({ gender })}`) as Promise<string[]>;
+// `against`, if given, orders the result by real head-to-head frequency with
+// that team first (matches_played > 0 = a real recorded matchup); the rest
+// follow alphabetically with matches_played: 0.
+export const listTeams = (params: { gender?: string; against?: string } = {}) =>
+  apiFetch(`/teams${qs(params)}`) as Promise<{ team: string; matches_played: number }[]>;
+
+// `team1`/`team2`, if given, orders grounds by how often either team has
+// actually played there (matches_here > 0 = a real recorded venue for this matchup).
+export const listVenues = (params: { team1?: string; team2?: string } = {}) =>
+  apiFetch(`/venues${qs(params)}`) as Promise<{ venue_id: string; name: string; matches_here: number }[]>;
 
 export const getMatch = (id: string) => apiFetch(`/matches/${encodeURIComponent(id)}`);
 

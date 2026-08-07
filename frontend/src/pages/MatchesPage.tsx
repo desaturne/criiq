@@ -28,7 +28,7 @@ export function MatchesPage() {
   // hardcoded list, since which countries have real T20I data differs by
   // gender (see model-training/README.md, distinct-player-count differences).
   useEffect(() => {
-    api.listTeams(gender).then(setTeams).catch(() => setTeams([]));
+    api.listTeams({ gender }).then(res => setTeams(res.map(t => t.team))).catch(() => setTeams([]));
   }, [gender]);
 
   // Reset the mode-specific selections whenever gender changes -- a country
