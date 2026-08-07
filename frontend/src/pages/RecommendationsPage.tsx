@@ -5,14 +5,14 @@ import { useNavigate } from "react-router";
 import { Zap, ChevronDown, RefreshCw, CheckCircle2, AlertTriangle, PlayCircle, Sparkles } from "lucide-react";
 import { RadialGauge } from "../components/common/RadialGauge";
 import { SelectionControl } from "../components/common/SelectionControl";
+import { TeamSelect } from "../components/common/TeamSelect";
+import { VenueSelect } from "../components/common/VenueSelect";
 import { SquadStrengthModal } from "../components/squad/SquadStrengthModal";
 import * as api from "../lib/api";
 import { colorFor, initialsFor } from "../lib/mappers";
 import { SimulatorPrefill } from "./SimulationPage";
 import { useApp } from "../context/AppContext";
 import { SelectionState } from "../types/index";
-
-const COUNTRY_OPTIONS = ["India", "Australia", "England", "South Africa", "New Zealand", "Pakistan"];
 
 // Squad/Bench Strength display: rescales the real 0-100 score onto a 30-100 range.
 const SQUAD_STRENGTH_BASE = 30;
@@ -103,7 +103,7 @@ export function RecommendationsPage() {
   const [error, setError] = useState<string | null>(null);
   const [team, setTeam] = useState(user?.country || "India");
   const [opponent, setOpponent] = useState("Australia");
-  const [venue, setVenue] = useState("Melbourne Cricket Ground");
+  const [venue, setVenue] = useState("");
   const [format, setFormat] = useState("T20I");
   const [gender, setGender] = useState<"female" | "male">("female");
   const [simulating, setSimulating] = useState(false);
@@ -396,36 +396,17 @@ export function RecommendationsPage() {
               </div>
             </div>
             <div className="space-y-3">
-              {[{ label: "Team", value: team, set: setTeam, opts: COUNTRY_OPTIONS },
-                { label: "Opponent", value: opponent, set: setOpponent, opts: ["Australia", "England", "South Africa", "New Zealand", "Pakistan", "India"] },
-                // Real venues.canonical_name values -- the model fuzzy-matches this
-                // against the DB (criiq_models/venues.py), so a name that isn't a
-                // real ground (the old "MCG, Melbourne" / "Wankhede, Mumbai" style
-                // strings) silently fails to match anything and venue conditioning
-                // has zero effect, even though the request "succeeds".
-                { label: "Venue", value: venue, set: setVenue, opts: ["Melbourne Cricket Ground", "Lord's", "Eden Gardens", "Wankhede Stadium", "Nassau County International Cricket Stadium"] },
-                // T20I is the only supported format -- keep the field, drop ODI/Test.
-                { label: "Format", value: format, set: setFormat, opts: ["T20I"] },
-              ].map(field => (
-                <div key={field.label} className="space-y-1">
-                  <label className="text-[12px] text-muted-foreground">{field.label}</label>
-                  {/* A field with nothing to choose between renders as a plain
-                      value, not a <select>: the native dropdown arrow promises
-                      alternatives that don't exist (Format only supports T20I,
-                      and a signed-in coach's team is fixed to their country). */}
-                  {(field.label === "Team" && teamLocked) || field.opts.length <= 1 ? (
-                    <button type="button" disabled
-                      className="w-full text-sm bg-secondary border border-border rounded-lg px-3 py-2 text-foreground text-left cursor-default">
-                      {field.value}
-                    </button>
-                  ) : (
-                    <select value={field.value} onChange={e => field.set(e.target.value)}
-                      className="w-full text-sm bg-secondary border border-border rounded-lg px-3 py-2 text-foreground focus:outline-none focus:ring-2 focus:ring-[#AAFF57]/40">
-                      {field.opts.map(o => <option key={o}>{o}</option>)}
-                    </select>
-                  )}
-                </div>
-              ))}
+              <TeamSelect label="Team" value={team} onChange={setTeam} gender={gender} against={opponent} disabled={teamLocked} />
+              <TeamSelect label="Opponent" value={opponent} onChange={setOpponent} gender={gender} against={team} />
+              <VenueSelect value={venue} onChange={setVenue} team1={team} team2={opponent} />
+              {/* T20I is the only supported format/}
+              <div className="space-y-1">
+                <label className="text-[12px] text-muted-foreground">Format</label>
+                <button type="button" disabled
+                  className="w-full text-sm bg-secondary border border-border rounded-lg px-3 py-2 text-foreground text-left cursor-default">
+                  {format}
+                </button>
+              </div>
             </div>
           </div>
 

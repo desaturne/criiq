@@ -109,22 +109,82 @@ def list_matches(
 
 
 # --------------------------------------------------------------------------
-# 10b. GET /teams — distinct real team names, for filter/selector dropdowns
+# 10b. GET /teams — real international team names, for filter/selector
+# dropdowns. # `against`, if given, ranks the result by real head-to-head frequency with
+# that team first (most-played opponent first), so a UI can group "likely
+# matchups" ahead of everything else -- each entry's `matches_played` is 0
+# for a team with no recorded history against `against`.
 # --------------------------------------------------------------------------
 @router.get("/teams")
-def list_teams(gender: str | None = None):
-    where = "WHERE gender = ?" if gender else ""
-    params = (gender,) if gender else ()
+def list_teams(gender: str | None = None, against: str | None = None):
+    where = ["team_type = 'international'"]
+    params: list = []
+    if gender:
+        where.append("gender = ?")
+        params.append(gender)
+    where_sql = " AND ".join(where)
     rows = criiq_db.execute(
         f"""SELECT DISTINCT team FROM (
-                SELECT team1 AS team, gender FROM matches
+                SELECT team1 AS team, gender, team_type FROM matches
                 UNION ALL
-                SELECT team2 AS team, gender FROM matches
-            ) {where}
-            ORDER BY team""",
+                SELECT team2 AS team, gender, team_type FROM matches
+            ) WHERE {where_sql}""",
         params,
     ).fetchall()
-    return {"data": [r["team"] for r in rows], "error": None}
+    teams = {r["team"] for r in rows}
+    teams.discard(against)  # a team can't be its own opponent
+
+    counts = {t: 0 for t in teams}
+    if against:
+        freq_where = ["team_type = 'international'", "(team1 = ? OR team2 = ?)"]
+        freq_params = [against, against, against]
+        if gender:
+            freq_where.append("gender = ?")
+            freq_params.append(gender)
+        freq_rows = criiq_db.execute(
+            f"""SELECT CASE WHEN team1 = ? THEN team2 ELSE team1 END AS opponent, COUNT(*) AS n
+                FROM matches WHERE {' AND '.join(freq_where)}
+                GROUP BY opponent""",
+            freq_params,
+        ).fetchall()
+        for r in freq_rows:
+            if r["opponent"] in counts:
+                counts[r["opponent"]] = r["n"]
+
+    ordered = sorted(teams, key=lambda t: (-counts[t], t))
+    return {"data": [{"team": t, "matches_played": counts[t]} for t in ordered], "error": None}
+
+
+# --------------------------------------------------------------------------
+# 10c. GET /venues — real grounds, for venue selector dropdowns.
+#
+# `team1`/`team2`, if given, rank grounds by how often either named team has
+# actually played there (most first) -- a UI can group "likely grounds"
+# (this matchup's real home/frequent venues) ahead of the full list.
+# --------------------------------------------------------------------------
+@router.get("/venues")
+def list_venues(team1: str | None = None, team2: str | None = None):
+    rows = criiq_db.execute(
+        "SELECT DISTINCT venue_id, canonical_name FROM venues WHERE venue_id IS NOT NULL "
+        "ORDER BY canonical_name"
+    ).fetchall()
+    venues = [{"venue_id": r["venue_id"], "name": r["canonical_name"], "matches_here": 0} for r in rows]
+
+    if team1 or team2:
+        conds, params = [], []
+        for t in (team1, team2):
+            if t:
+                conds.append("(team1 = ? OR team2 = ?)")
+                params.extend([t, t])
+        counts = {r["venue_id"]: r["n"] for r in criiq_db.execute(
+            f"SELECT venue_id, COUNT(*) AS n FROM matches WHERE {' OR '.join(conds)} GROUP BY venue_id",
+            params,
+        ).fetchall()}
+        for v in venues:
+            v["matches_here"] = counts.get(v["venue_id"], 0)
+
+    venues.sort(key=lambda v: (-v["matches_here"], v["name"]))
+    return {"data": venues, "error": None}
 
 
 # --------------------------------------------------------------------------
