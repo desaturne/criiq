@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { motion } from "motion/react";
+import { AnimatePresence, motion } from "motion/react";
 import { useNavigate, useParams, useSearchParams } from "react-router";
-import { ChevronLeft, Star } from "lucide-react";
+import { ChevronLeft, ShieldAlert } from "lucide-react";
 import { PhaseBar } from "../components/common/PhaseBar";
 import { RadialGauge } from "../components/common/RadialGauge";
 import { StatusBadge } from "../components/common/StatusBadge";
@@ -25,6 +25,8 @@ export function PlayerProfilePage() {
   const [advanced, setAdvanced] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
+  const [retiring, setRetiring] = useState(false);
+  const [retirePromptOpen, setRetirePromptOpen] = useState(false);
 
   useEffect(() => {
     if (!playerId) return;
@@ -70,6 +72,18 @@ export function PlayerProfilePage() {
       </div>
     );
   }
+
+  const handleRetire = async () => {
+    if (player.status === "RETIRED") return;
+    setRetiring(true);
+    try {
+      await api.retirePlayer(player.id);
+      setPlayer(prev => prev ? { ...prev, status: "RETIRED" } : prev);
+      setRetirePromptOpen(false);
+    } finally {
+      setRetiring(false);
+    }
+  };
   return (
     <div className="p-5 max-w-screen-xl mx-auto">
       <button onClick={() => navigate(-1)} className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground mb-5 transition-colors">
@@ -92,20 +106,14 @@ export function PlayerProfilePage() {
             </div>
           </div>
 
-          {/* Scouting note */}
-          <div className="bg-amber-500/5 border border-amber-500/20 rounded-xl p-4">
-            <div className="flex items-center gap-2 mb-2">
-              <Star size={13} className="text-amber-400" />
-              <span className="text-[11px] font-medium text-amber-400 uppercase tracking-wider">
-                Scouting Note{matchupOpponent ? ` vs ${matchupOpponent}` : ""}
-              </span>
-            </div>
-            <p className="text-[13px] text-foreground leading-relaxed">
-              {matchupOpponent && !matchupRecord
-                ? `No opposition record on file vs ${matchupOpponent} yet.`
-                : player.vsInsight}
-            </p>
-          </div>
+          <button
+            onClick={() => setRetirePromptOpen(true)}
+            disabled={retiring || player.status === "RETIRED"}
+            className="w-full inline-flex items-center justify-center gap-2 rounded-lg border border-amber-500/30 px-4 py-3 text-sm font-medium text-amber-300 transition-colors hover:bg-amber-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <ShieldAlert size={15} />
+            {player.status === "RETIRED" ? "Retired" : "Retired?"}
+          </button>
         </div>
 
         {/* Right: Stats */}
@@ -247,6 +255,53 @@ export function PlayerProfilePage() {
           </div>
         </div>
       </div>
+
+      <AnimatePresence>
+        {retirePromptOpen && player.status !== "RETIRED" && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4"
+            style={{ background: "rgba(0,0,0,0.72)", backdropFilter: "blur(6px)" }}
+            onClick={e => e.target === e.currentTarget && setRetirePromptOpen(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.94, y: 20, opacity: 0 }}
+              animate={{ scale: 1, y: 0, opacity: 1 }}
+              exit={{ scale: 0.96, y: 12, opacity: 0 }}
+              transition={{ type: "spring", damping: 26, stiffness: 320 }}
+              className="w-full max-w-md rounded-2xl border border-border bg-card p-6 shadow-2xl"
+            >
+              <div className="flex items-start gap-3">
+                <div className="mt-0.5 flex h-10 w-10 items-center justify-center rounded-full bg-amber-500/10 text-amber-300">
+                  <ShieldAlert size={18} />
+                </div>
+                <div className="flex-1">
+                  <h4 className="font-display text-lg font-semibold text-foreground">Retire player?</h4>
+                  <p className="mt-1 text-sm text-muted-foreground">Are you sure the player is retired?</p>
+                </div>
+              </div>
+
+              <div className="mt-6 flex justify-end gap-3">
+                <button
+                  onClick={() => setRetirePromptOpen(false)}
+                  className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+                >
+                  No
+                </button>
+                <button
+                  onClick={handleRetire}
+                  disabled={retiring}
+                  className="rounded-lg bg-[#AAFF57] px-4 py-2 text-sm font-semibold text-[#0D0D06] transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {retiring ? "Saving..." : "Yes"}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

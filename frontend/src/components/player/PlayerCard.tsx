@@ -103,7 +103,12 @@ export function PlayerCard({ player, index, opposition, selection = "undecided",
             <Scale size={10} /> {comparing ? "Comparing" : "Compare"}
           </motion.button>
         </div>
-        {onSelect && <div className="w-full"><SelectionControl state={selection} onChange={onSelect} /></div>}
+        {onSelect && player.status !== "RETIRED" && <div className="w-full"><SelectionControl state={selection} onChange={onSelect} /></div>}
+        {player.status === "RETIRED" && (
+          <div className="text-[11px] text-slate-400 border border-slate-500/20 rounded-lg px-2 py-1 text-center">
+            Retired - unavailable for XI selection
+          </div>
+        )}
       </div>
 
       <AnimatePresence>

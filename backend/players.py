@@ -60,7 +60,18 @@ def retired_names(player_ids: list[str], fmt: str = "T20") -> dict[str, str]:
         f"AND r.retirement_status IN ({status_placeholders})",
         [fmt, *player_ids, *_RETIRED_STATUSES],
     ).fetchall()
-    return {row["player_id"]: row["canonical_name"] for row in rows}
+    retired = {row["player_id"]: row["canonical_name"] for row in rows}
+
+    manual_ids = [pid[1:] for pid in player_ids if pid.startswith("m") and pid[1:].isdigit()]
+    if manual_ids:
+        manual_placeholders = ",".join("?" * len(manual_ids))
+        manual_rows = app_db.execute(
+            f"SELECT id, name FROM manual_players WHERE id IN ({manual_placeholders}) AND UPPER(status) = 'RETIRED'",
+            manual_ids,
+        ).fetchall()
+        retired.update({f"m{row['id']}": row["name"] for row in manual_rows})
+
+    return retired
 
 def position_label(role_bucket: str | None, is_keeper: bool, batting_position_median: float | None) -> str:
     """Mirrors criiq_models/selection/optimize.py's slot_category, plus a keeper override."""
@@ -97,6 +108,26 @@ def rfi_percentile(rfi: float | None) -> float | None:
     return round(100 * idx / len(_RFI_DISTRIBUTION), 1)
 
 
+def retired_override_ids() -> set[str]:
+    return {row["player_id"] for row in app_db.execute("SELECT player_id FROM retired_players")}
+
+
+def player_status(row_status: str, player_id: str, retired_ids: set[str]) -> str:
+    return "RETIRED" if player_id in retired_ids else row_status
+
+
+def phase_value(row: dict | None) -> float:
+    if not row:
+        return 0
+    # bat_team_percentile is the preferred 0-100 phase signal.
+    # Bowler-only rows may only have an economy-based estimate.
+    if row.get("bat_team_percentile") is not None:
+        return max(0, min(100, round(row["bat_team_percentile"])))
+    if row.get("bowl_economy") is not None:
+        return max(0, min(100, round(100 - row["bowl_economy"] * 10)))
+    return 0
+
+
 # --------------------------------------------------------------------------
 # 4. GET /players — searchable, filterable, paginated list
 # --------------------------------------------------------------------------
@@ -105,6 +136,7 @@ def list_players(search: str = "", role: str = "", status: str = "", country: st
                  opponent: str = "", page: int = 1, limit: int = 20):
     limit = max(1, min(limit, 100))
     page = max(1, page)
+    retired_ids = retired_override_ids()
 
     # search/role/status stay in SQL (cheap, indexed-ish columns). country/
     # gender are membership checks against roster_index's in-memory sets --
@@ -180,6 +212,7 @@ def list_players(search: str = "", role: str = "", status: str = "", country: st
     if not page_ids:
         rows = []
         opponent_rows = []
+        phase_rows = []
     else:
         placeholders = ",".join("?" * len(page_ids))
         rows = criiq_db.execute(
@@ -205,18 +238,29 @@ def list_players(search: str = "", role: str = "", status: str = "", country: st
                     WHERE player_id IN ({placeholders}) AND LOWER(opponent) = LOWER(?)""",
                 [*page_ids, opponent],
             ).fetchall()
+        phase_rows = criiq_db.execute(
+            f"""SELECT player_id, phase, bat_team_percentile, bowl_economy
+                    FROM player_phase
+                    WHERE player_id IN ({placeholders})""",
+            page_ids,
+        ).fetchall()
         # player_id IN (...) doesn't preserve the ranked order from `candidates` -- restore it.
         order = {pid: i for i, pid in enumerate(page_ids)}
         rows = sorted(rows, key=lambda r: order[r["player_id"]])
         opponent_map = {row["player_id"]: row_to_dict(row) for row in opponent_rows}
+        phase_map: dict[str, dict[str, dict]] = {}
+        for row in phase_rows:
+            phase_map.setdefault(row["player_id"], {})[row["phase"]] = row_to_dict(row)
 
     if not page_ids:
         opponent_map = {}
+        phase_map = {}
 
     players = []
     for row in rows:
         card = json.loads(row["card_json"]) if row["card_json"] else {}
         form = card.get("form", {})
+        phases = phase_map.get(row["player_id"], {})
         players.append({
             "id": row["player_id"],
             "name": row["canonical_name"],
@@ -224,7 +268,7 @@ def list_players(search: str = "", role: str = "", status: str = "", country: st
             "role": row["role"],
             "batting_hand": row["batting_hand"],
             "bowling_style": row["bowling_style"],
-            "status": row["retirement_status"],
+            "status": player_status(row["retirement_status"], row["player_id"], retired_ids),
             "last5_scores": (form.get("last_innings") or [])[-5:],
             "form_score": rfi_percentile(form.get("rfi")),  # percentile rank, not raw RFI
             # Already-parsed card_json.career -- real {"batting": {...}, "bowling":
@@ -232,6 +276,7 @@ def list_players(search: str = "", role: str = "", status: str = "", country: st
             # expandable Stats section shows real matches/runs/avg/SR (or
             # wkts/econ/best) instead of being undefined for every player.
             "career": card.get("career"),
+            "phases": [phases.get(name) for name in ("powerplay", "middle", "death") if phases.get(name)],
             "is_keeper": bool(row["is_keeper"]),
             "batting_position_median": row["batting_position_median"],
             # Same real batting-position/role data the recommendation engine
@@ -251,6 +296,10 @@ def list_players(search: str = "", role: str = "", status: str = "", country: st
             f"SELECT * FROM manual_players WHERE {' AND '.join(manual_where)}", manual_params
         ).fetchall()
         for m in manual:
+            if status == "RETIRED" and m["status"].upper() != "RETIRED":
+                continue
+            if status != "RETIRED" and m["status"].upper() == "RETIRED":
+                continue
             players.insert(0, {
                 "id": f"m{m['id']}", "name": m["name"], "country": m["country"],
                 "role": m["role"], "batting_hand": m["batting_hand"],
@@ -267,6 +316,7 @@ def list_players(search: str = "", role: str = "", status: str = "", country: st
 # --------------------------------------------------------------------------
 def build_player_detail(player_id: str) -> dict | None:
     """Everything the Player Form screen needs, or None if unknown id."""
+    retired_ids = retired_override_ids()
     # Manually added player? (ids look like m1, m2, ...)
     if player_id.startswith("m") and player_id[1:].isdigit():
         m = app_db.execute(
@@ -277,6 +327,7 @@ def build_player_detail(player_id: str) -> dict | None:
         d = row_to_dict(m)
         d["id"] = player_id
         d["source"] = "manual"
+        d["status"] = "RETIRED" if m["status"].upper() == "RETIRED" else m["status"]
         return d
 
     card_row = criiq_db.execute(
@@ -341,7 +392,7 @@ def build_player_detail(player_id: str) -> dict | None:
     return {
         "id": player_id,
         "identity": card.get("identity"),
-        "status": card.get("status"),
+        "status": player_status(card.get("status"), player_id, retired_ids),
         "form": card.get("form"),
         "form_percentile": rfi_percentile((card.get("form") or {}).get("rfi")),
         "latest_match": card.get("latest_match"),
@@ -466,3 +517,25 @@ def delete_player(player_id: str):
     if info.rowcount == 0:
         raise HTTPException(404, "Unknown player id")
     return {"data": {"deleted": player_id}, "error": None}
+
+
+@router.post("/players/{player_id}/retire")
+def retire_player(player_id: str):
+    if player_id.startswith("m") and player_id[1:].isdigit():
+        info = app_db.execute("UPDATE manual_players SET status = 'RETIRED' WHERE id = ?", (int(player_id[1:]),))
+        app_db.commit()
+        if info.rowcount == 0:
+            raise HTTPException(404, "Unknown player id")
+        return {"data": {"id": player_id, "status": "RETIRED"}, "error": None}
+
+    exists = criiq_db.execute("SELECT 1 FROM players WHERE player_id = ?", (player_id,)).fetchone()
+    if not exists:
+        raise HTTPException(404, "Unknown player id")
+
+    app_db.execute(
+        "INSERT INTO retired_players (player_id, retired_at) VALUES (?, datetime('now')) "
+        "ON CONFLICT(player_id) DO UPDATE SET retired_at = datetime('now')",
+        (player_id,),
+    )
+    app_db.commit()
+    return {"data": {"id": player_id, "status": "RETIRED"}, "error": None}

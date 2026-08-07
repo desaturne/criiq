@@ -6,7 +6,7 @@ export type UserRole = "Coach" | "Player";
 
 export type SelectionState = "select" | "reserve" | "exclude" | "undecided";
 
-export type PlayerStatus = "ACTIVE" | "INCONSISTENT" | "INACTIVE" | "UNKNOWN";
+export type PlayerStatus = "ACTIVE" | "INCONSISTENT" | "INACTIVE" | "RETIRED" | "UNKNOWN";
 
 export interface AuthUser { id: number; name: string; role: string; country?: string; status?: string; }
 

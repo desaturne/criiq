@@ -97,6 +97,7 @@ export const updatePlayer = (id: string, body: {
 }) => apiFetch(`/players/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(body) });
 
 export const deletePlayer = (id: string) => apiFetch(`/players/${encodeURIComponent(id)}`, { method: "DELETE" });
+export const retirePlayer = (id: string) => apiFetch(`/players/${encodeURIComponent(id)}/retire`, { method: "POST" }) as Promise<{ id: string; status: string }>;
 
 // --- matches / dashboard ---------------------------------------------------
 export const listMatches = (params: { completedLimit?: number; gender?: string; country?: string; team1?: string; team2?: string } = {}) =>
