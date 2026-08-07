@@ -11,6 +11,17 @@ notebook or `ALGORITHMS.md` §3.3 for the full comparison), and `bowling_wpa` no
 cleanly to both scopes). Every other section below is unchanged and still reflects the 2026-07-22
 run.
 
+**Report history, so every number below can be traced to when it was actually measured:**
+
+| Section(s) | Measured | Against which models |
+|---|---|---|
+| §1–§10 | 2026-07-22 (§2/§3 refreshed 2026-07-31, noted above) | §1–§8, §10: pre-2026-07-31 models. §2/§3: current models (refreshed in place). |
+| §9 | 2026-07-22, corrected 2026-07-23 (see that section for what the correction was) | pre-2026-07-31 models. |
+| §11 | 2026-07-24 | pre-2026-07-31 models — **left exactly as originally written below**, a historical record of that run, not updated in place. |
+| §14 (new) | 2026-08-06 | the **current** shipped models (retrained 2026-07-31) — a full, expanded re-run of §11's exact question (does the Playing XI recommendation and match simulator hold up on real, unseen data) against what's actually deployed today. Read §14 for the current answer; §11 for what changed and by how much. |
+
+No number in §1–§11 has been altered from when it was originally generated — only this history table and pointers to §14 were added on 2026-08-06.
+
 ## 1. Test suites — correctness precondition
 
 | Suite | Result |
@@ -184,6 +195,8 @@ Both readings agree closely (ball-level ≈ start-of-chase), which is a good sig
 **Honest read:** this sits just above a 50% coin flip. It's consistent with everything already reported in §2 (MAE barely beating the mean-predictor baseline) — per-match individual WPA is a genuinely hard, high-variance target, and this task was never framed as "classify good vs. bad performance," it's a continuous ranking signal (see §2's top-quartile hit-rate, 30–34% vs. a 25% random baseline, which is the fairer accuracy-style read for *this* model). Reporting sign-agreement here for completeness, not to oversell it.
 
 ## 11. The two actual deliverables — Playing XI recommendation & match simulation, tested directly
+
+*(Run 2026-07-24, against the models as they existed then — i.e. **before** the 2026-07-31 hyperparameter change described at the top of this report. Left exactly as originally written below, as a historical record. §14 is the 2026-08-06 re-run of this exact question against the current models, on an expanded sample — read that section for where things stand today.)*
 
 Every section above validates the *components* (WPA regressors, win-probability model). This section validates the two things a coach actually uses: **does `recommend`/`select_xi` pick a good XI, and does `simulate` produce a trustworthy match?** Both are tested against the same 149-match genuine forward-holdout set from §9 (real 2026 matches the shipped models have never seen in any form) — so this is a fair, leakage-free test of the actual shipped product, not an internal split.
 
