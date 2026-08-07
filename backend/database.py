@@ -76,6 +76,11 @@ app_db.executescript(
         status        TEXT NOT NULL DEFAULT 'ACTIVE'
     );
 
+    CREATE TABLE IF NOT EXISTS retired_players (
+        player_id  TEXT PRIMARY KEY,
+        retired_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     -- One saved squad per match: the three id-lists stored as JSON text.
     CREATE TABLE IF NOT EXISTS selections (
         match_id   TEXT PRIMARY KEY,
