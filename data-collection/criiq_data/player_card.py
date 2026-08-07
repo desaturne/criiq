@@ -12,7 +12,7 @@ from .h2h import player_vs_team
 from .logging_utils import get_logger
 from .rankings import player_rankings
 from .stats import build_innings
-from .styles import classify_bowling_detail, classify_hand
+from .styles import classify_bowling_detail, classify_hand, is_cricket_role
 
 log = get_logger("player_card")
 
@@ -198,10 +198,14 @@ def build_cards_for_format(conn, fmt: str) -> int:
         h2h = player_vs_team(conn, fmt, pm["player_id"], latest["opponent"]) \
             if latest["opponent"] else {}
 
+        raw_role = pm.get("role")
+        # players.role can be a non-cricket value (see styles.is_cricket_role); derived_role is always safe.
+        display_role = raw_role if raw_role and is_cricket_role(raw_role) else pm.get("derived_role")
+
         card = {
             "identity": {
                 "player_id": pm["player_id"], "name": pm["canonical_name"],
-                "role": pm.get("role") or pm.get("derived_role"),
+                "role": display_role,
                 "nationality": pm.get("nationality") or team, "age": age,
                 "batting_hand": classify_hand(pm.get("batting_hand")),
                 "bowling_style": pm.get("bowling_style"),

@@ -94,10 +94,13 @@ def _slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
 
 
+# 30% sits in the real gap between cameo bowlers (Kohli 11%, Rohit 5%) and genuine ones (Bates 45%, Perry 80%).
+_BOWLER_MATCH_FRACTION_THRESHOLD = 0.30
+_BOWLER_MIN_BALLS = 60
+
+
 def _derived_roles(conn) -> dict[tuple[str, str | None], str]:
-    """(identifier, gender) -> role, from ball counts in each player's most recent `impact_recent_matches`, not career totals.
-    gender-scoped so the rare identifier reused across two different people doesn't blend their roles together.
-    """
+    """(identifier, gender) -> role, from career-wide ball counts + bowling-match-frequency, not recent-form alone."""
     idmap = pd.read_sql_query(
         "SELECT im.player_name, im.identifier, m.gender FROM identifier_map im "
         "JOIN match_players mp ON mp.player_name = im.player_name "
@@ -105,40 +108,39 @@ def _derived_roles(conn) -> dict[tuple[str, str | None], str]:
     if idmap.empty:
         return {}
 
-    # per-match, not lifetime, so recency can be scoped per player below.
     bat = pd.read_sql_query(
-        "SELECT d.match_id, d.striker AS player_name, m.gender, m.date, COUNT(*) AS balls_faced "
+        "SELECT d.match_id, d.striker AS player_name, m.gender, COUNT(*) AS balls_faced "
         "FROM deliveries d JOIN matches m ON m.match_id = d.match_id "
-        "WHERE d.wides=0 GROUP BY d.match_id, d.striker, m.gender, m.date", conn)
+        "WHERE d.wides=0 GROUP BY d.match_id, d.striker, m.gender", conn)
     bowl = pd.read_sql_query(
-        "SELECT d.match_id, d.bowler AS player_name, m.gender, m.date, COUNT(*) AS balls_bowled "
+        "SELECT d.match_id, d.bowler AS player_name, m.gender, COUNT(*) AS balls_bowled "
         "FROM deliveries d JOIN matches m ON m.match_id = d.match_id "
-        "WHERE d.wides=0 AND d.noballs=0 GROUP BY d.match_id, d.bowler, m.gender, m.date", conn)
-
-    # recent N matches PLAYED (match_players), not N matches with a recorded ball -- a DNB still counts as recent.
+        "WHERE d.wides=0 AND d.noballs=0 GROUP BY d.match_id, d.bowler, m.gender", conn)
     appearances = pd.read_sql_query(
-        "SELECT mp.player_name, m.gender, mp.match_id, m.date "
+        "SELECT mp.player_name, m.gender, mp.match_id "
         "FROM match_players mp JOIN matches m ON m.match_id = mp.match_id", conn).drop_duplicates()
-    idapp = idmap.merge(appearances, on=["player_name", "gender"], how="inner")
-    recent_keys = (idapp.sort_values("date", ascending=False)
-                   .groupby(["identifier", "gender"]).head(SETTINGS.impact_recent_matches)
-                   [["identifier", "gender", "match_id"]].drop_duplicates())
 
-    bat_id = idmap.merge(bat, on=["player_name", "gender"], how="inner") \
-                  .merge(recent_keys, on=["identifier", "gender", "match_id"], how="inner")
-    bowl_id = idmap.merge(bowl, on=["player_name", "gender"], how="inner") \
-                   .merge(recent_keys, on=["identifier", "gender", "match_id"], how="inner")
+    bat_id = idmap.merge(bat, on=["player_name", "gender"], how="inner")
+    bowl_id = idmap.merge(bowl, on=["player_name", "gender"], how="inner")
+    app_id = idmap.merge(appearances, on=["player_name", "gender"], how="inner")
 
     agg_bat = bat_id.groupby(["identifier", "gender"])["balls_faced"].sum()
     agg_bowl = bowl_id.groupby(["identifier", "gender"])["balls_bowled"].sum()
-    agg = pd.concat([agg_bat, agg_bowl], axis=1).fillna(0)
+    matches_played = app_id.groupby(["identifier", "gender"])["match_id"].nunique()
+    matches_bowled_in = bowl_id.groupby(["identifier", "gender"])["match_id"].nunique()
+    agg = pd.concat([
+        agg_bat.rename("balls_faced"), agg_bowl.rename("balls_bowled"),
+        matches_played.rename("matches_played"), matches_bowled_in.rename("matches_bowled_in"),
+    ], axis=1).fillna(0)
 
     roles = {}
     for (ident, gender), row in agg.iterrows():
         bf, bb = row["balls_faced"], row["balls_bowled"]
-        if bb >= 60 and bf >= 60:
+        bowled_in_frac = (row["matches_bowled_in"] / row["matches_played"]) if row["matches_played"] else 0.0
+        is_bowler = bb >= _BOWLER_MIN_BALLS and bowled_in_frac >= _BOWLER_MATCH_FRACTION_THRESHOLD
+        if is_bowler and bf >= 60:
             role = "all-rounder"
-        elif bb >= 60:
+        elif is_bowler:
             role = "bowler"
         elif bf >= 1:
             role = "batter"

@@ -9,6 +9,7 @@ from .db import set_meta
 from .identity import player_id_map
 from .logging_utils import get_logger
 from .stats import build_innings
+from .styles import is_cricket_role
 
 log = get_logger("career")
 
@@ -79,9 +80,12 @@ def build_career_for_format(conn, fmt: str) -> int:
         c = career_from_group(g)
         b = c["batting"]
         bw = c.get("bowling", {})
+        # players.role can be a non-cricket value (see styles.is_cricket_role); derived_role is always safe.
+        raw_role = pm.get("role")
+        display_role = raw_role if raw_role and is_cricket_role(raw_role) else pm.get("derived_role")
         rows.append((
             pid, fmt, pm["canonical_name"],
-            pm.get("role") or pm.get("derived_role"),
+            display_role,
             b["innings"], b["runs"], b["balls"], b["average"], b["strike_rate"],
             b["high_score"], b["fifties"], b["hundreds"],
             bw.get("innings"), bw.get("balls"), bw.get("overs"),

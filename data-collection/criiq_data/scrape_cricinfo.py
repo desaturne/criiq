@@ -8,6 +8,7 @@ import pandas as pd
 from . import http
 from .config import CACHE_DIR, SETTINGS
 from .logging_utils import get_logger
+from .styles import is_cricket_role
 
 log = get_logger("cricinfo")
 
@@ -45,10 +46,14 @@ def fetch_athlete(key_cricinfo: str) -> dict | None:
     dob = data.get("dateOfBirth")
     if dob:
         dob = str(dob)[:10]
+    role = data.get("position", {}).get("name") if isinstance(data.get("position"), dict) else None
+    if role and not is_cricket_role(role):
+        # Defensive check -- Wikidata's P413 (styles.seed_from_wikidata) is the confirmed source, not this API.
+        role = None
     return {
         "date_of_birth": dob,
         "nationality": (data.get("citizenship") or data.get("nationality")),
-        "role": data.get("position", {}).get("name") if isinstance(data.get("position"), dict) else None,
+        "role": role,
         "batting_hand": data.get("style", [{}])[0].get("description")
             if isinstance(data.get("style"), list) and data.get("style") else None,
     }

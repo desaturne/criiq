@@ -60,6 +60,22 @@ def classify_hand(hand: str | None) -> str | None:
     return None
 
 
+_CRICKET_ROLE_KEYWORDS = (
+    "batsman", "batswoman", "batter", "batting",
+    "bowler", "bowling",
+    "all-rounder", "all rounder", "allrounder",
+    "wicket-keeper", "wicketkeeper", "wicket keeper",
+)
+
+
+def is_cricket_role(role_text: str | None) -> bool:
+    """True if `role_text` names an actual cricket role, not another sport's position (Wikidata's P413 is cross-sport)."""
+    if not role_text:
+        return False
+    r = role_text.lower()
+    return any(k in r for k in _CRICKET_ROLE_KEYWORDS)
+
+
 def _sparql(query: str) -> dict:
     url = f"{WIKIDATA_SPARQL}?" + urllib.parse.urlencode(
         {"query": query, "format": "json"})
@@ -103,6 +119,10 @@ def seed_from_wikidata(conn, chunk: int = 150, limit: int | None = None) -> dict
             dob = b.get("dob", {}).get("value")
             dob = dob[:10] if dob else None
             role = b.get("roleLabel", {}).get("value")
+            if role and not is_cricket_role(role):
+                log.info("wikidata seed: dropping non-cricket role %r for cricinfo=%s "
+                         "(P413 is a cross-sport property, not cricket-specific)", role, cid)
+                role = None
             country = b.get("countryLabel", {}).get("value")
             if not (dob or role or country):
                 continue
