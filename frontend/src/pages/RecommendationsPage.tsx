@@ -399,7 +399,7 @@ export function RecommendationsPage() {
               <TeamSelect label="Team" value={team} onChange={setTeam} gender={gender} against={opponent} disabled={teamLocked} />
               <TeamSelect label="Opponent" value={opponent} onChange={setOpponent} gender={gender} against={team} />
               <VenueSelect value={venue} onChange={setVenue} team1={team} team2={opponent} />
-              {/* T20I is the only supported format/}
+              {/* T20I is the only supported format */}
               <div className="space-y-1">
                 <label className="text-[12px] text-muted-foreground">Format</label>
                 <button type="button" disabled
