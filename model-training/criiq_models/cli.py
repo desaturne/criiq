@@ -20,6 +20,7 @@ for _stream in (sys.stdout, sys.stderr):
 from .config import SETTINGS
 from .db import connect
 from .evaluate.backtest import backtest
+from .evaluate.compare_engines import compare_engines
 from .evaluate.rank_backtest import rank_backtest
 from .features.historical import build_training_table
 from .recommend.explain import explain
@@ -28,7 +29,9 @@ from .recommend.render import render_player_explanation, render_team_sheet, rend
 from .recommend.score import RecommendationScorer
 from .recommend.shap_explain import explain_prediction
 from .recommend.strength import strength_context
+from .recommend.rank_select import tune_and_train_ranker
 from .recommend.train import load_background, load_metadata, train
+from .recommend.tune import tune_and_train
 from .roster import known_teams, team_pool
 from .venues import resolve_venue
 from .selection.optimize import analyze_xi, role_highlights, role_pools, select_xi, slot_category
@@ -136,6 +139,24 @@ def cmd_backtest(args):
 def cmd_rank_backtest(args):
     conn = connect()
     _pp(rank_backtest(conn, args.format, args.gender))
+    conn.close()
+
+
+def cmd_tune(args):
+    conn = connect()
+    _pp(tune_and_train(conn, args.format, args.gender, n_iter=args.n_iter))
+    conn.close()
+
+
+def cmd_compare_engines(args):
+    conn = connect()
+    _pp(compare_engines(conn, args.format, args.gender, n_iter=args.n_iter, holdout_limit=args.holdout_limit))
+    conn.close()
+
+
+def cmd_tune_ranker(args):
+    conn = connect()
+    _pp(tune_and_train_ranker(conn, args.format, args.gender, n_iter=args.n_iter))
     conn.close()
 
 
@@ -887,6 +908,39 @@ def build_parser() -> argparse.ArgumentParser:
     rb.add_argument("--format", default=SETTINGS.format)
     rb.add_argument("--gender", default=SETTINGS.gender)
     rb.set_defaults(func=cmd_rank_backtest)
+
+    tn = sub.add_parser("tune", help="RandomizedSearchCV hyperparameter search for the wpa regressors, "
+                                      "then fit + persist the tuned models to a separate `_tuned` artifacts "
+                                      "dir (never overwrites `train`'s production artifacts)")
+    tn.add_argument("--format", default=SETTINGS.format)
+    tn.add_argument("--gender", default=SETTINGS.gender)
+    tn.add_argument("--n-iter", dest="n_iter", type=int, default=25,
+                     help="RandomizedSearchCV iterations per target (default 25)")
+    tn.set_defaults(func=cmd_tune)
+
+    tr = sub.add_parser("tune-ranker", help="RandomizedSearchCV-style hyperparameter search for a "
+                                             "learning-to-rank model (LGBMRanker) that picks the playing XI "
+                                             "and top-20 pool directly by its own ranking -- no MILP step -- "
+                                             "then fit + persist it to a `_ranker` artifacts dir")
+    tr.add_argument("--format", default=SETTINGS.format)
+    tr.add_argument("--gender", default=SETTINGS.gender)
+    tr.add_argument("--n-iter", dest="n_iter", type=int, default=20,
+                     help="hyperparameter search iterations (default 20)")
+    tr.set_defaults(func=cmd_tune_ranker)
+
+    ce = sub.add_parser("compare-engines", help="does the tuned model (or the tuned+baseline ensemble, or the "
+                                                  "model-driven ranker from `tune-ranker`) beat the existing "
+                                                  "MILP-fed pipeline? honest temporal-holdout regression "
+                                                  "comparison plus real-historical-XI overlap "
+                                                  "(run `tune` / `tune-ranker` first to get their columns)")
+    ce.add_argument("--format", default=SETTINGS.format)
+    ce.add_argument("--gender", default=SETTINGS.gender)
+    ce.add_argument("--n-iter", dest="n_iter", type=int, default=25,
+                     help="RandomizedSearchCV iterations per target for the internal train-only re-tune "
+                          "used by the regression backtest (default 25)")
+    ce.add_argument("--holdout-limit", dest="holdout_limit", type=int, default=40,
+                     help="max matches_holdout rows to sample for the XI-overlap check (default 40)")
+    ce.set_defaults(func=cmd_compare_engines)
 
     tm = sub.add_parser("teams", help="list known team names")
     tm.add_argument("--format", default=SETTINGS.format)
