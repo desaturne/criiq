@@ -87,6 +87,13 @@ CREATE TABLE venues (
 CREATE TABLE player_advanced (
     player_id TEXT, format TEXT, archetype TEXT, profile_json TEXT
 );
+CREATE TABLE matches_holdout (
+    match_id TEXT PRIMARY KEY, format TEXT, gender TEXT, date TEXT,
+    team1 TEXT, team2 TEXT, venue_id TEXT
+);
+CREATE TABLE match_players_holdout (
+    match_id TEXT, team TEXT, player_name TEXT
+);
 """
 
 
