@@ -231,6 +231,159 @@ Overlap distribution across the 142 comparisons: mostly 5–8 players in common 
 
 **Honest read:** win/loss calling is genuinely better than a coin flip and better-calibrated than a flat 50/50 guess, consistent with §9C's two hand-picked examples (the real World Cup Final and the England-India decider were both called correctly). Predicting the *exact* score is weak — the MAE is roughly as large as the real scores' own natural spread — which matches every other honest finding in this report: T20 cricket has a lot of irreducible per-match variance, and the simulator's real value is in relative win-probability, not exact score forecasting. The male sample here is too small (4-5 matches) to draw a real conclusion from; it's reported for completeness, not as a confident number.
 
+## 12. The `female_T20_tuned` artifacts on the forward-holdout (measured 2026-08-13)
+
+Answers a question no earlier section asked: `artifacts/player_recommendation/female_T20_tuned/`
+holds a second, hyperparameter-searched pair of WPA regressors. **Nothing in the codebase ever
+loads them** — `recommend/train.py`'s `_artifacts_dir()` resolves to `{gender}_{fmt}`, i.e.
+`female_T20`, so the tuned pair is currently dead weight on disk. Their params also differ from
+the hardcoded ones in `_make_model` (tuned `batting_wpa`: `max_depth=4, max_features=0.7,
+n_estimators=200`; shipped: `max_depth=10, max_features="sqrt"`). This section measures whether
+promoting them would actually help.
+
+Note that `criiq_models backtest` **cannot** answer this: it calls `_make_model` and retrains from
+scratch, so it validates the *configuration*, never the persisted artifacts. §9's forward-holdout
+method was replicated instead.
+
+**Method** — same as §9, with the parquet-clobbering bug §9 hit designed out:
+1. `VACUUM INTO` copy of the live DB; `CRIIQ_DATA_DIR` pointed at a scratch dir so `FEATURES_DIR`,
+   `MODELS_DIR` and `DB_PATH` all redirect. §9 overwrote the production `ball_state_T20.parquet`
+   because that path is derived from `DATA_DIR`; redirecting `DATA_DIR` prevents it by construction.
+2. Merged `matches_holdout`/`deliveries_holdout`/`match_players_holdout` into the production-named
+   tables **in the copy only** (+149 matches, +34,992 deliveries, +3,279 match_players).
+3. Reran `identity.run`, `ml_features.build_all`, `wpa.build_wpa` on the copy. `wpa` scores with the
+   already-persisted pre-cutoff `EmpiricalWinProb`; nothing was refit.
+4. Loaded both persisted artifact pairs and scored **identical rows**. No retraining anywhere.
+5. All 15 production files (5 joblib, 10 parquet) SHA-256 verified unchanged afterwards.
+
+**Unseen set:** 1,057 player-match rows over 51 female T20 matches, 2026-06-16 → 2026-07-12 — after
+the tuned model's own training cutoff of 2026-06-15, zero overlap with `matches`.
+
+| Target | Model | MAE | Baseline MAE | Corr | Sign-agree | Top-quartile hit-rate |
+|---|---|---|---|---|---|---|
+| batting_wpa | shipped | 0.1075 | 0.1086 | 0.118 | 52.7% | 35.6% |
+| batting_wpa | **tuned** | 0.1072 | 0.1086 | 0.110 | 51.5% | 35.5% |
+| bowling_wpa | shipped | 0.0868 | 0.0883 | 0.106 | 54.3% | 21.6% |
+| bowling_wpa | **tuned** | 0.0866 | 0.0883 | 0.120 | 54.6% | **26.0%** |
+
+The shipped-model row reproduces §9A closely (§9A: 1,047 rows / 51 matches, batting MAE 0.108 /
+corr 0.113 / hit 36.3%; bowling MAE 0.087 / corr 0.107 / hit 21.8%), which is what confirms the
+replication is faithful rather than a differently-built pipeline.
+
+**Sign-agreement is computed over non-zero actuals only.** ~26% of batting rows and ~41% of bowling
+rows have an actual WPA of exactly 0 (players who never batted / never bowled). `sign(0)` cannot
+match any non-zero prediction, so including them drags the figure to a meaningless 38.8% and makes
+it look like a broken model rather than an artifact of the metric. §9A's 52.1%/54.5% uses the same
+non-zero convention.
+
+**Is the bowling gain real?** Paired bootstrap, 2,000 resamples **over matches** (not rows, since
+rows within a match are correlated), seed 42:
+
+| Target | Metric | Δ (tuned − shipped) | 95% CI | Verdict |
+|---|---|---|---|---|
+| batting_wpa | corr | −0.0077 | [−0.044, +0.032] | not significant |
+| batting_wpa | hit-rate | −0.0007 | [−0.040, +0.039] | not significant |
+| bowling_wpa | corr | +0.0144 | [−0.007, +0.038] | not significant |
+| bowling_wpa | **hit-rate** | **+0.0441** | **[+0.015, +0.077]** | **significant** |
+
+**Honest read:** on genuinely unseen data the tuned pair is **indistinguishable from shipped on
+batting** and delivers one **statistically significant** improvement — bowling top-quartile
+hit-rate, 21.6% → 26.0%, CI excluding zero. That is the metric closest to the actual selection job
+("did we rank the right bowlers into the top quarter"), and bowling has been the weaker of the two
+targets in every prior section. The bowling correlation moves the same direction but does not clear
+significance at n=51 matches. Three of four comparisons are a wash; this is a narrow, single-metric
+win, not a general improvement, and it rests on 51 matches.
+
+**Face-validity spot check:** the 15 highest tuned-predicted batting rows are Matthews, Voll,
+Athapaththu (AC Jayangani), Mandhana, Mooney, Wolvaardt and similar — genuine elite women's T20I
+names, not noise. 10 of those 15 had positive actual batting WPA, averaging **+0.124** against
+**+0.012** across all rows (~10x).
+
+**Not acted on.** Promoting `female_T20_tuned` changes live selection output, so it is left as a
+decision, not a silent swap. Raw outputs: `female_T20_tuned_holdout_validation.csv` (the metrics
+table) and `female_T20_holdout_player_scores.csv` (all 1,057 rows — match, date, event, teams,
+player name, both models' predictions beside the actuals).
+
+## 13. Win-probability model — validation accuracy on the holdout set, both scopes (measured 2026-08-13)
+
+**Headline: on 27,916 balls from 118 unseen T20 matches, the win-probability model picks the
+eventual winner 79.1% of the time in men's T20I and 65.7% in women's, against baselines of 52.8%
+and 54.6%.**
+
+This is the single number for "how well do our predicted win probabilities match actual outcomes on
+data the model has never seen." Nothing is refit: the persisted, pre-cutoff `winprob_T20_{gender}_*`
+grids were loaded and scored directly, with their SHA-256s checked identical to the production files
+before and after. The holdout is the same genuine forward set §9/§12 use — matches dated after
+`data_cutoff_date` 2026-06-15, routed by ingest into `matches_holdout`, never seen in training in
+any form.
+
+**"Accuracy" here means:** for every ball, the model's predicted win probability for the batting
+side is turned into a hard call (`p >= 0.5` → batting side wins) and compared with who actually won.
+The baseline is the same rule applied to the model's own base rates, i.e. "always favour whoever the
+average match favours."
+
+| Scope | Balls | Matches | **Accuracy** | Baseline acc. | Brier | Brier baseline | Log loss | Log loss baseline | AUC |
+|---|---|---|---|---|---|---|---|---|---|
+| **Men's — all balls** | 15,584 | 68 | **79.1%** | 52.8% | 0.145 | 0.249 | 0.451 | 0.691 | 0.883 |
+| Men's — 1st innings | 8,334 | 68 | 70.5% | 51.3% | 0.186 | 0.250 | 0.551 | 0.693 | 0.804 |
+| Men's — 2nd innings (chase) | 7,250 | 68 | **89.0%** | 54.6% | 0.098 | 0.248 | 0.335 | 0.689 | 0.946 |
+| **Women's — all balls** | 12,332 | 50 | **65.7%** | 54.6% | 0.214 | 0.248 | 0.615 | 0.689 | 0.726 |
+| Women's — 1st innings | 6,556 | 50 | 59.5% | 53.0% | 0.243 | 0.249 | 0.678 | 0.691 | 0.634 |
+| Women's — 2nd innings (chase) | 5,776 | 50 | **72.7%** | 56.4% | 0.182 | 0.246 | 0.543 | 0.686 | 0.792 |
+
+Match-level (one prediction per match, not per ball):
+
+| Decision point | Men's | Women's |
+|---|---|---|
+| At the innings break (last ball of innings 1) | **80.9%** (55/68) | **64.0%** (32/50) |
+| At the first ball of the chase | 82.4% (56/68) | 58.0% (29/50) |
+
+Both all-balls rows reproduce §9B exactly (§9B: female 12,332 balls / 50 matches, Brier 0.214,
+accuracy 65.7%, start-of-chase 58.0%; male 15,584 / 68, Brier 0.145, 79.1%, 82.4%), which is what
+confirms this run measures the same thing that section did. The per-innings split, AUC and
+calibration below are new.
+
+**Honest read.** Both models beat their baseline on every metric in every split, and both improve
+sharply once a chase is underway — 89.0% men's / 72.7% women's, where runs required and balls
+remaining carry real information. Before a target exists the signal is genuinely thin, and both
+models correctly stay near their prior rather than pretending otherwise (70.5% / 59.5%).
+
+**The men's model is substantially stronger than the women's on every measure** — 79.1% vs 65.7%
+overall, AUC 0.883 vs 0.726, Brier 0.145 vs 0.214. The most likely reason is data volume: the male
+scope trains on roughly 75% more ball-state rows, and women's T20I also carries more scoring
+variance per ball. This gap is worth stating plainly rather than quoting only the stronger number.
+
+**Calibration — the two models miss in opposite directions.** ECE over 10 buckets is 0.068 men's /
+0.063 women's, but the *direction* differs and matters more than the magnitude:
+
+| Predicted bucket | Men's: actually won | Women's: actually won |
+|---|---|---|
+| 0.0–0.1 | 2.3% | 12.4% |
+| 0.1–0.2 | 7.6% | 23.5% |
+| 0.2–0.3 | 13.0% | 32.6% |
+| 0.3–0.4 | 23.4% | 37.8% |
+| 0.4–0.5 | 45.7% | 46.7% |
+| 0.5–0.6 | 54.8% | 52.9% |
+| 0.6–0.7 | 72.6% | 55.6% |
+| 0.7–0.8 | **85.1%** | **57.6%** |
+| 0.8–0.9 | 95.0% | 81.8% |
+| 0.9–1.0 | 100.0% | 97.0% |
+
+- **Women's is over-confident**: its probabilities are too extreme. At a stated ~75% the side
+  actually wins 57.6% (1,440 balls). A "75%" on the women's win-probability chart should be read as
+  a strong lean, not a near-certainty.
+- **Men's is under-confident**: its probabilities are too timid, and reality is more decisive than
+  it claims. At a stated ~75% the side actually wins 85.1%; at ~84% it wins 95.0%; at ~26% it wins
+  only 13.0%. Every men's bucket above 0.6 lands above the diagonal and every bucket below 0.4
+  lands below it — the classic S-curve of a model that should be sharpened.
+
+Both are real and reproducible on thousands of balls, not sampling noise, and both are fixable with
+the same tool — an isotonic recalibration fitted on holdout, per gender, since the corrections point
+opposite ways. Reported, not fixed.
+
+Raw outputs: `winprob_holdout_accuracy.csv`, `winprob_holdout_calibration.csv`. Charts in
+`figures/` (`01_winprob_accuracy.png`, `02_accuracy_through_match.png`, `03_calibration.png`).
+
 ## Summary for presentation
 
 - All 171 automated tests pass.
