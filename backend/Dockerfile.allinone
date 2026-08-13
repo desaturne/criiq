@@ -34,6 +34,12 @@ COPY backend/nginx-allinone.conf /etc/nginx/sites-available/default
 COPY data-collection/data/criiq.db /data/criiq.db
 COPY model-training/artifacts/ /artifacts/
 
+# Win-probability grids. simulate/winprob_reader.py resolves these relative to
+# the package (ROOT_DIR.parent/data-collection/data/models) with no env
+# override, unlike CRIIQ_DB and CRIIQ_MODEL_ARTIFACTS, so they have to land on
+# that exact path or `simulate` fails at load time.
+COPY data-collection/data/models/ /app/data-collection/data/models/
+
 COPY backend/start-allinone.sh /start.sh
 RUN chmod +x /start.sh
 
