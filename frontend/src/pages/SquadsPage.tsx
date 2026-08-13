@@ -24,6 +24,13 @@ export function SquadsPage() {
   const [addSuccess, setAddSuccess] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [newPlayer, setNewPlayer] = useState({ name: "", role: "Batter", battingHand: "Right", bowlingStyle: "", status: "ACTIVE" as PlayerStatus });
+  const [teamOptions, setTeamOptions] = useState<string[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.listTeams({ gender }).then(res => { if (!cancelled) setTeamOptions(res.map(t => t.team)); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [gender]);
 
   const loadPlayers = () => {
     setLoading(true);
@@ -221,7 +228,10 @@ export function SquadsPage() {
         {/* Country Selector Dropdown */}
         <select value={team} onChange={e => setTeam(e.target.value)} title="Squad / nationality"
           className="text-sm bg-secondary border border-border rounded-lg px-3 py-1.5 text-foreground font-medium focus:outline-none focus:ring-2 focus:ring-[#AAFF57]/40">
-          {["India", "Australia", "England", "South Africa", "New Zealand", "Pakistan", "Sri Lanka", "West Indies", "All"].map(t => <option key={t}>{t}</option>)}
+          {/* Keeps the current value selectable even if the fetch hasn't landed yet, or if it's the "All" pseudo-team */}
+          {team !== "All" && !teamOptions.includes(team) && <option key={team}>{team}</option>}
+          {teamOptions.map(t => <option key={t}>{t}</option>)}
+          <option>All</option>
         </select>
         <div className="relative">
           <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
