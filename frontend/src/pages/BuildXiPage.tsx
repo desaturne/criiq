@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { useNavigate, useLocation } from "react-router";
 import { CheckCircle, Users, GitCompare, Shield } from "lucide-react";
@@ -25,6 +25,10 @@ export function BuildXiPage() {
   const [showSquadPanel, setShowSquadPanel] = useState(false);
   const [compareIds, setCompareIds] = useState<string[]>([]);
   const [showCompare, setShowCompare] = useState(false);
+  // Defaults the opponent to the team's real most-played rival instead of a
+  // hardcoded "Australia" -- flips false the moment the coach picks one
+  // themselves, so a later gender toggle doesn't clobber their choice.
+  const oppositionAutoRef = useRef(true);
 
   const loadPlayers = () => {
     setLoading(true);
@@ -33,13 +37,17 @@ export function BuildXiPage() {
       .finally(() => setLoading(false));
   };
 
-  // The coach's own side is fixed, and TeamSelect excludes it from the
-  // opponent list, so an Australian coach would otherwise open on the
-  // "Australia" default with nothing selectable to fix it. Same guard the
-  // Recommendations page uses.
   useEffect(() => {
-    if (team && opposition === team) setOpposition(team === "Australia" ? "India" : "Australia");
-  }, [team, opposition]);
+    if (!team) return;
+    let cancelled = false;
+    api.listTeams({ gender, against: team })
+      .then(teams => {
+        if (cancelled || !oppositionAutoRef.current) return;
+        if (teams[0]) setOpposition(teams[0].team);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [team, gender]);
 
   useEffect(() => { loadPlayers(); }, [team, gender, opposition]);
 
@@ -91,7 +99,8 @@ export function BuildXiPage() {
         {/* Opponent Selector Dropdown */}
         <div className="flex items-center gap-1.5">
           <span className="text-xs text-muted-foreground font-medium">vs</span>
-          <TeamSelect compact label="Opponent" value={opposition} onChange={setOpposition}
+          <TeamSelect compact label="Opponent" value={opposition}
+            onChange={v => { oppositionAutoRef.current = false; setOpposition(v); }}
             gender={gender} against={team} exclude={team} />
         </div>
 

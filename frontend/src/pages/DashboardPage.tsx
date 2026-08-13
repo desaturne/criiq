@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { useNavigate } from "react-router";
 import { Search, GitCompare } from "lucide-react";
 import { AnimatedStat } from "../components/common/AnimatedStat";
 import { PlayerCard } from "../components/player/PlayerCard";
 import { PlayerCompareModal } from "../components/player/PlayerCompareModal";
+import { TeamSelect } from "../components/common/TeamSelect";
+import { useApp } from "../context/AppContext";
 import * as api from "../lib/api";
 import { mapApiPlayerListItem } from "../lib/mappers";
 import { Player } from "../types/index";
@@ -14,7 +16,11 @@ import { Player } from "../types/index";
 // purely "look at real player data", never a place to build a squad from.
 export function DashboardPage() {
   const navigate = useNavigate();
-  const [team, setTeam] = useState("India");
+  const { user } = useApp();
+  // Defaults to the coach's own side (any real team, not the old hardcoded
+  // six-country list Nepal etc. weren't even in) -- still freely switchable
+  // since this is a scouting view, not a squad-builder.
+  const [team, setTeam] = useState(user?.country || "India");
   const [gender, setGender] = useState<"female" | "male">("female");
   const [opposition, setOpposition] = useState("Australia");
   const [search, setSearch] = useState("");
@@ -23,6 +29,24 @@ export function DashboardPage() {
   const [showCompare, setShowCompare] = useState(false);
   const [players, setPlayers] = useState<Player[]>([]);
   const [loading, setLoading] = useState(true);
+  // Same auto-default-until-manually-changed pattern as Build XI/Recommendations.
+  const teamAutoRef = useRef(true);
+  const oppositionAutoRef = useRef(true);
+
+  useEffect(() => {
+    if (user?.country && teamAutoRef.current) setTeam(user.country);
+  }, [user?.country]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.listTeams({ gender, against: team })
+      .then(teams => {
+        if (cancelled || !oppositionAutoRef.current) return;
+        if (teams[0]) setOpposition(teams[0].team);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [team, gender]);
 
   useEffect(() => {
     let cancelled = false;
@@ -75,14 +99,12 @@ export function DashboardPage() {
               </button>
             ))}
           </div>
-          <select value={team} onChange={e => setTeam(e.target.value)} title="Squad / nationality"
-            className="text-sm bg-secondary border border-border rounded-lg px-3 py-1.5 text-foreground font-medium focus:outline-none focus:ring-2 focus:ring-[#AAFF57]/40">
-            {["India", "Australia", "England", "South Africa", "New Zealand", "Pakistan"].map(t => <option key={t}>{t}</option>)}
-          </select>
-          <select value={opposition} onChange={e => setOpposition(e.target.value)} title="Opponent"
-            className="text-sm bg-secondary border border-border rounded-lg px-3 py-1.5 text-foreground focus:outline-none focus:ring-2 focus:ring-[#AAFF57]/40">
-            {["Australia", "England", "South Africa", "New Zealand", "Pakistan", "India"].filter(t => t !== team).map(t => <option key={t}>{t}</option>)}
-          </select>
+          <TeamSelect compact label="Squad / nationality" value={team}
+            onChange={v => { teamAutoRef.current = false; setTeam(v); }}
+            gender={gender} against={opposition} />
+          <TeamSelect compact label="Opponent" value={opposition}
+            onChange={v => { oppositionAutoRef.current = false; setOpposition(v); }}
+            gender={gender} against={team} exclude={team} />
         </div>
       </div>
 

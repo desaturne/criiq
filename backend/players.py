@@ -520,17 +520,31 @@ def delete_player(player_id: str):
 
 
 @router.post("/players/{player_id}/retire")
-def retire_player(player_id: str):
+def retire_player(player_id: str, user: dict = Depends(require_user)):
     if player_id.startswith("m") and player_id[1:].isdigit():
-        info = app_db.execute("UPDATE manual_players SET status = 'RETIRED' WHERE id = ?", (int(player_id[1:]),))
-        app_db.commit()
-        if info.rowcount == 0:
+        manual = app_db.execute(
+            "SELECT country FROM manual_players WHERE id = ?", (int(player_id[1:]),)
+        ).fetchone()
+        if not manual:
             raise HTTPException(404, "Unknown player id")
+        if manual["country"] != user["country"]:
+            raise HTTPException(403, "You can only retire players from your own team")
+        app_db.execute("UPDATE manual_players SET status = 'RETIRED' WHERE id = ?", (int(player_id[1:]),))
+        app_db.commit()
         return {"data": {"id": player_id, "status": "RETIRED"}, "error": None}
 
-    exists = criiq_db.execute("SELECT 1 FROM players WHERE player_id = ?", (player_id,)).fetchone()
-    if not exists:
+    row = criiq_db.execute(
+        """SELECT p.cricsheet_identifier, c.nationality
+           FROM players p LEFT JOIN player_cards c ON c.player_id = p.player_id
+           WHERE p.player_id = ?""",
+        (player_id,),
+    ).fetchone()
+    if not row:
         raise HTTPException(404, "Unknown player id")
+
+    player_country = roster_index.current_team(row["cricsheet_identifier"]) or row["nationality"]
+    if player_country != user["country"]:
+        raise HTTPException(403, "You can only retire players from your own team")
 
     app_db.execute(
         "INSERT INTO retired_players (player_id, retired_at) VALUES (?, datetime('now')) "

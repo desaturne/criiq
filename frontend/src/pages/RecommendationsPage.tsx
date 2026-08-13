@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { useNavigate } from "react-router";
@@ -163,18 +163,26 @@ export function RecommendationsPage() {
   // Simulator is the page for arbitrary team-vs-team matchups; this one is
   // "who should *I* pick", which is meaningless for a squad that isn't theirs.
   const teamLocked = !!user?.country;
+  // Defaults Opponent to the team's real most-played rival instead of a
+  // hardcoded "Australia" -- flips false the moment the coach picks one
+  // themselves, so a later team/gender change doesn't clobber their choice.
+  const opponentAutoRef = useRef(true);
 
   useEffect(() => {
     if (user?.country) setTeam(user.country);
   }, [user?.country]);
 
-  // ...which means the coach can no longer resolve a same-team matchup by
-  // changing Team. An Indian coach lands on the "Australia" default fine, but
-  // an Australian coach would open on Australia vs Australia, so move the
-  // opponent off their own side instead.
   useEffect(() => {
-    if (team && opponent === team) setOpponent(team === "Australia" ? "India" : "Australia");
-  }, [team, opponent]);
+    if (!team) return;
+    let cancelled = false;
+    api.listTeams({ gender, against: team })
+      .then(teams => {
+        if (cancelled || !opponentAutoRef.current) return;
+        if (teams[0]) setOpponent(teams[0].team);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [team, gender]);
 
   // The opposition's selectable roster, to pick their XI from. Reloads on
   // opponent/gender change, and clears the previous XI -- those ids belong to
@@ -410,7 +418,9 @@ export function RecommendationsPage() {
             </div>
             <div className="space-y-3">
               <TeamSelect label="Your team" value={team} onChange={setTeam} gender={gender} against={opponent} disabled={teamLocked} />
-              <TeamSelect label="Opponent" value={opponent} onChange={setOpponent} gender={gender} against={team} exclude={team} />
+              <TeamSelect label="Opponent" value={opponent}
+                onChange={v => { opponentAutoRef.current = false; setOpponent(v); }}
+                gender={gender} against={team} exclude={team} />
               <VenueSelect value={venue} onChange={setVenue} team1={team} team2={opponent} />
               {/* T20I is the only supported format */}
               <div className="space-y-1">

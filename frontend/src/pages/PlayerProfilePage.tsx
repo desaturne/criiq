@@ -8,8 +8,10 @@ import { StatusBadge } from "../components/common/StatusBadge";
 import * as api from "../lib/api";
 import { applyVsOpponent, mapApiPlayerDetail } from "../lib/mappers";
 import { Player } from "../types/index";
+import { useApp } from "../context/AppContext";
 
 export function PlayerProfilePage() {
+  const { user } = useApp();
   const { id: playerId } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -106,14 +108,16 @@ export function PlayerProfilePage() {
             </div>
           </div>
 
-          <button
-            onClick={() => setRetirePromptOpen(true)}
-            disabled={retiring || player.status === "RETIRED"}
-            className="w-full inline-flex items-center justify-center gap-2 rounded-lg border border-amber-500/30 px-4 py-3 text-sm font-medium text-amber-300 transition-colors hover:bg-amber-500/10 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <ShieldAlert size={15} />
-            {player.status === "RETIRED" ? "Retired" : "Retired?"}
-          </button>
+          {(!user?.country || player.team === user.country) && (
+            <button
+              onClick={() => setRetirePromptOpen(true)}
+              disabled={retiring || player.status === "RETIRED"}
+              className="w-full inline-flex items-center justify-center gap-2 rounded-lg border border-amber-500/30 px-4 py-3 text-sm font-medium text-amber-300 transition-colors hover:bg-amber-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <ShieldAlert size={15} />
+              {player.status === "RETIRED" ? "Retired" : "Retired?"}
+            </button>
+          )}
         </div>
 
         {/* Right: Stats */}
