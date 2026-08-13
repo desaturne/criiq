@@ -1,9 +1,15 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { motion } from "motion/react";
 import { Lock, RefreshCw, Mail, User } from "lucide-react";
 import { CricketBall } from "../../components/common/CricketBall";
+import * as api from "../../lib/api";
 
-const COUNTRY_OPTIONS = ["India", "Australia", "England", "South Africa", "New Zealand", "Pakistan"];
+// Only used until GET /teams answers (and if it fails outright) -- the six
+// countries this form used to be hardcoded to. The live list is every
+// international side in the database, so a coach for Nepal, Scotland or the
+// UAE can register for the team they actually coach instead of being forced to
+// pick one of six and land locked to the wrong country.
+const FALLBACK_COUNTRIES = ["India", "Australia", "England", "South Africa", "New Zealand", "Pakistan"];
 
 export function LoginPage({ onLogin, onRegister, onAdminAccess }: {
   onLogin: (email: string, password: string) => Promise<void>;
@@ -15,6 +21,15 @@ export function LoginPage({ onLogin, onRegister, onAdminAccess }: {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [country, setCountry] = useState("India");
+  const [countries, setCountries] = useState<string[]>(FALLBACK_COUNTRIES);
+
+  // Fetched once on mount rather than when the form flips to sign-up, so the
+  // list is already there the moment the user switches modes.
+  useEffect(() => {
+    api.listTeams({ gender: "female" })
+      .then(teams => { if (teams.length) setCountries(teams.map(t => t.team)); })
+      .catch(() => { /* keep the fallback list — sign-up must still work offline */ });
+  }, []);
   const [loading, setLoading] = useState(false);
   const [shake, setShake] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -120,7 +135,7 @@ export function LoginPage({ onLogin, onRegister, onAdminAccess }: {
                 <label className="text-[13px] font-medium text-foreground">Country</label>
                 <select value={country} onChange={e => setCountry(e.target.value)}
                   className="w-full px-3 py-2.5 text-sm bg-input-background border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-[#AAFF57]/40 focus:border-[#AAFF57] text-foreground transition-all">
-                  {COUNTRY_OPTIONS.map(option => <option key={option}>{option}</option>)}
+                  {countries.map(option => <option key={option}>{option}</option>)}
                 </select>
               </div>
             )}

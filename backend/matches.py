@@ -15,6 +15,13 @@ from database import app_db, criiq_db
 
 router = APIRouter(tags=["matches"], dependencies=[Depends(require_user)])
 
+# /teams is the one route here that has to answer before anyone is logged in:
+# the sign-up form needs the real country list to let a coach register for the
+# side they actually coach. It returns nothing but public international team
+# names, so it lives on its own un-authenticated router rather than forcing the
+# UI to ship a hardcoded, drifting copy of the list.
+public_router = APIRouter(tags=["matches"])
+
 BOWLER_WICKETS = {"bowled", "caught", "lbw", "stumped", "caught and bowled", "hit wicket"}
 
 
@@ -115,7 +122,7 @@ def list_matches(
 # matchups" ahead of everything else -- each entry's `matches_played` is 0
 # for a team with no recorded history against `against`.
 # --------------------------------------------------------------------------
-@router.get("/teams")
+@public_router.get("/teams")
 def list_teams(gender: str | None = None, against: str | None = None):
     where = ["team_type = 'international'"]
     params: list = []
