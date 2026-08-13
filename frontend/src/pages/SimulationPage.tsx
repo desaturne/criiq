@@ -10,6 +10,11 @@ import { Scorecard } from "../components/match/Scorecard";
 import { TeamSelect } from "../components/common/TeamSelect";
 import { VenueSelect } from "../components/common/VenueSelect";
 
+// Monte Carlo reps per run. Fixed rather than user-facing: the count is an
+// internal accuracy/latency trade-off, not a coaching decision, and 20 is what
+// the backend defaults to anyway (SimulateBody.n_simulations).
+const N_SIMULATIONS = 20;
+
 export interface SimulatorPrefill {
   team1: string; team2: string; team1PlayerIds: string[]; team2PlayerIds: string[]; gender: "female" | "male";
 }
@@ -168,7 +173,6 @@ function SimulateTab({ gender, prefill }: { gender: "female" | "male"; prefill?:
     if (recommended2.ids.length === 11) setTeam2Players(recommended2.ids);
   }, [recommended2.ids]); // eslint-disable-line react-hooks/exhaustive-deps
   const [venue, setVenue] = useState("");
-  const [nSims, setNSims] = useState(20);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<any>(null);
@@ -178,7 +182,7 @@ function SimulateTab({ gender, prefill }: { gender: "female" | "male"; prefill?:
     try {
       const res = await api.simulateMatch({
         team1, team2, team1_player_ids: team1Players, team2_player_ids: team2Players,
-        toss_winner: team1, n_simulations: nSims, gender, venue: venue || undefined,
+        toss_winner: team1, n_simulations: N_SIMULATIONS, gender, venue: venue || undefined,
       });
       setResult(res);
     } catch (err) {
@@ -202,17 +206,10 @@ function SimulateTab({ gender, prefill }: { gender: "female" | "male"; prefill?:
           onUseRecommended={() => setTeam1Players(recommended1.ids)} recommendedLoading={recommended1.loading} />
         <XIPicker label={`${team2} XI`} players={team2Roster.players} loading={team2Roster.loading} selectedIds={team2Players} onChange={setTeam2Players}
           onUseRecommended={() => setTeam2Players(recommended2.ids)} recommendedLoading={recommended2.loading} />
-        <div className="flex items-center gap-3">
-          <div className="space-y-1 flex-1">
-            <label className="text-[11px] text-muted-foreground">Simulations</label>
-            <input type="number" min={1} max={200} value={nSims} onChange={e => setNSims(Number(e.target.value))}
-              className="w-full text-sm bg-secondary border border-border rounded-lg px-3 py-2 text-foreground focus:outline-none focus:ring-2 focus:ring-[#AAFF57]/40" />
-          </div>
-          <button onClick={run} disabled={!canRun}
-            className="mt-4 py-2.5 px-5 bg-[#AAFF57] text-[#0D0D06] font-semibold text-sm rounded-lg hover:opacity-90 active:scale-[0.98] transition-all flex items-center gap-2 disabled:opacity-40">
-            {loading ? <><RefreshCw size={14} className="animate-spin" /> Simulating…</> : <><PlayCircle size={14} /> Run Simulation</>}
-          </button>
-        </div>
+        <button onClick={run} disabled={!canRun}
+          className="w-full py-2.5 px-5 bg-[#AAFF57] text-[#0D0D06] font-semibold text-sm rounded-lg hover:opacity-90 active:scale-[0.98] transition-all flex items-center justify-center gap-2 disabled:opacity-40">
+          {loading ? <><RefreshCw size={14} className="animate-spin" /> Simulating…</> : <><PlayCircle size={14} /> Run Simulation</>}
+        </button>
         {error && <p className="text-[12px] text-red-400">{error}</p>}
       </div>
 
@@ -226,7 +223,6 @@ function SimulateTab({ gender, prefill }: { gender: "female" | "male"; prefill?:
         {result && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-3">
             <div className="bg-card border border-border rounded-xl p-4">
-              <p className="text-[11px] text-muted-foreground mb-2">{result.n_simulations} simulation(s)</p>
               <div className="flex items-center justify-between mb-1">
                 <span className="text-sm text-foreground">{result.first_innings?.team}</span>
                 <span className="font-mono text-sm font-semibold text-foreground">{result.first_innings?.score}/{result.first_innings?.wickets}</span>
