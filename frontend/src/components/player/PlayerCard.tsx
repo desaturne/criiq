@@ -92,7 +92,7 @@ export function PlayerCard({ player, index, opposition, selection = "undecided",
           <motion.button
             onClick={onToggleCompare}
             whileTap={{ scale: 0.92 }}
-            title="Add to compare"
+            title={comparing ? "Remove from compare" : "Add to compare"}
             className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] transition-all"
             style={{
               background: comparing ? "rgba(170,255,87,0.15)" : "transparent",
@@ -100,7 +100,7 @@ export function PlayerCard({ player, index, opposition, selection = "undecided",
               border: `1px solid ${comparing ? "rgba(170,255,87,0.4)" : "transparent"}`,
             }}
           >
-            <Scale size={10} /> {comparing ? "Comparing" : "Compare"}
+            <Scale size={10} />
           </motion.button>
         </div>
         {onSelect && player.status !== "RETIRED" && <div className="w-full"><SelectionControl state={selection} onChange={onSelect} /></div>}
