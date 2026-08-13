@@ -5,6 +5,7 @@ import { CheckCircle, Users, GitCompare, Shield } from "lucide-react";
 import { PlayerCard } from "../components/player/PlayerCard";
 import { PlayerCompareModal } from "../components/player/PlayerCompareModal";
 import { SquadSelectionPanel } from "../components/squad/SquadSelectionPanel";
+import { TeamSelect } from "../components/common/TeamSelect";
 import { useApp } from "../context/AppContext";
 import * as api from "../lib/api";
 import { mapApiPlayerListItem } from "../lib/mappers";
@@ -31,6 +32,14 @@ export function BuildXiPage() {
       .then(res => setPlayers(res.players.map(mapApiPlayerListItem)))
       .finally(() => setLoading(false));
   };
+
+  // The coach's own side is fixed, and TeamSelect excludes it from the
+  // opponent list, so an Australian coach would otherwise open on the
+  // "Australia" default with nothing selectable to fix it. Same guard the
+  // Recommendations page uses.
+  useEffect(() => {
+    if (team && opposition === team) setOpposition(team === "Australia" ? "India" : "Australia");
+  }, [team, opposition]);
 
   useEffect(() => { loadPlayers(); }, [team, gender, opposition]);
 
@@ -82,12 +91,8 @@ export function BuildXiPage() {
         {/* Opponent Selector Dropdown */}
         <div className="flex items-center gap-1.5">
           <span className="text-xs text-muted-foreground font-medium">vs</span>
-          <select value={opposition} onChange={e => setOpposition(e.target.value)} title="Opponent"
-            className="text-sm bg-secondary border border-border rounded-lg px-3 py-1.5 text-foreground font-medium focus:outline-none focus:ring-2 focus:ring-[#AAFF57]/40">
-            {["Australia", "England", "South Africa", "New Zealand", "Pakistan", "Sri Lanka", "West Indies"]
-              .filter(t => t.toLowerCase() !== team.toLowerCase())
-              .map(t => <option key={t}>{t}</option>)}
-          </select>
+          <TeamSelect compact label="Opponent" value={opposition} onChange={setOpposition}
+            gender={gender} against={team} exclude={team} />
         </div>
 
         {/* Inline actions */}

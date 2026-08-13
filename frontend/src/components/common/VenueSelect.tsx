@@ -28,7 +28,7 @@ export function VenueSelect({ label = "Venue", value, onChange, team1, team2 }: 
         {valueMissing && <option value={value}>{value}</option>}
         {likely.length > 0 && (
           <optgroup label="Likely grounds for this matchup">
-            {likely.map(v => <option key={v.venue_id} value={v.name}>{v.name} ({v.matches_here})</option>)}
+            {likely.map(v => <option key={v.venue_id} value={v.name}>{v.name}</option>)}
           </optgroup>
         )}
         <optgroup label={likely.length > 0 ? "All other grounds" : "All grounds"}>

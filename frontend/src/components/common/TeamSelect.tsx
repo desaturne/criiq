@@ -9,9 +9,13 @@ import * as api from "../../lib/api";
 // Recommendations, where the coach's own (locked) side must not be selectable
 // as its own opposition. The Simulator leaves it unset: any team may face any
 // other there.
-export function TeamSelect({ label, value, onChange, gender, against, disabled, exclude }: {
+// `compact` renders just the dropdown, sized for an inline toolbar (Build XI's
+// "vs <opponent>" control) instead of the stacked label + full-width field the
+// form pages use. Same options and same grouping either way.
+export function TeamSelect({ label, value, onChange, gender, against, disabled, exclude, compact }: {
   label: string; value: string; onChange: (v: string) => void;
   gender: "female" | "male"; against?: string; disabled?: boolean; exclude?: string;
+  compact?: boolean;
 }) {
   const [allTeams, setAllTeams] = useState<{ team: string; matches_played: number }[]>([]);
 
@@ -42,20 +46,35 @@ export function TeamSelect({ label, value, onChange, gender, against, disabled, 
   // exists for a value the list hasn't loaded yet, not for one we removed.
   const valueMissing = value && value !== exclude && !teams.some(t => t.team === value);
 
+  const options = (
+    <>
+      {valueMissing && <option value={value}>{value}</option>}
+      {likely.length > 0 && (
+        <optgroup label="Likely matchups">
+          {likely.map(t => <option key={t.team} value={t.team}>{t.team}</option>)}
+        </optgroup>
+      )}
+      <optgroup label={likely.length > 0 ? "Other teams" : "All teams"}>
+        {others.map(t => <option key={t.team} value={t.team}>{t.team}</option>)}
+      </optgroup>
+    </>
+  );
+
+  if (compact) {
+    return (
+      <select value={value} onChange={e => onChange(e.target.value)} title={label}
+        className="text-sm bg-secondary border border-border rounded-lg px-3 py-1.5 text-foreground font-medium focus:outline-none focus:ring-2 focus:ring-[#AAFF57]/40">
+        {options}
+      </select>
+    );
+  }
+
   return (
     <div className="flex-1 space-y-1">
       <label className="text-[11px] text-muted-foreground">{label}</label>
       <select value={value} onChange={e => onChange(e.target.value)}
         className="w-full text-sm bg-secondary border border-border rounded-lg px-3 py-2 text-foreground focus:outline-none focus:ring-2 focus:ring-[#AAFF57]/40">
-        {valueMissing && <option value={value}>{value}</option>}
-        {likely.length > 0 && (
-          <optgroup label="Likely matchups">
-            {likely.map(t => <option key={t.team} value={t.team}>{t.team} ({t.matches_played})</option>)}
-          </optgroup>
-        )}
-        <optgroup label={likely.length > 0 ? "Other teams" : "All teams"}>
-          {others.map(t => <option key={t.team} value={t.team}>{t.team}</option>)}
-        </optgroup>
+        {options}
       </select>
     </div>
   );
