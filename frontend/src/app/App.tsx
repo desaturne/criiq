@@ -47,8 +47,19 @@ const router = createBrowserRouter([
   },
 ]);
 
+// The admin portal authenticates client-side against ADMIN_CREDENTIALS and
+// never gets a server token, so unlike the user app there is nothing in
+// api.getToken() to rebuild its session from after a reload. Without a flag of
+// its own, refreshing the admin portal recomputed authMode as "user-login" and
+// dumped the admin back on the user sign-in screen; only Log out should end
+// the session.
+const ADMIN_SESSION_KEY = "criiq_admin_session";
+
 export function AppWithAuth() {
-  const [authMode, setAuthMode] = useState<AuthMode>(api.getToken() ? "user-app" : "user-login");
+  const [authMode, setAuthMode] = useState<AuthMode>(() => {
+    if (localStorage.getItem(ADMIN_SESSION_KEY) === "1") return "admin-app";
+    return api.getToken() ? "user-app" : "user-login";
+  });
   const [dark, setDark] = useState(true);
   const [selections, setSelections] = useState<Record<string, SelectionState>>({});
   const [token, setToken] = useState<string | null>(api.getToken());
@@ -59,6 +70,11 @@ export function AppWithAuth() {
     api.setToken(result.token);
     setToken(result.token);
     setUser(result.user);
+    // Signing in as a user ends any admin session: the two modes are mutually
+    // exclusive, and a flag left behind by an admin who closed the tab without
+    // logging out would otherwise win on the next reload and send this user to
+    // the admin portal instead of their own app.
+    localStorage.removeItem(ADMIN_SESSION_KEY);
     setAuthMode("user-app");
   };
 
@@ -115,12 +131,17 @@ export function AppWithAuth() {
 
   // Admin login — completely separate, no user context
   if (authMode === "admin-login") {
-    return <AdminLoginPage onLogin={() => setAuthMode("admin-app")} onBack={() => setAuthMode("user-login")} />;
+    return (
+      <AdminLoginPage
+        onLogin={() => { localStorage.setItem(ADMIN_SESSION_KEY, "1"); setAuthMode("admin-app"); }}
+        onBack={() => setAuthMode("user-login")}
+      />
+    );
   }
 
   // Admin app — own shell, no cricket components
   if (authMode === "admin-app") {
-    return <AdminShell onLogout={() => setAuthMode("admin-login")} />;
+    return <AdminShell onLogout={() => { localStorage.removeItem(ADMIN_SESSION_KEY); setAuthMode("admin-login"); }} />;
   }
 
   // User login
