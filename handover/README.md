@@ -15,7 +15,7 @@ tray stops animating. Docker will not work until it does.
 Open **PowerShell** (Start menu → type "PowerShell") and paste:
 
 ```powershell
-docker run -p 5173:80 dipa126/criiq:demo
+docker run -p 5173:80 deepakhanal62/criiq:demo
 ```
 
 The first run downloads about 1 GB, so give it a few minutes. Leave the window
@@ -44,7 +44,7 @@ open a new PowerShell window.
 
 **"port is already allocated"**
 Something else is using port 5173. Use a different one — for example
-`docker run -p 8080:80 dipa126/criiq:demo` — then open http://localhost:8080.
+`docker run -p 8080:80 deepakhanal62/criiq:demo` — then open http://localhost:8080.
 
 **Simulation or optimisation requests are slow or time out**
 They run a genetic algorithm and are CPU-heavy. In Docker Desktop go to
@@ -54,5 +54,5 @@ Settings → Resources and allow at least 4 CPUs and 8 GB of memory.
 Ask Dipa for the `criiq-images.tar.gz` file instead, then:
 ```powershell
 docker load -i criiq-images.tar.gz
-docker run -p 5173:80 dipa126/criiq:demo
+docker run -p 5173:80 deepakhanal62/criiq:demo
 ```

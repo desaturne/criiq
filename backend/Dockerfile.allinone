@@ -1,6 +1,6 @@
 # Single-image CRIIQ: API + models + database + UI, one port, one command.
 #
-#   docker run -p 5173:80 dipa126/criiq:demo
+#   docker run -p 5173:80 deepakhanal62/criiq:demo
 #
 # Everything is inside: FastAPI, the criiq_models CLI and its artifacts, the
 # 450 MB match database, and the built React UI served by nginx. Nothing to

@@ -2,7 +2,7 @@
 #
 # The whole system is one image, so a single command is enough:
 #
-#     docker run -p 5173:80 dipa126/criiq:demo
+#     docker run -p 5173:80 deepakhanal62/criiq:demo
 #
 # This compose file does exactly the same thing, just with `docker compose up`
 # instead, and restarts the container automatically if it crashes.
@@ -11,7 +11,7 @@
 
 services:
   criiq:
-    image: dipa126/criiq:demo
+    image: deepakhanal62/criiq:demo
     ports:
       - "5173:80"
     restart: unless-stopped
