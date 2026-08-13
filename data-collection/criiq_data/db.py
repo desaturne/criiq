@@ -85,7 +85,14 @@ CREATE TABLE IF NOT EXISTS deliveries (
     noballs         INTEGER,
     runs_total      INTEGER,
     wicket_type     TEXT,
-    player_dismissed TEXT
+    player_dismissed TEXT,
+    -- Cricsheet's fielder_1/2/3 columns: the catcher (caught), keeper
+    -- (stumped), or up to two fielders credited on a run out. NULL for
+    -- dismissals with no fielder credit (bowled, lbw, caught and bowled --
+    -- see fielding.py, which credits the bowler directly for the latter).
+    fielder_1       TEXT,
+    fielder_2       TEXT,
+    fielder_3       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_deliv_match  ON deliveries(match_id);
 CREATE INDEX IF NOT EXISTS idx_deliv_strike ON deliveries(striker);
@@ -108,7 +115,10 @@ CREATE TABLE IF NOT EXISTS deliveries_holdout (
     noballs         INTEGER,
     runs_total      INTEGER,
     wicket_type     TEXT,
-    player_dismissed TEXT
+    player_dismissed TEXT,
+    fielder_1       TEXT,
+    fielder_2       TEXT,
+    fielder_3       TEXT
 );
 
 CREATE TABLE IF NOT EXISTS match_players (
@@ -251,6 +261,25 @@ CREATE TABLE IF NOT EXISTS player_career (
     updated_at       TEXT,
     PRIMARY KEY (player_id, format)
 );
+
+-- Career fielding: catches (including caught-and-bowled, credited to the
+-- bowler), run outs (every fielder cricsheet lists gets credit -- a direct
+-- hit and the fielder who set it up both count, mirroring ESPNcricinfo), and
+-- stumpings (fielder_1 only -- always the keeper). See fielding.py.
+CREATE TABLE IF NOT EXISTS player_fielding (
+    player_id        TEXT NOT NULL,
+    format            TEXT NOT NULL,
+    name              TEXT,
+    matches           INTEGER,
+    catches           INTEGER,
+    run_outs          INTEGER,
+    stumpings         INTEGER,
+    dismissals        INTEGER,
+    dismissals_per_match REAL,
+    updated_at        TEXT,
+    PRIMARY KEY (player_id, format)
+);
+CREATE INDEX IF NOT EXISTS idx_fielding_rank ON player_fielding(format, dismissals DESC);
 
 CREATE TABLE IF NOT EXISTS player_by_venue (
     player_id        TEXT NOT NULL,
@@ -614,6 +643,12 @@ _MIGRATIONS = [
     "ALTER TABLE player_by_venue ADD COLUMN chasing_runs INTEGER",
     "ALTER TABLE player_by_venue ADD COLUMN chasing_average REAL",
     "ALTER TABLE player_by_venue ADD COLUMN chasing_strike_rate REAL",
+    "ALTER TABLE deliveries ADD COLUMN fielder_1 TEXT",
+    "ALTER TABLE deliveries ADD COLUMN fielder_2 TEXT",
+    "ALTER TABLE deliveries ADD COLUMN fielder_3 TEXT",
+    "ALTER TABLE deliveries_holdout ADD COLUMN fielder_1 TEXT",
+    "ALTER TABLE deliveries_holdout ADD COLUMN fielder_2 TEXT",
+    "ALTER TABLE deliveries_holdout ADD COLUMN fielder_3 TEXT",
 ]
 
 

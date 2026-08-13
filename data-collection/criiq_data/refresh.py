@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 
-from . import advanced, career, download_cricsheet, download_register, identity, impact
+from . import advanced, career, download_cricsheet, download_register, fielding, identity, impact
 from . import ingest, matchups, ml_features, opponents, overrides, phases, player_card
 from . import rankings, registry, rss_monitor, scrape_cricinfo, styles, venue_stats, winprob
 from .config import SETTINGS
@@ -27,6 +27,7 @@ def run(*, force_download: bool = False, enrich: bool = False,
 
     log.info("== 3/12 ingest ==")
     summary["ingest"] = ingest.ingest_all(conn)
+    summary["fielder_backfill"] = ingest.backfill_fielders(conn)
 
     log.info("== 4/12 identity ==")
     summary["identity"] = identity.run(conn)
@@ -65,6 +66,7 @@ def run(*, force_download: bool = False, enrich: bool = False,
     summary["status_overrides"] = overrides.load_csv(conn)
     summary["registry"] = registry.build_registry(conn)
     summary["career"] = career.build_career(conn)
+    summary["fielding"] = fielding.build_fielding(conn)
     summary["cards"] = player_card.build_cards(conn)
 
     log.info("== 9/12 advanced profiles ==")
@@ -92,6 +94,7 @@ def run(*, force_download: bool = False, enrich: bool = False,
         "players": table_count(conn, "players"),
         "registry_rows": table_count(conn, "player_registry"),
         "career_rows": table_count(conn, "player_career"),
+        "fielding_rows": table_count(conn, "player_fielding"),
         "cards": table_count(conn, "player_cards"),
         "advanced": table_count(conn, "player_advanced"),
         "vs_opponent_rows": table_count(conn, "player_vs_opponent"),

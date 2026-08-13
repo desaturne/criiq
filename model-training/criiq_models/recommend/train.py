@@ -125,11 +125,34 @@ def train(conn: sqlite3.Connection, fmt: str = SETTINGS.format,
 
     (artifacts_dir / METADATA_FILENAME).write_text(json.dumps(metadata, indent=2))
 
+    _save_background(table, artifacts_dir)
+
+    return metadata
+
+
+def _save_background(table: pd.DataFrame, artifacts_dir) -> None:
     background = table[MODEL_FEATURES].sample(
         n=min(SETTINGS.shap_background_size, len(table)), random_state=SETTINGS.random_state)
     joblib.dump(background, artifacts_dir / BACKGROUND_FILENAME)
 
-    return metadata
+
+def rebuild_background(conn: sqlite3.Connection, fmt: str = SETTINGS.format,
+                        gender: str = SETTINGS.gender) -> dict:
+    """(Re)writes just shap_background.joblib for an already-trained scope,
+    without refitting or overwriting the models themselves -- for artifact
+    sets saved before this file existed (VotingRegressor bowling_wpa targets
+    can't produce SHAP without it, see recommend/shap_explain.py, so every
+    all-rounder/bowler silently lost their bowling-side "Feature impact"
+    breakdown until the file is regenerated once).
+    """
+    ensure_dirs()
+    table = build_training_table(conn, fmt, gender)
+    if table.empty:
+        raise RuntimeError(f"No training rows for format={fmt} gender={gender}")
+    artifacts_dir = _artifacts_dir(fmt, gender)
+    _save_background(table, artifacts_dir)
+    return {"format": fmt, "gender": gender, "background_rows": min(SETTINGS.shap_background_size, len(table)),
+            "path": str(artifacts_dir / BACKGROUND_FILENAME)}
 
 
 def load_models(fmt: str = SETTINGS.format, gender: str = SETTINGS.gender) -> dict[str, object]:

@@ -28,10 +28,10 @@ from .recommend.render import render_player_explanation, render_team_sheet, rend
 from .recommend.score import RecommendationScorer
 from .recommend.shap_explain import explain_prediction
 from .recommend.strength import strength_context
-from .recommend.train import load_background, load_metadata, train
+from .recommend.train import load_background, load_metadata, rebuild_background, train
 from .roster import known_teams, team_pool
 from .venues import resolve_venue
-from .selection.optimize import analyze_xi, role_highlights, role_pools, select_xi, slot_category
+from .selection.optimize import analyze_xi, best_fielder, role_highlights, role_pools, select_xi, slot_category
 from .features.common import bowling_capable
 from .features.current import build_model_features, resolve_role
 from .simulate.engine import simulate_match
@@ -122,8 +122,10 @@ def cmd_features(args):
 
 def cmd_train(args):
     conn = connect()
-    metadata = train(conn, args.format, args.gender)
-    _pp(metadata)
+    if args.background_only:
+        _pp(rebuild_background(conn, args.format, args.gender))
+    else:
+        _pp(train(conn, args.format, args.gender))
     conn.close()
 
 
@@ -201,7 +203,12 @@ def cmd_recommend(args):
         if not p["components"]["model_applied"]:
             return {"shap": {"error": f"model not applied: {p['components']['cold_start_reason']}"}}
         feats = build_model_features(conn, p["player_id"], args.opponent, venue_id, args.format)
-        return {"shap": explain_prediction(scorer.models, feats, background)}
+        # only the discipline(s) this player's role makes relevant (see
+        # score.py's role_targets) -- a specialist batter's incidental
+        # bowling_wpa can still earn a sliver of score, but a full "why
+        # bowling_wpa" breakdown for that sliver isn't useful explanation.
+        active_models = {t: scorer.models[t] for t in p["components"]["role_targets"] if t in scorer.models}
+        return {"shap": explain_prediction(active_models, feats, background)}
 
     def _brief(p):
         return {"player_id": p["player_id"], "name": p["name"], "role_bucket": p["role_bucket"],
@@ -221,6 +228,21 @@ def cmd_recommend(args):
                 "is_keeper": p["is_keeper"], "detail": detail}
 
     role_options = [_role_option(arch, p) for arch, p in role_highlights(scored).items()]
+
+    # best fielding record across the whole scored pool (catches + run-outs +
+    # stumpings) -- surfaced both as its own specialist role option and as a
+    # "sharpest fielder here" callout in each player's own reasoning below.
+    best_fielding_player = best_fielder(scored)
+    if best_fielding_player is not None:
+        finp = best_fielding_player["components"]["inputs"]
+        role_options.append({
+            "archetype": "fielder", "player_id": best_fielding_player["player_id"],
+            "name": best_fielding_player["name"], "score": best_fielding_player["score"],
+            "role_bucket": best_fielding_player["role_bucket"],
+            "is_keeper": best_fielding_player["is_keeper"],
+            "detail": (f"{finp['fielding_catches']} catches, {finp['fielding_run_outs']} run-outs, "
+                       f"{finp['fielding_stumpings']} stumpings in {finp['fielding_matches']} matches"),
+        })
 
     # how the recommended XI matches up against the named opposition, player
     # by player (only when an opponent XI was supplied).
@@ -253,14 +275,17 @@ def cmd_recommend(args):
                          if slot_category(p, SETTINGS.opener_position_threshold) == category]
             return max(same_slot, key=lambda p: p["score"]) if same_slot else None
 
+        best_fielder_id = best_fielding_player["player_id"] if best_fielding_player is not None else None
+
         xi_out = []
         for p in result["xi"]:
             category = slot_category(p, SETTINGS.opener_position_threshold)
             alt = _best_alternative(category)
             h2h_bat = (h2h or {}).get("batting", {}).get(p["name"])
             h2h_bowl = (h2h or {}).get("bowling", {}).get(p["name"])
-            xi_out.append({**_brief(p), "reasoning": explain(p, alternative=alt, slot=category,
-                                                              h2h_batting=h2h_bat, h2h_bowling=h2h_bowl)["summary"],
+            xi_out.append({**_brief(p), "reasoning": explain(
+                p, alternative=alt, slot=category, h2h_batting=h2h_bat, h2h_bowling=h2h_bowl,
+                is_best_fielder=(p["player_id"] == best_fielder_id))["summary"],
                             **_shap_entry(p)})
 
         # shortlist view of top-ranked players, independent of who made the
@@ -270,7 +295,9 @@ def cmd_recommend(args):
         for p in result["pool"]:
             h2h_bat = (h2h or {}).get("batting", {}).get(p["name"])
             h2h_bowl = (h2h or {}).get("bowling", {}).get(p["name"])
-            pool_out.append({**_brief(p), "reasoning": explain(p, h2h_batting=h2h_bat, h2h_bowling=h2h_bowl)["summary"],
+            pool_out.append({**_brief(p), "reasoning": explain(
+                p, h2h_batting=h2h_bat, h2h_bowling=h2h_bowl,
+                is_best_fielder=(p["player_id"] == best_fielder_id))["summary"],
                               **_shap_entry(p)})
     else:
         xi_out = [_brief(p) for p in result["xi"]]
@@ -330,7 +357,8 @@ def cmd_explain(args):
         else:
             feats = build_model_features(conn, player_id, args.opponent, venue_id, args.format)
             background = load_background(args.format, args.gender)
-            shap_result = explain_prediction(scorer.models, feats, background)
+            active_models = {t: scorer.models[t] for t in scored["components"]["role_targets"] if t in scorer.models}
+            shap_result = explain_prediction(active_models, feats, background)
         result["shap"] = shap_result
 
     if args.pretty:
@@ -876,6 +904,9 @@ def build_parser() -> argparse.ArgumentParser:
     t = sub.add_parser("train", help="fit + persist the contribution regressors")
     t.add_argument("--format", default=SETTINGS.format)
     t.add_argument("--gender", default=SETTINGS.gender)
+    t.add_argument("--background-only", action="store_true",
+                   help="only (re)write shap_background.joblib for an already-trained scope, "
+                        "without refitting the models")
     t.set_defaults(func=cmd_train)
 
     b = sub.add_parser("backtest", help="temporal holdout calibration report")

@@ -164,6 +164,36 @@ def role_highlights(scored_players: list[dict], archetypes=SPECIALIST_ARCHETYPES
     return out
 
 
+# below this many matches, a dismissals-per-match rate is too noisy to rank
+# on -- best_fielder() falls back to the raw dismissal count instead. Mirrors
+# data-collection's fielding.MIN_MATCHES_FOR_RATE / backend's
+# MIN_MATCHES_FOR_FIELDING_RATE (kept in sync manually across the three
+# packages, which don't import each other -- see those files' docstrings).
+MIN_FIELDING_MATCHES_FOR_RATE = 5
+
+
+def _fielding_rank_value(inp: dict) -> float:
+    matches = inp.get("fielding_matches") or 0
+    rate = inp.get("fielding_dismissals_per_match")
+    if matches >= MIN_FIELDING_MATCHES_FOR_RATE and rate is not None:
+        return rate
+    return inp.get("fielding_dismissals") or 0
+
+
+def best_fielder(scored_players: list[dict]) -> dict | None:
+    """the pool member with the strongest fielding record (catches + run-outs
+    + stumpings), for the "sharpest fielder in this pool" callout in
+    recommend/explain.py. None if nobody in the pool has any recorded
+    fielding dismissals -- a 0-dismissal player is not "the best fielder",
+    just the only one asked about.
+    """
+    candidates = [p for p in scored_players
+                  if _fielding_rank_value((p.get("components") or {}).get("inputs") or {}) > 0]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: _fielding_rank_value(p["components"]["inputs"]))
+
+
 def analyze_xi(scored_players: list[dict], player_ids: list[str],
                settings: object = SETTINGS) -> dict:
     """scores and checks a specific, already-chosen XI against the same

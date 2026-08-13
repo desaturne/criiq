@@ -62,6 +62,20 @@ function normalizeWinPct(raw: number | null | undefined): number | null {
  * {opponent} compute those), but career is the same real card_json.career
  * nested shape the detail endpoint returns, so PlayerCard's Stats expander
  * shows real matches/runs/avg/SR (or wkts/econ/best), not zeroes. */
+/** api.fielding (player_fielding row) -> Player["fielding"], or undefined
+ * when the player has no recorded fielding dismissals. */
+function mapFielding(apiFielding: any): Player["fielding"] {
+  if (!apiFielding) return undefined;
+  return {
+    matches: apiFielding.matches ?? 0,
+    catches: apiFielding.catches ?? 0,
+    runOuts: apiFielding.run_outs ?? 0,
+    stumpings: apiFielding.stumpings ?? 0,
+    dismissals: apiFielding.dismissals ?? 0,
+    dismissalsPerMatch: apiFielding.dismissals_per_match ?? null,
+  };
+}
+
 export function mapApiPlayerListItem(api: any): Player {
   const role = displayRole(api.role);
   const last5: number[] = Array.isArray(api.last5_scores) ? api.last5_scores : [];
@@ -86,6 +100,7 @@ export function mapApiPlayerListItem(api: any): Player {
       fifties: bat.fifties, hundreds: bat.hundreds,
       wickets: bowl.wickets, economy: bowl.economy, bowlingAvg: bowl.average, best: bowl.best_bowling,
     },
+    fielding: mapFielding(api.fielding),
     score: clamp01to100(api.form_score, 0),
     breakdown: { form: clamp01to100(api.form_score, 0), vsOpponent: 0, venueFit: 0, matchupAdvantage: 0 },
     position: api.position || "—", isKeeper: !!api.is_keeper,
@@ -141,6 +156,7 @@ export function mapApiPlayerDetail(api: any): Player {
       fifties: bat.fifties, hundreds: bat.hundreds,
       wickets: bowl.wickets, economy: bowl.economy, bowlingAvg: bowl.average, best: bowl.best_bowling,
     },
+    fielding: mapFielding(api.fielding),
     score: clamp01to100(api.importance_score, 50),
     breakdown: {
       form: clamp01to100(api.form_percentile, 50), vsOpponent: 0,

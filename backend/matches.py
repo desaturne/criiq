@@ -247,11 +247,44 @@ def match_detail(match_id: str):
 # bowling-figures convention mirror data-collection's criiq_data/stats.py
 # exactly, so these numbers agree with the analytics DB's own player stats.
 # --------------------------------------------------------------------------
+# wicket types with no fielder credit -- either the bowler alone (bowled,
+# lbw, hit wicket) or no one at all (the retired/obstructing variants).
+_NO_FIELDER_WICKETS = {"bowled", "lbw", "hit wicket", "retired hurt",
+                        "retired not out", "retired out",
+                        "obstructing the field", "hit the ball twice"}
+
+
+def _dismissal_text(wicket_type: str | None, bowler: str, f1: str | None,
+                     f2: str | None, f3: str | None) -> str:
+    """Standard scorecard notation: 'c Fielder b Bowler', 'run out (Fielder)',
+    etc. -- same shape ESPNcricinfo uses, built from wicket_type + the
+    fielder_1/2/3 credit cricsheet records for the dismissal (see
+    data-collection's ingest.py/fielding.py, which use the same columns)."""
+    if not wicket_type:
+        return "not out"
+    if wicket_type == "caught and bowled":
+        return f"c & b {bowler}"
+    if wicket_type == "caught":
+        return f"c {f1} b {bowler}" if f1 else f"c b {bowler}"
+    if wicket_type == "stumped":
+        return f"st {f1} b {bowler}" if f1 else f"st b {bowler}"
+    if wicket_type == "run out":
+        fielders = ", ".join(f for f in (f1, f2, f3) if f)
+        return f"run out ({fielders})" if fielders else "run out"
+    if wicket_type == "bowled":
+        return f"b {bowler}"
+    if wicket_type == "lbw":
+        return f"lbw b {bowler}"
+    if wicket_type == "hit wicket":
+        return f"hit wicket b {bowler}"
+    return wicket_type  # retired hurt / retired out / obstructing the field / hit the ball twice
+
+
 def _innings_scorecard(rows: list) -> dict:
     bat_order: list[str] = []
     bat_runs: dict[str, int] = {}
     bat_balls: dict[str, int] = {}
-    bat_out: dict[str, bool] = {}
+    bat_dismissal: dict[str, str] = {}
 
     bowl_order: list[str] = []
     bowl_legal_balls: dict[str, int] = {}
@@ -269,7 +302,8 @@ def _innings_scorecard(rows: list) -> dict:
         if not is_wide:
             bat_balls[striker] += 1
         if r["player_dismissed"] == striker:
-            bat_out[striker] = True
+            bat_dismissal[striker] = _dismissal_text(
+                r["wicket_type"], bowler, r["fielder_1"], r["fielder_2"], r["fielder_3"])
 
         if bowler not in bowl_conceded:
             bowl_legal_balls[bowler], bowl_conceded[bowler], bowl_wkts[bowler] = 0, 0, 0
@@ -288,7 +322,7 @@ def _innings_scorecard(rows: list) -> dict:
         batting.append({
             "player_id": name, "name": name, "runs": runs, "balls": b,
             "strike_rate": round(100 * runs / b, 1) if b else None,
-            "status": "out" if bat_out.get(name) else "not out", "highlight": None,
+            "status": bat_dismissal.get(name, "not out"), "highlight": None,
         })
     if batting:
         for row in batting:
@@ -336,7 +370,8 @@ def match_scorecard(match_id: str):
 
     deliveries = criiq_db.execute(
         """SELECT innings, batting_team, bowling_team, striker, bowler,
-                  runs_off_bat, wides, noballs, wicket_type, player_dismissed
+                  runs_off_bat, wides, noballs, wicket_type, player_dismissed,
+                  fielder_1, fielder_2, fielder_3
            FROM deliveries WHERE match_id = ? ORDER BY innings, over, ball_in_over, id""",
         (match_id,),
     ).fetchall()

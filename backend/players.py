@@ -276,6 +276,7 @@ def list_players(search: str = "", role: str = "", status: str = "", country: st
             # expandable Stats section shows real matches/runs/avg/SR (or
             # wkts/econ/best) instead of being undefined for every player.
             "career": card.get("career"),
+            "fielding": card.get("fielding"),
             "phases": [phases.get(name) for name in ("powerplay", "middle", "death") if phases.get(name)],
             "is_keeper": bool(row["is_keeper"]),
             "batting_position_median": row["batting_position_median"],
@@ -397,6 +398,7 @@ def build_player_detail(player_id: str) -> dict | None:
         "form_percentile": rfi_percentile((card.get("form") or {}).get("rfi")),
         "latest_match": card.get("latest_match"),
         "career": card.get("career"),  # real {"batting": {...}, "bowling": {...}} breakdown
+        "fielding": card.get("fielding"),  # real {catches, run_outs, stumpings, ...} from player_fielding
         "archetype": advanced_row["archetype"] if advanced_row else None,
         "strengths_summary": advanced.get("strengths"),  # list of plain-language lines
         "advanced": advanced,  # full profile: by-phase splits, vs-pace/vs-spin, six rate, etc.
@@ -409,6 +411,34 @@ def build_player_detail(player_id: str) -> dict | None:
         "batting_position_median": batting_position_median,
         "position": position_label(role_row["primary_role"] if role_row else None, is_keeper, batting_position_median),
     }
+
+
+# below this many matches, a dismissals-per-match rate is too noisy to rank
+# on -- better_fielder() falls back to the raw dismissal count instead.
+# Mirrors criiq_data's fielding.MIN_MATCHES_FOR_RATE (kept in sync manually:
+# this module can't import that package, see the file docstring).
+MIN_MATCHES_FOR_FIELDING_RATE = 5
+
+
+def better_fielder(cards: list[dict]) -> dict | None:
+    """Which of the compared players has the better fielding record --
+    dismissals-per-match once both have a real sample, else raw dismissals.
+    None if fewer than two players have any recorded fielding stats.
+    """
+    ranked = []
+    for c in cards:
+        f = c.get("fielding")
+        if not f:
+            continue
+        rate = f.get("dismissals_per_match")
+        value = rate if (f.get("matches") or 0) >= MIN_MATCHES_FOR_FIELDING_RATE and rate is not None \
+            else f.get("dismissals", 0)
+        ranked.append({"player_id": c["id"], "name": c.get("identity", {}).get("name"),
+                       "value": value, "stats": f})
+    if len(ranked) < 2:
+        return None
+    ranked.sort(key=lambda r: r["value"], reverse=True)
+    return {"best_player_id": ranked[0]["player_id"], "ranked": ranked}
 
 
 @router.get("/players/compare")
@@ -424,7 +454,7 @@ def compare_players(ids: str):
         if not detail:
             raise HTTPException(404, f"Unknown player id: {pid}")
         cards.append(detail)
-    return {"data": cards, "error": None}
+    return {"data": cards, "fielding_comparison": better_fielder(cards), "error": None}
 
 
 @router.get("/players/{player_id}")

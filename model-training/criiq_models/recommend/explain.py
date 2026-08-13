@@ -16,11 +16,16 @@ _PHASE_LABEL = {
 
 
 def explain(scored: dict, alternative: dict | None = None, slot: str | None = None,
-            h2h_batting: dict | None = None, h2h_bowling: dict | None = None) -> dict:
+            h2h_batting: dict | None = None, h2h_bowling: dict | None = None,
+            is_best_fielder: bool = False) -> dict:
     """`alternative`/`slot` is the best-scoring player not picked for the same
     slot (see `selection/optimize.slot_category`), if any, so the explanation
     can say why this player over the next-best option, not just describe
     their own numbers.
+
+    `is_best_fielder`: this player has the strongest fielding record (see
+    selection/optimize.best_fielder) among the whole pool being explained
+    together -- worth a distinct callout, not just their own raw numbers.
     """
     c = scored["components"]
     inp = c["inputs"]
@@ -195,6 +200,21 @@ def explain(scored: dict, alternative: dict | None = None, slot: str | None = No
             f"{_pct(inp.get('domestic_form_batting_wpa'))} per match with the bat and "
             f"{_pct(inp.get('domestic_form_bowling_wpa'))} with the ball, factored into the "
             f"model above, alongside {inp['career_matches']} international career matches.")
+
+    fielding_matches = inp.get("fielding_matches") or 0
+    if fielding_matches > 0:
+        catches, run_outs, stumpings = (inp.get("fielding_catches") or 0,
+                                         inp.get("fielding_run_outs") or 0,
+                                         inp.get("fielding_stumpings") or 0)
+        dismissals, rate = inp.get("fielding_dismissals") or 0, inp.get("fielding_dismissals_per_match")
+        rate_note = f" ({rate}/match)" if rate is not None else ""
+        record = f"{catches} catches, {run_outs} run-outs and {stumpings} stumpings in {fielding_matches} matches{rate_note}"
+        if is_best_fielder:
+            lines.append(
+                f"Also the sharpest fielder among the players considered here: {record} "
+                f"is the best record in this pool, a real edge in the field.")
+        else:
+            lines.append(f"In the field: {record}.")
 
     if inp.get("retirement_status"):
         reason = inp.get("status_reason")

@@ -148,6 +148,30 @@ export function PlayerProfilePage() {
             </div>
           </div>
 
+          {/* Fielding — real player_fielding row (catches/run-outs/stumpings).
+              Hidden entirely when there's no recorded fielding history yet,
+              rather than showing an all-zero card. */}
+          {player.fielding && player.fielding.matches > 0 && (
+            <div className="bg-card border border-border rounded-xl p-5">
+              <h3 className="font-display text-base font-semibold text-foreground mb-4">Fielding</h3>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+                {([
+                  ["Catches", player.fielding.catches],
+                  ["Run-outs", player.fielding.runOuts],
+                  ["Stumpings", player.fielding.stumpings],
+                  ["Dismissals", player.fielding.dismissals],
+                  ["Matches", player.fielding.matches],
+                  ["Per Match", player.fielding.dismissalsPerMatch ?? "—"],
+                ] as const).map(([k, v]) => (
+                  <div key={k} className="border border-border rounded-lg p-3">
+                    <div className="font-mono text-xl font-bold text-foreground">{v}</div>
+                    <div className="text-[11px] text-muted-foreground mt-0.5">{k}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Phase performance */}
           <div className="bg-card border border-border rounded-xl p-5">
             <h3 className="font-display text-base font-semibold text-foreground mb-4">Phase Performance</h3>

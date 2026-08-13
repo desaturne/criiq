@@ -196,12 +196,27 @@ class RecommendationScorer:
 
         # only credit a discipline the player's role suggests or has real
         # history in, since shrink() with no data just returns the bare prior.
+        # this deliberately includes "has incidental data" (a specialist
+        # batter's odd over of bowling) -- a small real signal still belongs
+        # in the score.
         active_wpa = []
         if (batting_capable(bucket) or has_bat_data) and predicted_batting_wpa is not None:
             active_wpa.append(predicted_batting_wpa)
         if (bowling_capable(bucket) or has_bowl_data) and predicted_bowling_wpa is not None:
             active_wpa.append(predicted_bowling_wpa)
         active_wpa.sort(reverse=True)
+
+        # role_targets is a stricter, role-only gate (no "has incidental
+        # data" carve-out) for which SHAP breakdown to show -- explain.py's
+        # ShapSection, via cli.py's _shap_entry/cmd_explain. A specialist
+        # batter's odd over of bowling can still earn her a sliver of
+        # bowling_wpa in the score above, but a whole "why bowling_wpa"
+        # breakdown for that sliver is misleading UX, not useful explanation.
+        role_targets = []
+        if batting_capable(bucket) and predicted_batting_wpa is not None:
+            role_targets.append("batting_wpa")
+        if bowling_capable(bucket) and predicted_bowling_wpa is not None:
+            role_targets.append("bowling_wpa")
 
         # a plain sum would cap every specialist below a mediocre all-rounder,
         # so the primary (best) discipline counts full and a second
@@ -225,6 +240,14 @@ class RecommendationScorer:
             career_dismissal_rate = baseline_row["bat_strike_rate"] / (100 * baseline_row["bat_average"])
         else:
             career_dismissal_rate = self._priors["dismissal_rate"]
+
+        # descriptive only, like bowl_dot_pct/bat_sixes below -- never scored,
+        # just surfaced in reasoning (recommend/explain.py) and role_highlights'
+        # "best fielder" pick (selection/optimize.py), from data-collection's
+        # player_fielding (catches/run-outs/stumpings, see criiq_data/fielding.py).
+        fielding_row = self.conn.execute(
+            "SELECT matches, catches, run_outs, stumpings, dismissals, dismissals_per_match "
+            "FROM player_fielding WHERE player_id=? AND format=?", (player_id, self.fmt)).fetchone()
 
         aggregate_matchup_part = 0.0
         if ctx.matchup_balls > 0:
@@ -303,6 +326,10 @@ class RecommendationScorer:
             "cold_start_reason": None if model_applied else (
                 "no_trained_model_available" if not self.models else
                 f"career_matches ({feats['career_matches']}) < min_matches_for_model ({SETTINGS.min_matches_for_model})"),
+            # which target(s) -- "batting_wpa"/"bowling_wpa" -- this player's
+            # ROLE makes relevant, for gating the SHAP breakdown (see where
+            # this is built, above).
+            "role_targets": role_targets,
             "inputs": {
                 "career_matches": feats["career_matches"],
                 "predicted_batting_wpa": round(predicted_batting_wpa, 4) if predicted_batting_wpa is not None else None,
@@ -362,6 +389,12 @@ class RecommendationScorer:
                 "bat_consistency": ctx.bat_consistency,
                 "game_awareness_factor": awareness["factor"],
                 "game_awareness_signals": awareness["signals"],
+                "fielding_matches": fielding_row["matches"] if fielding_row else 0,
+                "fielding_catches": fielding_row["catches"] if fielding_row else 0,
+                "fielding_run_outs": fielding_row["run_outs"] if fielding_row else 0,
+                "fielding_stumpings": fielding_row["stumpings"] if fielding_row else 0,
+                "fielding_dismissals": fielding_row["dismissals"] if fielding_row else 0,
+                "fielding_dismissals_per_match": fielding_row["dismissals_per_match"] if fielding_row else None,
             },
         }
 

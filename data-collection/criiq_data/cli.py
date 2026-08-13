@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 
-from . import advanced, career, download_cricsheet, download_register, identity, impact
+from . import advanced, career, download_cricsheet, download_register, fielding, identity, impact
 from . import ingest, matchups, ml_features, opponents, overrides, phases, player_card
 from . import rankings, refresh, registry, role_finalize, rss_monitor, scrape_cricinfo, sheet, styles
 from . import venue_stats, winprob, wpa
@@ -40,7 +40,15 @@ def cmd_download(args):
 
 def cmd_ingest(args):
     conn = connect(); init_schema(conn)
-    _pp(ingest.ingest_all(conn)); conn.close()
+    result = {"ingest": ingest.ingest_all(conn)}
+    if not args.skip_fielder_backfill:
+        result["fielder_backfill"] = ingest.backfill_fielders(conn)
+    _pp(result); conn.close()
+
+
+def cmd_fielding(args):
+    conn = connect(); init_schema(conn)
+    _pp(fielding.build_fielding(conn)); conn.close()
 
 
 def cmd_identity(args):
@@ -251,7 +259,7 @@ def cmd_status(args):
     conn = connect(); init_schema(conn)
     out = {t: table_count(conn, t) for t in
            ["matches", "deliveries", "players", "player_registry",
-            "player_career", "player_cards", "player_advanced",
+            "player_career", "player_fielding", "player_cards", "player_advanced",
             "player_vs_opponent", "player_impact", "player_by_venue",
             "dismissal_matchup", "player_phase", "match_features",
             "player_match_impact", "icc_rankings", "retirement_alerts"]}
@@ -335,10 +343,14 @@ def build_parser() -> argparse.ArgumentParser:
     d = sub.add_parser("download"); d.add_argument("--force", action="store_true")
     d.set_defaults(func=cmd_download)
 
-    sub.add_parser("ingest").set_defaults(func=cmd_ingest)
+    ig = sub.add_parser("ingest")
+    ig.add_argument("--skip-fielder-backfill", action="store_true",
+                     help="skip re-scanning already-downloaded zips for fielder credit on old matches")
+    ig.set_defaults(func=cmd_ingest)
     sub.add_parser("identity").set_defaults(func=cmd_identity)
     sub.add_parser("registry").set_defaults(func=cmd_registry)
     sub.add_parser("cards").set_defaults(func=cmd_cards)
+    sub.add_parser("fielding", help="catches/run-outs/stumpings per player").set_defaults(func=cmd_fielding)
 
     e = sub.add_parser("enrich")
     e.add_argument("--limit", type=int, default=None)

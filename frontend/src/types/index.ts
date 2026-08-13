@@ -30,6 +30,7 @@ export interface Player {
   vsOpponent: number; vsInsight: string;
   powerplay: number; middle: number; death: number;
   career: { matches: number; innings: number; runs?: number; avg?: number; sr?: number; fifties?: number; hundreds?: number; wickets?: number; economy?: number; bowlingAvg?: number; best?: string };
+  fielding?: { matches: number; catches: number; runOuts: number; stumpings: number; dismissals: number; dismissalsPerMatch: number | null };
   score: number;
   breakdown: { form: number; vsOpponent: number; venueFit: number; matchupAdvantage: number };
   // Real batting-position/role data (player_role_final) -- the same signal

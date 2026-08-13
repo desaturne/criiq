@@ -89,6 +89,13 @@ def _ident_to_player(conn) -> dict[tuple, dict]:
     return {(r["cricsheet_identifier"], r["gender"]): dict(r) for r in rows if r["cricsheet_identifier"]}
 
 
+def _fielding_status(conn, fmt: str) -> dict[str, dict]:
+    rows = conn.execute(
+        "SELECT player_id, matches, catches, run_outs, stumpings, dismissals, "
+        "dismissals_per_match FROM player_fielding WHERE format=?", (fmt,)).fetchall()
+    return {r["player_id"]: dict(r) for r in rows}
+
+
 def _registry_status(conn, fmt: str) -> dict[str, dict]:
     rows = conn.execute(
         "SELECT player_id, retirement_status, retired_formats, retirement_date, "
@@ -108,6 +115,7 @@ def build_cards_for_format(conn, fmt: str) -> int:
 
     players = _ident_to_player(conn)
     status = _registry_status(conn, fmt)
+    fielding_stats = _fielding_status(conn, fmt)
     team_runs, team_wkts, death_runs = _support_tables(conn, fmt)
     matches_meta = {r["match_id"]: dict(r) for r in conn.execute(
         "SELECT match_id, date, event, venue_raw, team1, team2, winner, win_margin "
@@ -212,6 +220,7 @@ def build_cards_for_format(conn, fmt: str) -> int:
                 "bowling_type": classify_bowling_detail(pm.get("bowling_style")),
             },
             "career": career_from_group(g),
+            "fielding": fielding_stats.get(pm["player_id"]),
             "latest_match": latest_block,
             "form": form_block,
             "impact": impact_block,

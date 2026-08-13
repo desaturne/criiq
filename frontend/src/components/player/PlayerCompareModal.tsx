@@ -120,6 +120,38 @@ export function PlayerCompareModal({
       },
     },
     {
+      label: "Fielding",
+      render: p => {
+        const f = p.fielding;
+        if (!f || f.matches === 0) {
+          return <div className="text-[11px] text-muted-foreground text-center py-2">No fielding record</div>;
+        }
+        const MIN_MATCHES_FOR_RATE = 5;
+        const rankValue = (x: NonNullable<Player["fielding"]>) =>
+          x.matches >= MIN_MATCHES_FOR_RATE && x.dismissalsPerMatch != null ? x.dismissalsPerMatch : x.dismissals;
+        const bestValue = Math.max(...players.map(pl => pl.fielding ? rankValue(pl.fielding) : -Infinity));
+        const isBest = players.length > 1 && bestValue > 0 && rankValue(f) === bestValue;
+        return (
+          <div className="space-y-2">
+            <div className="grid grid-cols-3 gap-1.5">
+              {[{ k: "Catches", v: f.catches }, { k: "Run-outs", v: f.runOuts }, { k: "Stumpings", v: f.stumpings }].map(s => (
+                <div key={s.k} className="text-center p-1.5 rounded-lg bg-secondary/50">
+                  <div className="font-mono text-[13px] font-bold text-foreground">{s.v}</div>
+                  <div className="text-[8px] text-muted-foreground uppercase tracking-wider mt-0.5">{s.k}</div>
+                </div>
+              ))}
+            </div>
+            {isBest && (
+              <div className="text-[10px] font-semibold text-center py-1 rounded-md"
+                   style={{ background: "#AAFF5722", color: "#AAFF57" }}>
+                Better Fielder
+              </div>
+            )}
+          </div>
+        );
+      },
+    },
+    {
       // Only real, backend-computed numbers: Form is a percentile rank
       // against every player's recent-form index; Total Score is the
       // model's importance_score (proven track record + ICC rank). The
