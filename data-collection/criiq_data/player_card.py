@@ -12,7 +12,7 @@ from .h2h import player_vs_team
 from .logging_utils import get_logger
 from .rankings import player_rankings
 from .stats import build_innings
-from .styles import classify_bowling_detail, classify_hand
+from .styles import classify_bowling_detail, classify_hand, is_cricket_role
 
 log = get_logger("player_card")
 
@@ -63,9 +63,8 @@ def _support_tables(conn, fmt: str):
         "GROUP BY d.match_id, d.bowling_team", conn, params=(fmt,))
     tw = {(r.match_id, r.team): r.wkts for r in team_wkts.itertuples()}
 
-    # gender kept alongside identifier in the group key -- without it, a
-    # colliding identifier's death-overs runs would sum both real people's
-    # innings into one number (see identity.py's collision docs).
+    # gender kept alongside identifier in the group key, otherwise a colliding
+    # identifier's death-overs runs would blend two real people's innings (see identity.py).
     death = pd.read_sql_query(
         "SELECT d.striker AS player_name, m.gender AS gender, "
         "SUM(d.runs_off_bat) AS death_runs "
@@ -79,18 +78,22 @@ def _support_tables(conn, fmt: str):
 
 
 def _ident_to_player(conn) -> dict[tuple, dict]:
-    """(cricsheet_identifier, gender) -> player row, gender-scoped for the
-    same reason every other builder in this codebase is (see e.g. impact.py):
-    a handful of Cricsheet identifiers are reused across two genuinely
-    different real people of different genders. Unsplit (the overwhelming
-    majority) players are stored with `gender=NULL` on the `players` row --
-    callers look up `(ident, real_gender)` first, falling back to
-    `(ident, None)` for those.
+    """maps (cricsheet_identifier, gender) -> player row.
+
+    gender-scoped since a few identifiers are shared by two different people (see impact.py).
+    unsplit players are stored with gender=NULL; callers fall back to (ident, None).
     """
     rows = conn.execute(
         "SELECT player_id, cricsheet_identifier, gender, canonical_name, nationality, "
         "role, derived_role, date_of_birth, batting_hand, bowling_style FROM players").fetchall()
     return {(r["cricsheet_identifier"], r["gender"]): dict(r) for r in rows if r["cricsheet_identifier"]}
+
+
+def _fielding_status(conn, fmt: str) -> dict[str, dict]:
+    rows = conn.execute(
+        "SELECT player_id, matches, catches, run_outs, stumpings, dismissals, "
+        "dismissals_per_match FROM player_fielding WHERE format=?", (fmt,)).fetchall()
+    return {r["player_id"]: dict(r) for r in rows}
 
 
 def _registry_status(conn, fmt: str) -> dict[str, dict]:
@@ -112,6 +115,7 @@ def build_cards_for_format(conn, fmt: str) -> int:
 
     players = _ident_to_player(conn)
     status = _registry_status(conn, fmt)
+    fielding_stats = _fielding_status(conn, fmt)
     team_runs, team_wkts, death_runs = _support_tables(conn, fmt)
     matches_meta = {r["match_id"]: dict(r) for r in conn.execute(
         "SELECT match_id, date, event, venue_raw, team1, team2, winner, win_margin "
@@ -202,16 +206,21 @@ def build_cards_for_format(conn, fmt: str) -> int:
         h2h = player_vs_team(conn, fmt, pm["player_id"], latest["opponent"]) \
             if latest["opponent"] else {}
 
+        raw_role = pm.get("role")
+        # players.role can be a non-cricket value (see styles.is_cricket_role); derived_role is always safe.
+        display_role = raw_role if raw_role and is_cricket_role(raw_role) else pm.get("derived_role")
+
         card = {
             "identity": {
                 "player_id": pm["player_id"], "name": pm["canonical_name"],
-                "role": pm.get("role") or pm.get("derived_role"),
+                "role": display_role,
                 "nationality": pm.get("nationality") or team, "age": age,
                 "batting_hand": classify_hand(pm.get("batting_hand")),
                 "bowling_style": pm.get("bowling_style"),
                 "bowling_type": classify_bowling_detail(pm.get("bowling_style")),
             },
             "career": career_from_group(g),
+            "fielding": fielding_stats.get(pm["player_id"]),
             "latest_match": latest_block,
             "form": form_block,
             "impact": impact_block,

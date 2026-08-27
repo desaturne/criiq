@@ -1,0 +1,25 @@
+# BuildKit uses this instead of the root .dockerignore for Dockerfile.bundle.
+# Needed because the root one excludes data/ and artifacts/ — exactly what this
+# image must copy in. Keep criiq.db and artifacts; drop everything else.
+
+**/.venv/
+**/__pycache__/
+*.pyc
+.git/
+frontend/
+backend/*.db
+
+# Pipeline scratch space — ~350 MB the runtime never reads
+data-collection/data/cache/
+data-collection/data/raw/
+data-collection/data/interim/
+data-collection/data/quarantine/
+data-collection/data/tmp_rankings_verify/
+data-collection/data/*.old-backup/
+data-collection/data/criiq.db-shm
+data-collection/data/criiq.db-wal
+data-collection/data/criiq.db.old-backup
+
+**/*.ipynb
+*.pdf
+.DS_Store

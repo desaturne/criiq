@@ -1,0 +1,143 @@
+match_id,gender,team,opponent,date,pool_size,actual_xi_resolved,actual_in_pool,overlap,random_baseline_overlap
+1490683,female,New Zealand,Sri Lanka,2026-06-16,27,11,11,8,4.24
+1490683,female,Sri Lanka,New Zealand,2026-06-16,26,11,11,4,4.7
+1490684,female,Ireland,England,2026-06-16,23,11,11,5,5.26
+1490684,female,England,Ireland,2026-06-16,37,11,11,7,3.28
+1490685,female,Bangladesh,Australia,2026-06-17,29,11,11,5,4.32
+1490685,female,Australia,Bangladesh,2026-06-17,25,11,11,6,4.93
+1490686,female,India,Netherlands,2026-06-17,47,11,11,7,2.58
+1490686,female,Netherlands,India,2026-06-17,26,11,11,8,4.78
+1490687,female,Pakistan,South Africa,2026-06-17,26,11,11,7,4.8
+1490687,female,South Africa,Pakistan,2026-06-17,35,11,11,6,3.44
+1539506,female,Brazil,Malawi,2026-06-17,17,11,11,9,7.18
+1539506,female,Malawi,Brazil,2026-06-17,28,11,11,6,4.27
+1532483,male,Bangladesh,Australia,2026-06-17,35,10,10,3,3.14
+1490688,female,West Indies,Scotland,2026-06-18,25,11,11,9,4.78
+1490688,female,Scotland,West Indies,2026-06-18,25,11,11,8,4.91
+1539507,female,Rwanda,Brazil,2026-06-18,28,11,11,7,4.34
+1539507,female,Brazil,Rwanda,2026-06-18,17,11,11,9,6.96
+1540322,female,Cyprus,Malta,2026-06-18,20,11,11,8,6.0
+1540323,female,Cyprus,Malta,2026-06-18,20,11,11,8,6.1
+1539472,male,Germany,Denmark,2026-06-18,34,10,10,5,3.32
+1539739,male,Nigeria,Hong Kong,2026-06-18,28,11,10,7,4.08
+1539739,male,Hong Kong,Nigeria,2026-06-18,38,10,10,6,3.03
+1490689,female,New Zealand,Ireland,2026-06-19,27,11,11,7,4.36
+1490689,female,Ireland,New Zealand,2026-06-19,23,11,11,6,5.21
+1539509,female,Rwanda,Nigeria,2026-06-19,28,11,11,6,4.24
+1539509,female,Nigeria,Rwanda,2026-06-19,22,10,10,6,5.07
+1540324,female,Cyprus,Malta,2026-06-19,20,11,11,8,6.08
+1532484,male,Bangladesh,Australia,2026-06-19,35,10,10,4,3.15
+1539473,male,Germany,Denmark,2026-06-19,34,10,10,5,3.32
+1539474,male,Germany,Denmark,2026-06-19,34,10,10,4,3.11
+1539740,male,Hong Kong,Namibia,2026-06-19,38,11,11,7,3.04
+1539740,male,Namibia,Hong Kong,2026-06-19,31,11,11,3,3.93
+1540308,male,Belgium,Romania,2026-06-19,27,11,8,5,3.34
+1540308,male,Romania,Belgium,2026-06-19,40,11,11,6,2.99
+1540309,male,Romania,Switzerland,2026-06-19,40,11,11,6,3.08
+1490690,female,Australia,Netherlands,2026-06-20,25,11,11,6,4.88
+1490690,female,Netherlands,Australia,2026-06-20,26,11,11,8,4.63
+1490691,female,Bangladesh,Pakistan,2026-06-20,29,11,11,8,4.17
+1490691,female,Pakistan,Bangladesh,2026-06-20,26,11,11,8,4.6
+1490692,female,England,Scotland,2026-06-20,37,11,11,6,3.34
+1490692,female,Scotland,England,2026-06-20,25,11,11,8,4.82
+1539510,female,Brazil,Nigeria,2026-06-20,17,11,11,9,7.2
+1539510,female,Nigeria,Brazil,2026-06-20,22,11,11,6,5.46
+1540326,female,Cyprus,Malta,2026-06-20,20,11,11,8,6.06
+1539475,male,Germany,Denmark,2026-06-20,34,11,11,5,3.5
+1539741,male,Namibia,Nigeria,2026-06-20,31,10,10,3,3.57
+1539741,male,Nigeria,Namibia,2026-06-20,28,11,10,5,3.94
+1540311,male,Romania,Hungary,2026-06-20,40,11,11,6,2.9
+1540312,male,Belgium,Hungary,2026-06-20,27,11,8,5,3.2
+1540313,male,Belgium,Switzerland,2026-06-20,27,10,7,3,2.86
+1490693,female,Sri Lanka,West Indies,2026-06-21,26,11,11,7,4.7
+1490693,female,West Indies,Sri Lanka,2026-06-21,25,11,11,8,4.77
+1490694,female,India,South Africa,2026-06-21,47,11,10,6,2.24
+1490694,female,South Africa,India,2026-06-21,35,11,11,5,3.54
+1532485,male,Bangladesh,Australia,2026-06-21,35,11,11,5,3.52
+1539742,male,Nigeria,Hong Kong,2026-06-21,28,11,10,5,3.96
+1539742,male,Hong Kong,Nigeria,2026-06-21,38,11,11,6,3.26
+1540314,male,Belgium,Hungary,2026-06-21,27,10,8,4,3.14
+1540315,male,Romania,Switzerland,2026-06-21,40,11,11,6,3.04
+1540316,male,Belgium,Romania,2026-06-21,27,10,8,5,3.21
+1540316,male,Romania,Belgium,2026-06-21,40,12,12,6,3.35
+1539732,male,Panama,Brazil,2026-06-22,36,10,10,3,3.05
+1539732,male,Brazil,Panama,2026-06-22,22,11,11,6,5.52
+1539743,male,Namibia,Hong Kong,2026-06-22,31,10,10,5,3.46
+1539743,male,Hong Kong,Namibia,2026-06-22,38,11,11,6,3.2
+1490695,female,Scotland,New Zealand,2026-06-23,25,11,11,8,4.97
+1490695,female,New Zealand,Scotland,2026-06-23,27,11,11,8,4.46
+1490696,female,Ireland,Sri Lanka,2026-06-23,23,11,11,6,5.21
+1490696,female,Sri Lanka,Ireland,2026-06-23,26,11,11,5,4.59
+1490697,female,Australia,Pakistan,2026-06-23,25,11,11,8,4.87
+1490697,female,Pakistan,Australia,2026-06-23,26,11,11,8,4.7
+1539744,male,Namibia,Nigeria,2026-06-23,31,10,10,3,3.61
+1539744,male,Nigeria,Namibia,2026-06-23,28,11,10,3,3.98
+1541805,male,Indonesia,Uzbekistan,2026-06-23,40,10,10,7,2.7
+1541806,male,Thailand,Singapore,2026-06-23,25,10,10,5,4.33
+1490698,female,England,West Indies,2026-06-24,37,11,11,7,3.14
+1490698,female,West Indies,England,2026-06-24,25,11,11,8,4.83
+1539733,male,Panama,Bahamas,2026-06-24,36,11,11,5,3.36
+1539734,male,Brazil,Belize,2026-06-24,22,10,10,5,5.06
+1490699,female,Bangladesh,India,2026-06-25,29,11,11,7,4.07
+1490699,female,India,Bangladesh,2026-06-25,47,11,11,7,2.51
+1490700,female,South Africa,Netherlands,2026-06-25,35,11,11,6,3.65
+1490700,female,Netherlands,South Africa,2026-06-25,26,11,11,7,4.76
+1539735,male,Panama,Bermuda,2026-06-25,36,10,10,3,2.98
+1539736,male,Brazil,Bahamas,2026-06-25,22,10,10,5,5.1
+1541808,male,Indonesia,Singapore,2026-06-25,40,10,10,7,2.68
+1490701,female,Scotland,Sri Lanka,2026-06-26,25,11,11,8,5.06
+1490701,female,Sri Lanka,Scotland,2026-06-26,26,11,11,5,4.63
+1539512,female,Norway,Luxembourg,2026-06-26,19,11,10,8,5.87
+1528548,male,India,Ireland,2026-06-26,39,11,11,5,3.02
+1539476,male,Serbia,Luxembourg,2026-06-26,24,10,9,5,3.93
+1490702,female,Pakistan,Netherlands,2026-06-27,26,11,11,8,4.6
+1490702,female,Netherlands,Pakistan,2026-06-27,26,11,11,8,4.62
+1490703,female,West Indies,Ireland,2026-06-27,25,11,11,9,4.86
+1490703,female,Ireland,West Indies,2026-06-27,23,11,11,5,5.16
+1490704,female,New Zealand,England,2026-06-27,27,11,11,8,4.48
+1490704,female,England,New Zealand,2026-06-27,37,11,11,5,3.13
+1539514,female,Norway,Czech Republic,2026-06-27,19,10,9,7,5.17
+1540948,female,Denmark,Switzerland,2026-06-27,22,10,10,8,4.99
+1539479,male,Serbia,Luxembourg,2026-06-27,24,10,8,4,3.62
+1539738,male,Brazil,Bermuda,2026-06-27,22,11,11,4,5.5
+1542988,male,Hungary,Austria,2026-06-27,34,10,9,4,2.9
+1542988,male,Austria,Hungary,2026-06-27,40,10,10,2,2.73
+1490705,female,Bangladesh,South Africa,2026-06-28,29,11,11,7,4.12
+1490705,female,South Africa,Bangladesh,2026-06-28,35,11,11,5,3.48
+1490706,female,India,Australia,2026-06-28,47,11,11,7,2.48
+1490706,female,Australia,India,2026-06-28,25,11,11,7,4.76
+1539517,female,Norway,Czech Republic,2026-06-28,19,11,10,8,5.75
+1542989,male,Austria,Hungary,2026-06-28,40,10,10,2,2.88
+1542990,male,Austria,Hungary,2026-06-28,40,10,10,2,2.83
+1542990,male,Hungary,Austria,2026-06-28,34,10,9,4,2.96
+1490707,female,West Indies,Australia,2026-06-30,25,11,11,7,4.75
+1490707,female,Australia,West Indies,2026-06-30,25,11,11,6,4.76
+1496574,male,India,England,2026-07-01,39,11,11,6,3.01
+1496574,male,England,India,2026-07-01,29,11,11,8,4.2
+1540317,male,Sweden,Portugal,2026-07-01,28,11,11,7,4.38
+1540318,male,Sweden,Portugal,2026-07-01,28,11,11,6,4.36
+1540318,male,Portugal,Sweden,2026-07-01,27,10,10,6,4.11
+1490708,female,England,South Africa,2026-07-02,37,11,11,7,3.18
+1490708,female,South Africa,England,2026-07-02,35,11,11,5,3.45
+1540319,male,Sweden,Portugal,2026-07-02,28,11,11,6,4.42
+1543356,male,Finland,Portugal,2026-07-03,26,11,11,6,4.72
+1496575,male,India,England,2026-07-04,39,10,10,5,2.84
+1496575,male,England,India,2026-07-04,29,10,10,8,3.74
+1543358,male,Finland,Portugal,2026-07-04,26,11,11,5,4.66
+1490709,female,England,Australia,2026-07-05,37,11,11,7,3.3
+1490709,female,Australia,England,2026-07-05,25,11,11,8,4.84
+1496576,male,England,India,2026-07-07,29,10,10,8,3.74
+1543362,male,Belgium,Gibraltar,2026-07-08,27,11,11,6,4.35
+1543364,male,Serbia,Romania,2026-07-08,24,10,9,6,4.08
+1543364,male,Romania,Serbia,2026-07-08,40,11,11,7,3.15
+1496577,male,England,India,2026-07-09,29,10,10,7,3.76
+1543366,male,Norway,Estonia,2026-07-09,31,11,11,7,3.84
+1543367,male,Romania,Gibraltar,2026-07-10,40,11,11,8,2.94
+1543369,male,Belgium,Serbia,2026-07-10,27,11,11,6,4.32
+1543369,male,Serbia,Belgium,2026-07-10,24,10,9,5,4.25
+1543370,male,Norway,Turkey,2026-07-10,31,11,10,5,3.68
+1496578,male,England,India,2026-07-11,29,10,10,8,3.93
+1543371,male,Norway,Denmark,2026-07-12,31,11,10,5,3.4
+1543372,male,Belgium,Romania,2026-07-12,27,11,11,7,4.59
+1543372,male,Romania,Belgium,2026-07-12,40,11,11,7,2.95
+1543374,male,Serbia,Gibraltar,2026-07-12,24,10,9,6,4.19

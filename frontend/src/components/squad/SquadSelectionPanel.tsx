@@ -1,14 +1,20 @@
 import { useEffect, useState } from "react";
 import { motion } from "motion/react";
-import { CheckCircle, X, TrendingUp, TrendingDown, ArrowRight, Loader2 } from "lucide-react";
+import { CheckCircle, X, TrendingUp, TrendingDown, ArrowRight, Loader2, ClipboardCheck } from "lucide-react";
 import { AvatarWithRing } from "../common/AvatarWithRing";
 import { SparkLine } from "../common/SparkLine";
+import { AnalyzeXiModal } from "./AnalyzeXiModal";
 import * as api from "../../lib/api";
 import { Player, SelectionState } from "../../types/index";
 
-export function SquadSelectionPanel({ players, selections, opposition, format, onClose, onReset, onChangeSelection }: {
+export function SquadSelectionPanel({ players, selections, team, gender, opposition, format, onClose, onReset, onChangeSelection }: {
   players: Player[];
   selections: Record<string, SelectionState>;
+  // `team` and `gender` describe whose squad is on screen. They're passed down
+  // rather than assumed: this panel used to hand AnalyzeXiModal a literal
+  // "India", so a coach registered to any other country had their XI analysed
+  // against India's roster.
+  team: string; gender: "female" | "male";
   opposition: string; format: string;
   onClose: () => void; onReset: () => void;
   onChangeSelection: (id: string, s: SelectionState) => void;
@@ -26,6 +32,7 @@ export function SquadSelectionPanel({ players, selections, opposition, format, o
   const [matchId, setMatchId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [showAnalysis, setShowAnalysis] = useState(false);
 
   useEffect(() => {
     api.listMatches().then(res => setMatchId(res.upcoming[0]?.id ?? null)).catch(() => setMatchId(null));
@@ -46,7 +53,7 @@ export function SquadSelectionPanel({ players, selections, opposition, format, o
   };
 
   const roleTag = (role: string) => {
-    if (role === "Batsman")    return { bg: "bg-blue-500/15",    text: "text-blue-400"  };
+    if (role === "Batter" || role === "Batsman") return { bg: "bg-blue-500/15", text: "text-blue-400" };
     if (role === "Bowler")     return { bg: "bg-orange-500/15",  text: "text-orange-400" };
     if (role === "All-rounder") return { bg: "bg-[#5FA800]/15",  text: "text-[#5FA800]" };
     return { bg: "bg-secondary", text: "text-muted-foreground" };
@@ -232,12 +239,21 @@ export function SquadSelectionPanel({ players, selections, opposition, format, o
             {saving ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle size={15} />}
             {saved ? "Saved!" : saving ? "Saving…" : isComplete ? "Save Playing XI" : `Select ${11 - selected.length} more…`}
           </motion.button>
+          <button onClick={() => setShowAnalysis(true)} disabled={!isComplete}
+            className="flex items-center gap-1.5 px-5 py-3 border border-border text-muted-foreground text-sm rounded-xl hover:text-foreground hover:border-foreground/30 transition-all disabled:opacity-40 disabled:cursor-not-allowed">
+            <ClipboardCheck size={14} /> Analyze this XI
+          </button>
           <button onClick={onReset}
             className="px-6 py-3 border border-border text-muted-foreground text-sm rounded-xl hover:text-foreground hover:border-foreground/30 transition-all">
             Reset
           </button>
         </div>
       </motion.div>
+
+      {showAnalysis && (
+        <AnalyzeXiModal team={team} gender={gender} opponent={opposition} playerIds={selected.map(p => p.id)}
+          onClose={() => setShowAnalysis(false)} />
+      )}
     </motion.div>
   );
 }

@@ -1,14 +1,16 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { X, GitCompare } from "lucide-react";
+import { X, GitCompare, Loader2 } from "lucide-react";
 import { RadialGauge } from "../common/RadialGauge";
 import { SelectionControl } from "../common/SelectionControl";
 import { SparkLine } from "../common/SparkLine";
 import { StatusBadge } from "../common/StatusBadge";
+import * as api from "../../lib/api";
+import { applyVsOpponent, mapApiPlayerDetail } from "../../lib/mappers";
 import { Player, SelectionState } from "../../types/index";
 
 export function PlayerCompareModal({
-  players: allPlayers,
+  players: listPlayers,
   playerIds,
   opposition,
   selections,
@@ -24,7 +26,31 @@ export function PlayerCompareModal({
   onClose: () => void;
   onRemove: (id: string) => void;
 }) {
-  const players = playerIds.map(id => allPlayers.find(p => p.id === id)!).filter(Boolean);
+  // The list view's Player objects have vsOpponent/phase/breakdown all
+  // zeroed out (only /players/{id} and /players/{id}/vs/{opponent} compute
+  // those) -- fetch the real detail card for each compared player instead of
+  // showing those placeholder zeros as if they were real stats.
+  const [detailed, setDetailed] = useState<Record<string, Player>>({});
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all(playerIds.map(id =>
+      api.getPlayer(id).then(d => {
+        let player = mapApiPlayerDetail(d);
+        return api.getPlayerVsOpponent(id, opposition)
+          .then(vs => applyVsOpponent(player, vs, opposition))
+          .catch(() => player);
+      })
+    )).then(results => {
+      if (cancelled) return;
+      setDetailed(Object.fromEntries(results.map(p => [p.id, p])));
+    });
+    return () => { cancelled = true; };
+  }, [playerIds.join(","), opposition]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const players = playerIds
+    .map(id => detailed[id] ?? listPlayers.find(p => p.id === id))
+    .filter((p): p is Player => !!p);
+  const loading = players.length < playerIds.length || playerIds.some(id => !detailed[id]);
 
   const statRows: { label: string; render: (p: Player) => React.ReactNode }[] = [
     {
@@ -94,28 +120,58 @@ export function PlayerCompareModal({
       },
     },
     {
+      label: "Fielding",
+      render: p => {
+        const f = p.fielding;
+        if (!f || f.matches === 0) {
+          return <div className="text-[11px] text-muted-foreground text-center py-2">No fielding record</div>;
+        }
+        const MIN_MATCHES_FOR_RATE = 5;
+        const rankValue = (x: NonNullable<Player["fielding"]>) =>
+          x.matches >= MIN_MATCHES_FOR_RATE && x.dismissalsPerMatch != null ? x.dismissalsPerMatch : x.dismissals;
+        const bestValue = Math.max(...players.map(pl => pl.fielding ? rankValue(pl.fielding) : -Infinity));
+        const isBest = players.length > 1 && bestValue > 0 && rankValue(f) === bestValue;
+        return (
+          <div className="space-y-2">
+            <div className="grid grid-cols-3 gap-1.5">
+              {[{ k: "Catches", v: f.catches }, { k: "Run-outs", v: f.runOuts }, { k: "Stumpings", v: f.stumpings }].map(s => (
+                <div key={s.k} className="text-center p-1.5 rounded-lg bg-secondary/50">
+                  <div className="font-mono text-[13px] font-bold text-foreground">{s.v}</div>
+                  <div className="text-[8px] text-muted-foreground uppercase tracking-wider mt-0.5">{s.k}</div>
+                </div>
+              ))}
+            </div>
+            {isBest && (
+              <div className="text-[10px] font-semibold text-center py-1 rounded-md"
+                   style={{ background: "#AAFF5722", color: "#AAFF57" }}>
+                Better Fielder
+              </div>
+            )}
+          </div>
+        );
+      },
+    },
+    {
+      // Only real, backend-computed numbers: Form is a percentile rank
+      // against every player's recent-form index; Total Score is the
+      // model's importance_score (proven track record + ICC rank). The
+      // per-opponent/venue/matchup sub-scores this used to show were never
+      // computed anywhere and always rendered as 0 -- removed rather than
+      // faked. See the AI Recommendations page for real per-opponent scoring.
       label: "AI Score",
       render: p => (
         <div className="space-y-2">
-          {[
-            { label: "Form",              val: p.breakdown.form,              color: "#AAFF57" },
-            { label: "vs Opponent",       val: p.breakdown.vsOpponent,        color: "#60A5FA" },
-            { label: "Venue Fit",         val: p.breakdown.venueFit,          color: "#A78BFA" },
-            { label: "Matchup Advantage", val: p.breakdown.matchupAdvantage,  color: "#FB923C" },
-          ].map(b => (
-            <div key={b.label}>
-              <div className="flex justify-between text-[10px] text-muted-foreground mb-1">
-                <span>{b.label}</span><span className="font-mono font-semibold" style={{ color: b.color }}>{b.val}</span>
-              </div>
-              <div className="h-1 rounded-full bg-secondary overflow-hidden">
-                <motion.div initial={{ width: 0 }} animate={{ width: `${b.val}%` }}
-                  transition={{ duration: 0.8, ease: "easeOut" }}
-                  className="h-full rounded-full" style={{ background: b.color }} />
-              </div>
+          <div>
+            <div className="flex justify-between text-[10px] text-muted-foreground mb-1">
+              <span>Recent form (percentile)</span><span className="font-mono font-semibold text-[#AAFF57]">{p.breakdown.form}</span>
             </div>
-          ))}
-          <div className="mt-2 pt-2 border-t border-border flex justify-between items-center">
-            <span className="text-[11px] text-muted-foreground">Total Score</span>
+            <div className="h-1 rounded-full bg-secondary overflow-hidden">
+              <motion.div initial={{ width: 0 }} animate={{ width: `${p.breakdown.form}%` }}
+                transition={{ duration: 0.8, ease: "easeOut" }} className="h-full rounded-full bg-[#AAFF57]" />
+            </div>
+          </div>
+          <div className="pt-2 border-t border-border flex justify-between items-center">
+            <span className="text-[11px] text-muted-foreground">Importance Score</span>
             <span className="font-mono font-bold text-lg" style={{ color: p.color }}>{p.score}</span>
           </div>
         </div>
@@ -153,6 +209,7 @@ export function PlayerCompareModal({
               <GitCompare size={16} style={{ color: "#AAFF57" }} />
               <h2 className="font-display text-[17px] font-semibold text-foreground">Player Comparison</h2>
               <span className="text-[11px] text-muted-foreground">{players.length} players</span>
+              {loading && <Loader2 size={12} className="text-muted-foreground animate-spin" />}
             </div>
             <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors">
               <X size={16} />

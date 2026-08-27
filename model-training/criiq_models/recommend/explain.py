@@ -1,16 +1,12 @@
-"""Turn a `score()` result into a plain-language explanation payload.
+"""turns a score() result into a plain-language explanation payload.
 
-Mirrors the "strengths" plain-language summary style already used in
-`data-collection/criiq_data/advanced.py`: a list of short, coach-facing
-sentences generated directly from the `components` breakdown, so nothing
-said here is invented independently of the numbers that produced the score.
-
-House style for these sentences: no em-dash / en-dash connectors ("—"/"–")
-in the prose. Use commas, colons, or parentheses instead. (Ordinary hyphens
-inside words like "all-rounder", "vs-pace", "Right-handed" are fine and
-intentional.)
+mirrors the "strengths" summary style in data-collection/criiq_data/advanced.py,
+generating coach-facing sentences straight from the components breakdown.
+no em-dashes in the generated prose; ordinary hyphens like "all-rounder" are fine.
 """
 from __future__ import annotations
+
+from ..config import SETTINGS
 
 _PHASE_LABEL = {
     "powerplay": "powerplay (overs 1-6)",
@@ -19,12 +15,17 @@ _PHASE_LABEL = {
 }
 
 
-def explain(scored: dict, alternative: dict | None = None, slot: str | None = None) -> dict:
-    """`alternative`/`slot`: the best-scoring player NOT selected for the
-    same team-sheet slot (opener / core batting / bowling tail, see
-    `selection/optimize.slot_category`), if any, lets the explanation say
-    *why this player over the next-best option*, not just describe their own
-    numbers in isolation.
+def explain(scored: dict, alternative: dict | None = None, slot: str | None = None,
+            h2h_batting: dict | None = None, h2h_bowling: dict | None = None,
+            is_best_fielder: bool = False) -> dict:
+    """`alternative`/`slot` is the best-scoring player not picked for the same
+    slot (see `selection/optimize.slot_category`), if any, so the explanation
+    can say why this player over the next-best option, not just describe
+    their own numbers.
+
+    `is_best_fielder`: this player has the strongest fielding record (see
+    selection/optimize.best_fielder) among the whole pool being explained
+    together -- worth a distinct callout, not just their own raw numbers.
     """
     c = scored["components"]
     inp = c["inputs"]
@@ -73,12 +74,9 @@ def explain(scored: dict, alternative: dict | None = None, slot: str | None = No
             f"{_pct(inp['predicted_bowling_wpa'])} bowling win-probability impact per match "
             f"({c['model_part']:+} pts).")
 
-    # A strong hitter (finisher / power hitter) can still rate modestly here,
-    # because the score is win-probability-added, not raw strike rate. Flag
-    # that explicitly so a low rating on a genuine finisher (the recurring
-    # "she's our best finisher but isn't recommended" case) reads as "low
-    # recent win-impact", not "can't hit", and points a coach at a manual call.
-    if archetype in ("finisher", "power hitter") and c["model_part"] <= 0:
+    # score is win-probability-added, not raw strike rate, so a genuine
+    # finisher with low recent win-impact can still rate low here despite a strong profile
+    if archetype in ("finisher", "power hitter") and c["model_part"] <= SETTINGS.finisher_low_impact_threshold:
         lines.append(
             f"The batting profile above is strong, but this rating is driven by win-probability-added "
             f"(impact on results), not raw hitting, so a {archetype} with modest recent win-impact "
@@ -130,6 +128,26 @@ def explain(scored: dict, alternative: dict | None = None, slot: str | None = No
             f"Has bowled {inp['bowl_matchup_balls_vs_opponent_batters']} balls at "
             f"{scored['opponent']}'s specific batters (wicket rate {round(rate, 3) if rate is not None else 'n/a'}): "
             f"{direction} matchup for them with the ball ({inp['bowl_matchup_part']:+} pts).")
+
+    if h2h_batting and (h2h_batting.get("best") or h2h_batting.get("bogey")):
+        bits = []
+        best = h2h_batting.get("best")
+        if best:
+            bits.append(f"best to target is {best['opponent']} (SR {best['strike_rate']} in {best['balls']} balls)")
+        bogey = h2h_batting.get("bogey")
+        if bogey:
+            bits.append(f"bogey bowler is {bogey['opponent']} ({bogey['dismissals']} dismissals in {bogey['balls']} balls)")
+        lines.append(f"Specific matchups vs {scored['opponent']}'s named XI: {'; '.join(bits)}.")
+
+    if h2h_bowling and (h2h_bowling.get("best") or h2h_bowling.get("most_expensive")):
+        bits = []
+        best = h2h_bowling.get("best")
+        if best:
+            bits.append(f"has {best['opponent']}'s number ({best['dismissals']} in {best['balls']} balls)")
+        expensive = h2h_bowling.get("most_expensive")
+        if expensive:
+            bits.append(f"{expensive['opponent']} counters well (economy {expensive['economy']} in {expensive['balls']} balls)")
+        lines.append(f"Specific matchups vs {scored['opponent']}'s named XI: {'; '.join(bits)}.")
 
     if c["phase_fit_part"] > 0:
         lines.append(f"Stands out among teammates in their strongest phase of the innings "
@@ -183,10 +201,25 @@ def explain(scored: dict, alternative: dict | None = None, slot: str | None = No
             f"{_pct(inp.get('domestic_form_bowling_wpa'))} with the ball, factored into the "
             f"model above, alongside {inp['career_matches']} international career matches.")
 
+    fielding_matches = inp.get("fielding_matches") or 0
+    if fielding_matches > 0:
+        catches, run_outs, stumpings = (inp.get("fielding_catches") or 0,
+                                         inp.get("fielding_run_outs") or 0,
+                                         inp.get("fielding_stumpings") or 0)
+        dismissals, rate = inp.get("fielding_dismissals") or 0, inp.get("fielding_dismissals_per_match")
+        rate_note = f" ({rate}/match)" if rate is not None else ""
+        record = f"{catches} catches, {run_outs} run-outs and {stumpings} stumpings in {fielding_matches} matches{rate_note}"
+        if is_best_fielder:
+            lines.append(
+                f"Also the sharpest fielder among the players considered here: {record} "
+                f"is the best record in this pool, a real edge in the field.")
+        else:
+            lines.append(f"In the field: {record}.")
+
     if inp.get("retirement_status"):
         reason = inp.get("status_reason")
-        # comma, not parens: the reason itself often already ends in a
-        # parenthetical ("... (40% of team matches)"), and nesting parens reads badly.
+        # comma not parens: the reason often already ends in a parenthetical,
+        # and nesting parens reads badly
         reason_note = f", {reason}" if reason else ""
         lines.append(f"Current status: {inp['retirement_status']}{reason_note}.")
 
@@ -209,11 +242,10 @@ def explain(scored: dict, alternative: dict | None = None, slot: str | None = No
 
 
 def _append_batting_profile(lines: list[str], inp: dict, archetype: str | None) -> None:
-    """The descriptive "what to expect / best overs / where the impact is"
-    block, from data-collection's `player_advanced` batting profile (surfaced
-    via `score.py`'s inputs, never scored). Gated on >= 30 balls faced so a
-    tailender's tiny-sample strike rate doesn't get narrated as if it were a
-    real batting profile.
+    """the "what to expect / best overs" batting profile block, from
+    data-collection's `player_advanced` (surfaced via score.py's inputs, never
+    scored). gated on >= 30 balls faced so a tailender's tiny sample doesn't
+    get narrated as a real profile.
     """
     bat_sr = inp.get("bat_strike_rate")
     if bat_sr is None or (inp.get("bat_balls") or 0) < 30:

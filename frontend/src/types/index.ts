@@ -6,9 +6,9 @@ export type UserRole = "Coach" | "Player";
 
 export type SelectionState = "select" | "reserve" | "exclude" | "undecided";
 
-export type PlayerStatus = "ACTIVE" | "INCONSISTENT" | "INACTIVE" | "UNKNOWN";
+export type PlayerStatus = "ACTIVE" | "INCONSISTENT" | "INACTIVE" | "RETIRED" | "UNKNOWN";
 
-export interface AuthUser { id: number; name: string; role: string; }
+export interface AuthUser { id: number; name: string; role: string; country?: string; status?: string; }
 
 export interface AppContextValue {
   dark: boolean;
@@ -18,7 +18,7 @@ export interface AppContextValue {
   token: string | null;
   user: AuthUser | null;
   login: (email: string, password: string) => Promise<void>;
-  register: (name: string, email: string, password: string) => Promise<void>;
+  register: (name: string, email: string, password: string, country: string) => Promise<void>;
   logout: () => Promise<void>;
 }
 
@@ -30,17 +30,21 @@ export interface Player {
   vsOpponent: number; vsInsight: string;
   powerplay: number; middle: number; death: number;
   career: { matches: number; innings: number; runs?: number; avg?: number; sr?: number; fifties?: number; hundreds?: number; wickets?: number; economy?: number; bowlingAvg?: number; best?: string };
+  fielding?: { matches: number; catches: number; runOuts: number; stumpings: number; dismissals: number; dismissalsPerMatch: number | null };
   score: number;
   breakdown: { form: number; vsOpponent: number; venueFit: number; matchupAdvantage: number };
+  // Real batting-position/role data (player_role_final) -- the same signal
+  // the recommendation engine itself uses to order a team sheet, not a guess.
+  position: string; isKeeper: boolean;
 }
 
 export interface Match {
   id: string; team1: string; team2: string; venue: string;
   date: string; time: string; format: string;
   status: "Upcoming" | "Live" | "Completed";
-  result?: string; paceSupport: number; spinSupport: number; battingAnchors: number; finishersFit: number;
-  weatherDesc: string; rainProb: number; windSpeed: number; temp: number;
+  result?: string;
   opponentForm: ("W" | "L")[];
+  gender: "female" | "male";
 }
 
 export interface AppUser {

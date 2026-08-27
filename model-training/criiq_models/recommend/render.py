@@ -1,7 +1,6 @@
-"""Human-readable team-sheet rendering — the same `select_xi`/`explain` data
-`cli.cmd_recommend`'s `--explain` JSON already carries, laid out like an
-actual team sheet instead of a JSON blob. Nothing here computes anything new;
-it only formats numbers and sentences that already exist elsewhere.
+"""renders a team sheet as plain text from the same select_xi/explain data
+cli.cmd_recommend --explain outputs as JSON. purely formatting, no new
+computation.
 """
 from __future__ import annotations
 
@@ -24,6 +23,20 @@ _POOL_SECTIONS = [
 ]
 
 
+def _shap_one_liner(shap_result: dict) -> str:
+    if set(shap_result) == {"error"}:
+        return f"[SHAP] {shap_result['error']}"
+    bits = []
+    for target, result in shap_result.items():
+        if "error" in result:
+            bits.append(f"{target}: {result['error']}")
+            continue
+        top = result["top_contributions"][0] if result["top_contributions"] else None
+        if top:
+            bits.append(f"{target} top driver: {top['feature']} ({top['value']:+.4f})")
+    return "[SHAP] " + "; ".join(bits) if bits else ""
+
+
 def render_team_sheet(team: str, opponent: str, venue_id: str | None,
                        xi_explained: list[dict], pool_explained: list[dict],
                        model_metadata: dict | None, constraints: dict | None,
@@ -31,24 +44,15 @@ def render_team_sheet(team: str, opponent: str, venue_id: str | None,
                        head_to_head: dict | None = None,
                        strength_context: dict | None = None,
                        rotation_xi: dict | None = None) -> str:
-    """`xi_explained`/`pool_explained`: the same lists `cmd_recommend
-    --explain` builds -- each entry is a brief dict (`name`, `role_bucket`,
-    `is_keeper`, `batting_position_median`, `score`) plus a `reasoning` list
-    of sentences. `pool_explained` is the wider shortlist (ranked by raw
-    score, `SETTINGS.pool_size` players); `xi_explained` is the final
-    constrained-and-ordered XI -- not simply its top 11, since the MILP can
-    trade a top-ranked specialist for a lower-scoring keeper/opener the
-    constraints require, so the two lists are shown separately rather than
-    one being a strict prefix of the other.
+    """xi_explained/pool_explained come from cmd_recommend --explain: each
+    entry has name/role_bucket/is_keeper/batting_position_median/score plus a
+    reasoning list. pool_explained is the wider shortlist ranked by score;
+    xi_explained is the final constrained XI, not just the top 11, since the
+    MILP can trade a top specialist for a required keeper/opener.
 
-    The shortlist is split into three role-based pools (batting/all-rounder/
-    bowling, each independently ranked by score) rather than one flat list --
-    this is how a coach actually thinks about a squad, and it's what the XI's
-    own batting/bowling-capable constraints (see `selection/optimize.py`)
-    are already implicitly drawing from; showing the pools this way makes
-    that visible instead of implicit. A player with an unrecognized role
-    (`role_bucket == "unknown"`, no reliable ball-count signal) appears in
-    its own small trailing section rather than being silently dropped.
+    the shortlist splits into batting/all-rounder/bowling pools since that's
+    how a coach thinks about a squad. unrecognized-role players get their own
+    trailing section instead of being dropped.
     """
     lines: list[str] = []
     bar = "=" * _WIDTH
@@ -81,6 +85,8 @@ def render_team_sheet(team: str, opponent: str, venue_id: str | None,
         lines.append(f"  {i:2d}. {p['name']:<22s} {role:<12s}{tags:<10s} {p['score']:>5.1f}/100")
         for sentence in p.get("reasoning", []):
             lines.append(_wrap(f"- {sentence}"))
+        if p.get("shap"):
+            lines.append(_wrap(_shap_one_liner(p["shap"])))
         lines.append("")
 
     lines.append(f"  ROSTER: {len(pool_explained)} PLAYERS ACROSS 3 ROLE POOLS (ranked by score)")
@@ -123,6 +129,8 @@ def render_team_sheet(team: str, opponent: str, venue_id: str | None,
         lines.append(f"  {i:2d}. {p['name']:<22s} {role:<12s}{tag:<5s} {p['score']:>5.1f}/100")
         for sentence in p.get("reasoning", []):
             lines.append(_wrap(f"- {sentence}"))
+        if p.get("shap"):
+            lines.append(_wrap(_shap_one_liner(p["shap"])))
         lines.append("")
 
     if constraints:
@@ -180,14 +188,61 @@ def render_team_sheet(team: str, opponent: str, venue_id: str | None,
     return "\n".join(lines)
 
 
+def _render_shap_target(lines: list[str], target: str, result: dict) -> None:
+    lines.append("  " + "-" * (_WIDTH - 2))
+    lines.append(f"  SHAP BREAKDOWN -- {target}")
+    lines.append("  " + "-" * (_WIDTH - 2))
+    if "error" in result:
+        lines.append(_wrap(result["error"]))
+        return
+
+    lines.append(f"  base value:      {result['base_value']:>10.6f}")
+    lines.append(f"  predicted value: {result['predicted_value']:>10.6f}")
+    lines.append("")
+    top = result["top_contributions"]
+    shown = {c["feature"] for c in top}
+    rest_sum = sum(v for f, v in result["contributions"].items() if f not in shown)
+    n_rest = len(result["contributions"]) - len(shown)
+    for c in top:
+        lines.append(f"    {c['feature']:<32s} {c['value']:>+10.6f}")
+    if n_rest > 0:
+        lines.append(f"    {'(+ ' + str(n_rest) + ' more features, combined)':<32s} {rest_sum:>+10.6f}")
+
+
+def render_player_explanation(name: str, opponent: str, venue_id: str | None, score: float,
+                               summary: list[str], shap_result: dict | None = None) -> str:
+    lines: list[str] = []
+    bar = "=" * _WIDTH
+    venue_note = f" at venue {venue_id}" if venue_id else ""
+    lines.append(bar)
+    lines.append(f"  PLAYER EXPLANATION: {name} vs {opponent.upper()}{venue_note}")
+    lines.append(f"  Score: {score}/100")
+    lines.append(bar)
+    lines.append("")
+    for sentence in summary:
+        lines.append(_wrap(f"- {sentence}"))
+    lines.append("")
+
+    if shap_result is not None:
+        if set(shap_result) == {"error"}:
+            lines.append("  " + "-" * (_WIDTH - 2))
+            lines.append("  SHAP BREAKDOWN")
+            lines.append("  " + "-" * (_WIDTH - 2))
+            lines.append(_wrap(shap_result["error"]))
+        else:
+            for target, result in shap_result.items():
+                _render_shap_target(lines, target, result)
+        lines.append("")
+
+    lines.append(bar)
+    return "\n".join(lines)
+
+
 def render_xi_analysis(team: str, opponent: str, venue_id: str | None,
                         xi_explained: list[dict], analysis: dict) -> str:
-    """A coach's own hand-picked XI, scored and checked against the same
-    constraints `select_xi` enforces, plus a direct comparison to the
-    provably-optimal pick (`selection/optimize.analyze_xi`) -- "how good is
-    THIS specific XI", not "what's the best XI". Every real selector
-    sometimes overrides the algorithm; this is the honest scorecard for that
-    call, not a second opinion pretending to replace it.
+    """scores a coach's own hand-picked XI against the same constraints
+    select_xi enforces, and compares it to the optimal pick from
+    selection/optimize.analyze_xi.
     """
     lines: list[str] = []
     bar = "=" * _WIDTH

@@ -1,11 +1,10 @@
 import { useState, useEffect } from "react";
-import { motion } from "motion/react";
 import { useNavigate, useParams } from "react-router";
-import { Zap, ChevronLeft, MapPin, Cloud, AlertTriangle, Shield, Wind } from "lucide-react";
-import { RadialGauge } from "../components/common/RadialGauge";
+import { ChevronLeft, MapPin } from "lucide-react";
 import * as api from "../lib/api";
 import { mapApiMatch } from "../lib/mappers";
 import { Match } from "../types/index";
+import { RealMatchScorecard, RealInningsCard } from "../components/match/Scorecard";
 
 export function MatchDetailPage() {
   const { id: matchId } = useParams<{ id: string }>();
@@ -13,7 +12,13 @@ export function MatchDetailPage() {
   const [match, setMatch] = useState<Match | null>(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
-  const [animated, setAnimated] = useState(false);
+
+  // Scorecard only exists for a match that's actually been played -- a
+  // fixture "f<n>" has no deliveries on file yet, so it's fetched separately
+  // (and allowed to fail quietly) rather than blocking the page on data that
+  // genuinely doesn't exist for upcoming fixtures.
+  const [innings, setInnings] = useState<RealInningsCard[] | null>(null);
+  const [resultLoading, setResultLoading] = useState(false);
 
   useEffect(() => {
     if (!matchId) return;
@@ -25,19 +30,17 @@ export function MatchDetailPage() {
     return () => { cancelled = true; };
   }, [matchId]);
 
-  useEffect(() => { const t = setTimeout(() => setAnimated(true), 400); return () => clearTimeout(t); }, []);
-  const condBar = (label: string, val: number, color: string) => (
-    <div className="space-y-1.5">
-      <div className="flex justify-between text-sm">
-        <span className="text-foreground font-medium">{label}</span>
-        <span className="font-mono" style={{ color }}>{val}%</span>
-      </div>
-      <div className="h-2 rounded-full bg-secondary overflow-hidden">
-        <motion.div initial={{ width: 0 }} animate={{ width: animated ? `${val}%` : "0%" }} transition={{ duration: 1.2, ease: "easeOut" }}
-          className="h-full rounded-full" style={{ backgroundColor: color }} />
-      </div>
-    </div>
-  );
+  useEffect(() => {
+    if (!matchId || !match || match.status === "Upcoming") return;
+    let cancelled = false;
+    setResultLoading(true);
+    api.getMatchScorecard(matchId)
+      .then(res => { if (!cancelled) setInnings(res.innings); })
+      .catch(() => { /* allowed to fail quietly -- no ball-by-ball data on file */ })
+      .finally(() => { if (!cancelled) setResultLoading(false); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [matchId, match?.status]);
 
   if (loading) {
     return <div className="p-5 max-w-screen-xl mx-auto py-16 text-center text-sm text-muted-foreground">Loading match…</div>;
@@ -56,7 +59,11 @@ export function MatchDetailPage() {
         <ChevronLeft size={14} /> Back to Matches
       </button>
 
-      {/* Hero */}
+      {/* Hero -- read-only summary of an already-played match. No Simulate/AI
+          Selection actions here: this page shows what actually happened
+          (real scorecard + win-probability below), it doesn't set up a
+          hypothetical trial -- that's what the standalone Simulator page is
+          for. */}
       <div className="bg-card border border-border rounded-xl p-6 mb-5">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
@@ -70,94 +77,39 @@ export function MatchDetailPage() {
               <span>{match.date} · {match.time}</span>
             </div>
           </div>
-          <div className="flex items-center gap-3">
-            <button onClick={() => navigate("/recommendations")} className="flex items-center gap-2 bg-[#AAFF57] text-[#0D0D06] px-4 py-2 rounded-lg text-sm font-semibold hover:opacity-90 transition-opacity">
-              <Zap size={14} /> Get AI Selection
-            </button>
+        </div>
+      </div>
+
+      {/* Opponent form — real results (matches.team_last5), not placeholder data */}
+      <div className="bg-card border border-border rounded-xl p-5">
+        <h3 className="font-display text-base font-semibold text-foreground mb-4">Opponent Form</h3>
+        <div className="flex items-center gap-3">
+          <div className="w-12 h-12 rounded-full bg-secondary flex items-center justify-center text-sm font-bold text-foreground">{match.team2.slice(0, 3).toUpperCase()}</div>
+          <div>
+            <div className="font-semibold text-foreground">{match.team2}</div>
+            <div className="text-[11px] text-muted-foreground">Last 5 results</div>
+          </div>
+          <div className="flex gap-1.5 ml-auto">
+            {match.opponentForm.length > 0 ? match.opponentForm.map((r, i) => (
+              <span key={i} className={`w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-bold ${r === "W" ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"}`}>{r}</span>
+            )) : <span className="text-[12px] text-muted-foreground">No recent results on file</span>}
           </div>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-5 mb-5">
-        {/* Opponent form */}
-        <div className="bg-card border border-border rounded-xl p-5">
-          <h3 className="font-display text-base font-semibold text-foreground mb-4">Opponent Form</h3>
-          <div className="flex items-center gap-3 mb-4">
-            <div className="w-12 h-12 rounded-full bg-secondary flex items-center justify-center text-sm font-bold text-foreground">{match.team2.slice(0, 3).toUpperCase()}</div>
-            <div>
-              <div className="font-semibold text-foreground">{match.team2}</div>
-              <div className="text-[11px] text-muted-foreground">Last 5 T20Is</div>
-            </div>
-            <div className="flex gap-1.5 ml-auto">
-              {match.opponentForm.map((r, i) => (
-                <span key={i} className={`w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-bold ${r === "W" ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"}`}>{r}</span>
-              ))}
-            </div>
-          </div>
-          <div className="p-3 bg-amber-500/5 border border-amber-500/20 rounded-lg text-[12px] text-foreground leading-relaxed">
-            <span className="text-amber-400 font-medium">Scouting: </span>
-            {match.team2 === "Australia" ? "Strong batting top-order. Warner and Head in excellent form. Pace attack with Hazelwood and Cummins are key threats." : "Recent form mixed. Look to target middle-order vulnerabilities in overs 11-15."}
-          </div>
-        </div>
-
-        {/* Weather */}
-        <div className="bg-card border border-border rounded-xl p-5">
-          <h3 className="font-display text-base font-semibold text-foreground mb-4">Weather Conditions</h3>
-          <div className="flex items-center gap-6 mb-4">
-            <div className="flex items-center gap-2">
-              <Cloud size={20} className="text-blue-400" />
-              <div>
-                <div className="text-[11px] text-muted-foreground">Conditions</div>
-                <div className="text-sm font-medium text-foreground">{match.weatherDesc.split(",")[0]}</div>
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <Wind size={18} className="text-muted-foreground" />
-              <div>
-                <div className="text-[11px] text-muted-foreground">Wind</div>
-                <div className="text-sm font-medium text-foreground">{match.windSpeed} km/h</div>
-              </div>
-            </div>
-            <div className="text-center">
-              <div className="text-[11px] text-muted-foreground mb-1">Temp</div>
-              <div className="font-mono text-lg font-bold text-foreground">{match.temp}°C</div>
-            </div>
-          </div>
-          <div className="flex items-center gap-4">
-            <RadialGauge value={match.rainProb} size={64} strokeWidth={4} color="#60A5FA" label="Rain %" />
-            <p className="text-[13px] text-muted-foreground leading-relaxed flex-1">{match.weatherDesc}</p>
-          </div>
-          {match.windSpeed > 18 && (
-            <div className="mt-3 flex items-center gap-2 text-[12px] bg-amber-500/10 border border-amber-500/20 rounded-lg px-3 py-2 text-amber-400">
-              <AlertTriangle size={12} /> Wind may assist swing bowling — consider extra seam options
-            </div>
+      {/* Real ball-by-ball scorecard -- only exists once this match has
+          actually been played (a fixture has none yet). */}
+      {match.status !== "Upcoming" && (
+        <div className="space-y-5 mt-5">
+          {resultLoading && !innings && (
+            <div className="py-10 text-center text-sm text-muted-foreground">Loading match result…</div>
+          )}
+          {innings && innings.length > 0 && <RealMatchScorecard innings={innings} />}
+          {!resultLoading && (!innings || innings.length === 0) && (
+            <p className="text-[12px] text-muted-foreground text-center py-4">No ball-by-ball data on file for this match.</p>
           )}
         </div>
-      </div>
-
-      {/* Pitch report */}
-      <div className="bg-card border border-border rounded-xl p-5">
-        <h3 className="font-display text-base font-semibold text-foreground mb-5">Pitch Report</h3>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-          <div className="space-y-4">
-            {condBar("Pace Support", match.paceSupport, "#60A5FA")}
-            {condBar("Spin Support", match.spinSupport, "#A78BFA")}
-          </div>
-          <div className="space-y-4">
-            {condBar("Batting Anchors", match.battingAnchors, "#AAFF57")}
-            {condBar("Finisher Suitability", match.finishersFit, "#FB923C")}
-          </div>
-        </div>
-        <div className="mt-5 p-4 bg-[#AAFF57]/5 border border-[#AAFF57]/20 rounded-lg">
-          <div className="flex items-center gap-2 mb-1">
-            <Shield size={13} className="text-[#AAFF57]" />
-            <span className="text-[11px] font-semibold text-[#AAFF57] uppercase tracking-wider">Pro Tip</span>
-          </div>
-          <p className="text-[13px] text-foreground leading-relaxed">
-            {match.paceSupport > 70 ? "Pitch heavily favors pace — back 3 seamers and restrict leg-spinners. Consider an extra fast-bowling all-rounder." : match.spinSupport > 70 ? "Spin-friendly surface — prioritize your best leg-spinner and left-arm orthodox pairing." : "Balanced surface suits an attack mix of 3 seamers and 2 spinners."}
-          </p>
-        </div>
-      </div>
+      )}
     </div>
   );
 }

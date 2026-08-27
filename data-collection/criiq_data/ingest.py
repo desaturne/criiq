@@ -15,10 +15,8 @@ from .validate import quarantine, validate_deliveries
 
 log = get_logger("ingest")
 
-# International zips use purely numeric match ids ("1043989.csv"); some
-# domestic competitions don't (Blaze: "wi_201706.csv") -- match anything
-# ending in .csv that isn't the per-zip `all_matches.csv` summary file or an
-# `_info.csv` companion (excluded separately, in `ingest_source`).
+# international zips use numeric match ids, but some domestic ones don't
+# (e.g. "wi_201706.csv"), so match any .csv except all_matches.csv and _info.csv companions.
 _MATCH_RE = re.compile(r"^(.+)\.csv$")
 _NON_MATCH_FILES = {"all_matches.csv", "README.txt"}
 
@@ -26,6 +24,7 @@ _DELIV_COLS = [
     "match_id", "innings", "over", "ball_in_over", "batting_team", "bowling_team",
     "striker", "non_striker", "bowler", "runs_off_bat", "extras", "wides",
     "noballs", "runs_total", "wicket_type", "player_dismissed",
+    "fielder_1", "fielder_2", "fielder_3",
 ]
 
 
@@ -76,9 +75,8 @@ def _win_margin(info: dict) -> str | None:
 
 
 def _existing_match_ids(conn) -> set[str]:
-    # Union of production and holdout: a match already routed to the holdout
-    # tables (see `ingest_source`) must not be re-fetched and re-inserted on
-    # every subsequent refresh, the same as an already-ingested production one.
+    # union of production and holdout tables, so a match already routed to holdout
+    # isn't re-fetched on the next refresh.
     ids = {r["match_id"] for r in conn.execute("SELECT match_id FROM matches")}
     ids.update(r["match_id"] for r in conn.execute("SELECT match_id FROM matches_holdout"))
     return ids
@@ -113,9 +111,8 @@ def ingest_source(conn, src: CricsheetSource) -> dict:
             info = _parse_info(z.read(info_name).decode("utf-8", errors="replace"))
 
             mtype = info["extra"].get("match_type", "")
-            # Cricsheet's own 'international' vs 'club' distinction -- stored,
-            # not used to drop the row (that was the old behaviour; domestic
-            # matches are now real, first-class data -- see config.py).
+            # Cricsheet's own international vs club distinction, stored but not used to drop rows
+            # since domestic matches are now real data too (see config.py).
             ttype = info["extra"].get("team_type", "international")
             if src.fmt == "T20" and mtype and mtype.upper() not in ("T20", "IT20"):
                 non_t20_skipped += 1
@@ -123,10 +120,8 @@ def ingest_source(conn, src: CricsheetSource) -> dict:
 
             teams = info["teams"]
             date = _norm_date(info["dates"][0] if info["dates"] else None)
-            # Forward-safeguard, not a present-day trim (see config.py's
-            # data_cutoff_date docstring): anything newer goes to the
-            # `_holdout` tables so it's available for genuine testing but can
-            # never leak into training/live scoring.
+            # forward safeguard, not a present-day trim (see config.py's data_cutoff_date):
+            # anything newer goes to the holdout tables so it can't leak into training.
             is_holdout = bool(date) and date > SETTINGS.data_cutoff_date
             matches_tbl = "matches_holdout" if is_holdout else "matches"
             match_players_tbl = "match_players_holdout" if is_holdout else "match_players"
@@ -226,7 +221,71 @@ def _shape_deliveries(df: pd.DataFrame, match_id: str) -> pd.DataFrame:
 
     out["wicket_type"] = df.get("wicket_type")
     out["player_dismissed"] = df.get("player_dismissed")
+    out["fielder_1"] = df.get("fielder_1")
+    out["fielder_2"] = df.get("fielder_2")
+    out["fielder_3"] = df.get("fielder_3")
     return out.astype(object).where(pd.notna(out), None)
+
+
+_FIELDER_WICKETS = ("caught", "stumped", "run out")
+
+
+def backfill_fielders(conn) -> list[dict]:
+    """one-time enrichment for matches ingested before fielder_1/2/3 existed:
+    re-reads each already-downloaded zip (no network) and updates just the
+    wicket-ball rows that credit a fielder (caught/stumped/run out), matched
+    by (match_id, innings, over, ball_in_over) -- unique within an innings.
+    Idempotent (the `fielder_1 IS NULL` guard skips already-backfilled rows),
+    and a no-op for matches ingest_source already inserted with fielder data.
+    """
+    log.info("backfilling fielder credit for previously-ingested matches …")
+    results = []
+    for src in enabled_sources():
+        path = RAW_DIR / src.filename
+        if not path.exists():
+            results.append({"source": src.label, "status": "missing"})
+            continue
+        updated = 0
+        with zipfile.ZipFile(path) as z:
+            names = z.namelist()
+            match_files = [(n, m.group(1)) for n in names if (m := _MATCH_RE.match(n))
+                           and n not in _NON_MATCH_FILES and not n.endswith("_info.csv")]
+            for name, match_id in match_files:
+                try:
+                    ddf = pd.read_csv(io.BytesIO(z.read(name)), dtype=str,
+                                      keep_default_na=False, na_values=[""])
+                except Exception as exc:
+                    log.error("backfill: failed to read %s: %s", name, exc)
+                    continue
+                if "wicket_type" not in ddf.columns or "fielder_1" not in ddf.columns:
+                    continue
+                wk = ddf[ddf["wicket_type"].isin(_FIELDER_WICKETS)].copy()
+                if wk.empty:
+                    continue
+                ball = wk["ball"].astype(str)
+                wk["over"] = pd.to_numeric(ball.str.split(".").str[0], errors="coerce")
+                wk["ball_in_over"] = pd.to_numeric(ball.str.split(".").str[1], errors="coerce")
+                wk["innings"] = pd.to_numeric(wk["innings"], errors="coerce")
+                rows = [
+                    (r.fielder_1 or None, r.fielder_2 or None, r.fielder_3 or None,
+                     match_id, int(r.innings), int(r.over), int(r.ball_in_over))
+                    for r in wk.itertuples()
+                    if (r.fielder_1 or r.fielder_2 or r.fielder_3)
+                    and pd.notna(r.innings) and pd.notna(r.over) and pd.notna(r.ball_in_over)
+                ]
+                if not rows:
+                    continue
+                for tbl in ("deliveries", "deliveries_holdout"):
+                    conn.executemany(
+                        f"UPDATE {tbl} SET fielder_1=?, fielder_2=?, fielder_3=? "
+                        "WHERE match_id=? AND innings=? AND over=? AND ball_in_over=? "
+                        "AND fielder_1 IS NULL",
+                        rows)
+                updated += len(rows)
+        conn.commit()
+        results.append({"source": src.label, "updated_rows": updated})
+    log.info("fielder backfill complete: %s", results)
+    return results
 
 
 def ingest_all(conn) -> list[dict]:

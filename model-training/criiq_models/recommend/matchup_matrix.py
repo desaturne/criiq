@@ -1,13 +1,8 @@
-"""Head-to-head matchup matrix between two specific sets of players.
+"""head-to-head matchup matrix between two specific sets of players.
 
-Given *my* players and a named *opponent XI*, cross-references the real
-batter-vs-bowler dismissal history (`dismissal_matchup`, built by
-data-collection from ball-by-ball data) to answer "which of my players matches
-up well against which of theirs" -- the concrete input a coach wants when
-picking a side to counter a specific opposition, not just an aggregate team
-matchup. Purely a read/aggregation over data that already exists; it invents
-nothing and, for any pair with no recorded history, simply omits them rather
-than guessing.
+cross-references dismissal_matchup (built from ball-by-ball data) to show
+which of my players match up well against a named opponent XI's players.
+purely reads existing data; pairs with no recorded history are just omitted.
 """
 from __future__ import annotations
 
@@ -15,9 +10,8 @@ import sqlite3
 
 from ..config import SETTINGS
 
-# Minimum balls in a specific pairing before it's worth reporting -- an over,
-# the same floor data-collection's matchup tables use, so a 2-ball fluke isn't
-# surfaced as a "matchup".
+# minimum balls before a pairing counts, one over, same floor data-collection's
+# matchup tables use so a 2-ball fluke isn't surfaced as a "matchup"
 _MIN_PAIR_BALLS = 6
 
 
@@ -33,15 +27,13 @@ def _rows(conn, fmt, id_col, id_values, other_col, other_values):
 
 def head_to_head_matrix(conn: sqlite3.Connection, my_ids: list[str], opponent_ids: list[str],
                         fmt: str = SETTINGS.format) -> dict:
-    """`{"batting": {...}, "bowling": {...}}`, each keyed by my player's name.
+    """{"batting": {...}, "bowling": {...}}, each keyed by my player's name.
 
-    - batting: my batters vs the opponent's bowlers. Per batter, every bowler
-      faced (>= 6 balls) with balls/runs/dismissals/dismissal-rate/strike-rate,
-      plus the **bogey** bowler (most dismissals, then highest dismissal rate)
-      and the batter's **best** matchup (most runs scored).
-    - bowling: my bowlers vs the opponent's batters. Per bowler, every batter
-      bowled to, plus **best** (most dismissals) and **most_expensive** (most
-      runs conceded).
+    batting: my batters vs the opponent's bowlers, per bowler faced (>= 6
+    balls), plus the bogey bowler (most dismissals) and best matchup (most
+    runs scored).
+    bowling: my bowlers vs the opponent's batters, plus best (most dismissals)
+    and most_expensive (most runs conceded).
     """
     if not my_ids or not opponent_ids:
         return {"batting": {}, "bowling": {}}

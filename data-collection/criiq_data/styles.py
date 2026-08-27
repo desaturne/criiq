@@ -30,9 +30,8 @@ def classify_bowling(style: str | None) -> str | None:
 
 
 def classify_bowling_detail(style: str | None) -> str | None:
-    """Finer bowling bucket for batter matchups: the *type* of turn matters
-    (off-spin turns into a RHB, leg-spin away, etc.). Falls back to the coarse
-    pace/spin split when the style string is only generically described."""
+    """finer bowling bucket for batter matchups (off-spin turns into a RHB, leg-spin away).
+    falls back to pace/spin when the style is only generically described."""
     if not style:
         return None
     s = style.lower()
@@ -59,6 +58,22 @@ def classify_hand(hand: str | None) -> str | None:
     if "right" in h:
         return "RHB"
     return None
+
+
+_CRICKET_ROLE_KEYWORDS = (
+    "batsman", "batswoman", "batter", "batting",
+    "bowler", "bowling",
+    "all-rounder", "all rounder", "allrounder",
+    "wicket-keeper", "wicketkeeper", "wicket keeper",
+)
+
+
+def is_cricket_role(role_text: str | None) -> bool:
+    """True if `role_text` names an actual cricket role, not another sport's position (Wikidata's P413 is cross-sport)."""
+    if not role_text:
+        return False
+    r = role_text.lower()
+    return any(k in r for k in _CRICKET_ROLE_KEYWORDS)
 
 
 def _sparql(query: str) -> dict:
@@ -104,6 +119,10 @@ def seed_from_wikidata(conn, chunk: int = 150, limit: int | None = None) -> dict
             dob = b.get("dob", {}).get("value")
             dob = dob[:10] if dob else None
             role = b.get("roleLabel", {}).get("value")
+            if role and not is_cricket_role(role):
+                log.info("wikidata seed: dropping non-cricket role %r for cricinfo=%s "
+                         "(P413 is a cross-sport property, not cricket-specific)", role, cid)
+                role = None
             country = b.get("countryLabel", {}).get("value")
             if not (dob or role or country):
                 continue
@@ -146,7 +165,7 @@ def _infobox_field(text: str, field: str) -> str | None:
 
 
 def _wiki_titles(cricinfo_ids: list[str]) -> dict[str, str]:
-    """Map ESPNcricinfo id -> English Wikipedia article title via Wikidata."""
+    """map ESPNcricinfo id -> English Wikipedia article title via Wikidata."""
     values = " ".join(f'"{x}"' for x in cricinfo_ids)
     query = f"""
     SELECT ?cricinfo ?title WHERE {{
@@ -186,9 +205,8 @@ def _resolve_title(title: str, normalized: list, redirects: list) -> str:
 
 
 def enrich_from_wikipedia(conn, limit: int | None = None, chunk: int = 40) -> dict:
-    """Fill batting hand + bowling style from Wikipedia cricketer infoboxes,
-    reached via Wikidata sitelinks (free, legal). Existing values are never
-    overwritten; `manual_csv` entries therefore act as overrides."""
+    """fills batting hand + bowling style from Wikipedia cricketer infoboxes via Wikidata sitelinks.
+    never overwrites existing values, so manual_csv entries act as overrides."""
     ids = [r["key_cricinfo"] for r in conn.execute(
         "SELECT key_cricinfo FROM players WHERE key_cricinfo IS NOT NULL "
         "AND key_cricinfo != '' AND (bowling_style IS NULL OR batting_hand IS NULL)")]
@@ -309,14 +327,9 @@ def load_manual_csv(conn, path=None) -> dict:
 
 
 def bowler_buckets(conn, *, detail: bool = False) -> dict[tuple[str, str | None], str]:
-    """(player_name, gender) -> bucket, not just player_name -- a handful of
-    Cricsheet identifiers are reused across two genuinely different real
-    people of different genders (see identity.py), and `identifier_map` has
-    no gender column, so a plain name-keyed dict would silently apply
-    whichever of the two happened to be enumerated last to *both* real
-    people's deliveries the moment both genders' style data is populated for
-    one of those names (dormant today only because that hasn't happened yet
-    for any of them -- not something to rely on staying true).
+    """(player_name, gender) -> bucket, not just player_name.
+
+    a few Cricsheet identifiers are shared across two different people (see identity.py), so gender must be part of the key.
     """
     fn = classify_bowling_detail if detail else classify_bowling
     out = {}
@@ -331,9 +344,7 @@ def bowler_buckets(conn, *, detail: bool = False) -> dict[tuple[str, str | None]
 
 
 def batter_hands(conn) -> dict[tuple[str, str | None], str]:
-    """(player_name, gender) -> hand -- see `bowler_buckets`'s docstring for
-    why gender must be part of the key, not just the player name.
-    """
+    """(player_name, gender) -> hand. see bowler_buckets for why gender must be part of the key."""
     out = {}
     for r in conn.execute(
             "SELECT im.player_name, p.gender, p.batting_hand FROM players p "

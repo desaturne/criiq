@@ -25,9 +25,8 @@ from database import auth_db
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-# In development a default secret is fine; set JWT_SECRET in the environment
-# for anything shared or deployed.
-JWT_SECRET = os.environ.get("JWT_SECRET", "criiq-dev-secret-change-me")
+# Dev default only; set JWT_SECRET in the environment for anything deployed. Must be >= 32 bytes (HS256).
+JWT_SECRET = os.environ.get("JWT_SECRET", "criiq-local-dev-secret-change-me-before-deploying")
 TOKEN_HOURS = 12
 
 
@@ -49,6 +48,8 @@ def _issue_token(user) -> dict:
             "id": user["id"],
             "name": user["name"],
             "role": user["role"],
+            "country": user["country"],
+            "status": user["status"],
             "jti": jti,
             "exp": expires_at,
         },
@@ -57,7 +58,13 @@ def _issue_token(user) -> dict:
     )
     return {
         "token": token,
-        "user": {"id": user["id"], "name": user["name"], "role": user["role"]},
+        "user": {
+            "id": user["id"],
+            "name": user["name"],
+            "role": user["role"],
+            "country": user["country"],
+            "status": user["status"],
+        },
     }
 
 
@@ -65,6 +72,7 @@ class RegisterBody(BaseModel):
     name: str = Field(min_length=2, max_length=80)
     email: str
     password: str = Field(min_length=8)
+    country: str = Field(min_length=2, max_length=40)
 
 
 @router.post("/register", status_code=201)
@@ -77,15 +85,27 @@ def register(body: RegisterBody):
 
     pw_hash = bcrypt.hashpw(body.password.encode(), bcrypt.gensalt()).decode()
     info = auth_db.execute(
-        "INSERT INTO users (email, password_hash, name, role) VALUES (?,?,?,?)",
-        (body.email, pw_hash, body.name, "coach"),
+        "INSERT INTO users (email, password_hash, name, role, status, country) VALUES (?,?,?,?,?,?)",
+        (body.email, pw_hash, body.name, "coach", "Inactive", body.country),
     )
     auth_db.commit()
     user = auth_db.execute(
         "SELECT * FROM users WHERE id = ?", (info.lastrowid,)
     ).fetchone()
 
-    return {"data": _issue_token(user), "error": None}
+    return {
+        "data": {
+            "message": "Registration submitted. Wait for admin approval before signing in.",
+            "user": {
+                "id": user["id"],
+                "name": user["name"],
+                "role": user["role"],
+                "country": user["country"],
+                "status": user["status"],
+            },
+        },
+        "error": None,
+    }
 
 
 class LoginBody(BaseModel):
@@ -103,6 +123,8 @@ def login(body: LoginBody):
     )
     if not ok:
         raise HTTPException(401, "Wrong email or password")
+    if user["status"] != "Active":
+        raise HTTPException(403, "Registration pending admin approval")
 
     return {"data": _issue_token(user), "error": None}
 
@@ -124,12 +146,66 @@ def require_user(request: Request) -> dict:
     ).fetchone()
     if not live:
         raise HTTPException(401, "Invalid or expired token")
-    return payload
+    user = auth_db.execute("SELECT * FROM users WHERE id = ?", (payload.get("id"),)).fetchone()
+    if not user or user["status"] != "Active":
+        raise HTTPException(401, "Invalid or expired token")
+    return {
+        "id": user["id"],
+        "name": user["name"],
+        "role": user["role"],
+        "country": user["country"],
+        "status": user["status"],
+        "jti": payload.get("jti"),
+    }
 
 
 @router.get("/me")
 def me(user: dict = Depends(require_user)):
-    return {"data": {"name": user["name"], "role": user["role"]}, "error": None}
+    return {
+        "data": {
+            "name": user["name"],
+            "role": user["role"],
+            "country": user["country"],
+            "status": user["status"],
+        },
+        "error": None,
+    }
+
+
+@router.get("/admin/pending-coaches")
+def pending_coaches():
+    rows = auth_db.execute(
+        "SELECT id, name, email, role, status, country FROM users WHERE role = ? AND status = ? ORDER BY id DESC",
+        ("coach", "Inactive"),
+    ).fetchall()
+    return {
+        "data": [
+            {
+                "id": row["id"],
+                "name": row["name"],
+                "email": row["email"],
+                "role": row["role"],
+                "status": row["status"],
+                "country": row["country"],
+            }
+            for row in rows
+        ],
+        "error": None,
+    }
+
+
+class ReviewBody(BaseModel):
+    status: str = Field(pattern="^(Active|Inactive|Suspended)$")
+
+
+@router.post("/admin/pending-coaches/{user_id}")
+def review_coach(user_id: int, body: ReviewBody):
+    user = auth_db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    if not user or user["role"] != "coach":
+        raise HTTPException(404, "Coach registration not found")
+    auth_db.execute("UPDATE users SET status = ? WHERE id = ?", (body.status, user_id))
+    auth_db.commit()
+    return {"data": {"id": user_id, "status": body.status}, "error": None}
 
 
 @router.post("/logout")

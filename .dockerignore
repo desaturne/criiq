@@ -1,0 +1,24 @@
+# Big data + generated artifacts — these are BIND MOUNTS, never baked into images
+data-collection/data/
+model-training/artifacts/
+
+# Virtualenvs — the image builds its own; host ones are macOS binaries anyway
+**/.venv/
+**/__pycache__/
+*.pyc
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# Local state and secrets
+backend/*.db
+.env
+
+# Repo cruft the image doesn't need
+.git/
+.gitignore
+**/*.ipynb
+*.pdf
+*.md
+.DS_Store

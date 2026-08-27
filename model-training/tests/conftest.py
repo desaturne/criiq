@@ -1,8 +1,7 @@
-"""A minimal, self-contained fixture schema — a subset of data-collection's
-real `criiq.db` tables (only the columns criiq_models actually reads).
-Deliberately not importing data-collection's schema/package: criiq_models
-only ever reads that DB through a `conn` parameter passed in by the caller,
-so tests exercise it the same way, against a tiny synthetic sqlite3 db.
+"""minimal, self-contained fixture schema, a subset of data-collection's
+real criiq.db tables (only the columns criiq_models actually reads).
+not importing data-collection's schema directly since criiq_models only
+reads via a `conn` param, so tests use a tiny synthetic sqlite3 db instead.
 """
 from __future__ import annotations
 
@@ -13,7 +12,7 @@ import pytest
 SCHEMA = """
 CREATE TABLE matches (
     match_id TEXT PRIMARY KEY, format TEXT, gender TEXT, date TEXT,
-    team1 TEXT, team2 TEXT, venue_id TEXT, team_type TEXT
+    team1 TEXT, team2 TEXT, venue_id TEXT, team_type TEXT, winner TEXT
 );
 CREATE TABLE match_players (
     match_id TEXT, team TEXT, player_name TEXT
@@ -94,11 +93,9 @@ CREATE TABLE player_advanced (
 def register_player(conn: sqlite3.Connection, player_id: str, name: str,
                      identifier: str | None = None, role: str = "batter",
                      gender: str | None = None) -> None:
-    """`gender`: leave `None` (the default) for an ordinary, unambiguous
-    player -- only set it to simulate one half of a real Cricsheet registry
-    identifier collision (see roster.py's `_player_id_map` docstring), where
-    two distinct player rows share the same `identifier` but different
-    `gender` values.
+    """`gender` defaults to None for a normal player. set it only to simulate
+    a Cricsheet identifier collision, where two player rows share the same
+    `identifier` but different genders (see roster.py's `_player_id_map`).
     """
     identifier = identifier or f"ident_{player_id}"
     conn.execute("INSERT INTO players(player_id, cricsheet_identifier, gender, canonical_name) "
@@ -120,10 +117,10 @@ def set_final_role(conn: sqlite3.Connection, player_id: str, primary_role: str,
 
 def add_match(conn: sqlite3.Connection, match_id: str, date: str, team1: str, team2: str,
               venue_id: str = "test-ground", gender: str = "female",
-              team_type: str = "international") -> None:
+              team_type: str = "international", winner: str | None = None) -> None:
     conn.execute("INSERT INTO matches(match_id, format, gender, date, team1, team2, venue_id, "
-                 "team_type) VALUES(?,'T20',?,?,?,?,?,?)",
-                 (match_id, gender, date, team1, team2, venue_id, team_type))
+                 "team_type, winner) VALUES(?,'T20',?,?,?,?,?,?,?)",
+                 (match_id, gender, date, team1, team2, venue_id, team_type, winner))
 
 
 def add_appearance(conn: sqlite3.Connection, match_id: str, team: str, name: str) -> None:
@@ -228,15 +225,10 @@ def set_advanced_profile(conn: sqlite3.Connection, player_id: str, vs_bowling_ty
 def set_player_profile(conn: sqlite3.Connection, player_id: str, bowling_style: str | None = None,
                         batting_hand: str | None = None, archetype: str | None = None,
                         batting: dict | None = None) -> None:
-    """`players.bowling_style`/`batting_hand` -- distinct from (and, in the
-    real pipeline, backfilled alongside) `player_styles.bowling_style`;
-    `features/current.py`'s `ExtraContext` reads the `players` columns
-    directly (same table `advanced.py`'s vs-pace/vs-spin computation reads),
-    so that's what this sets, not `set_bowling_style`'s table above.
-
-    `batting`: a minimal `player_advanced.profile_json` batting block
-    (strike_rate/boundary_pct/dot_pct/sixes/six_rate/balls/by_phase), so the
-    descriptive "what to expect / best phase" surfacing can be exercised.
+    """sets `players.bowling_style`/`batting_hand` directly, since that's what
+    `ExtraContext` reads, not `player_styles` (see `set_bowling_style` above).
+    `batting` is a minimal `player_advanced.profile_json` batting block, for
+    exercising the "what to expect / best phase" surfacing.
     """
     if bowling_style is not None or batting_hand is not None:
         conn.execute("UPDATE players SET bowling_style=COALESCE(?, bowling_style), "

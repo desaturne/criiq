@@ -9,11 +9,11 @@ import { SparkLine } from "../common/SparkLine";
 import { StatusBadge } from "../common/StatusBadge";
 import { Player, SelectionState } from "../../types/index";
 
-export function PlayerCard({ player, index, opposition, selection, onSelect, comparing, onToggleCompare, onViewProfile }: {
+export function PlayerCard({ player, index, opposition, selection = "undecided", onSelect, comparing, onToggleCompare, onViewProfile }: {
   player: Player; index: number; opposition: string;
-  selection: SelectionState; onSelect: (s: SelectionState) => void;
+  selection?: SelectionState; onSelect?: (s: SelectionState) => void;
   comparing: boolean; onToggleCompare: () => void;
-  onViewProfile?: () => void;
+  onViewProfile?: (opposition: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
 
@@ -42,7 +42,7 @@ export function PlayerCard({ player, index, opposition, selection, onSelect, com
             <div>
               <h3 className="text-[14px] font-semibold text-foreground leading-tight truncate">
                 {onViewProfile ? (
-                  <button onClick={onViewProfile} className="cursor-pointer hover:text-accent transition-colors text-left">{player.name}</button>
+                  <button onClick={() => onViewProfile(opposition)} className="cursor-pointer hover:text-accent transition-colors text-left">{player.name}</button>
                 ) : player.name}
               </h3>
               <p className="text-[11px] text-muted-foreground mt-0.5">{player.archetype}</p>
@@ -83,8 +83,8 @@ export function PlayerCard({ player, index, opposition, selection, onSelect, com
       </div>
 
       {/* Footer: stats + compare + selection */}
-      <div className="px-4 py-3 border-t border-border bg-secondary/30 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2 flex-shrink-0">
+      <div className="px-4 py-3 border-t border-border bg-secondary/30 flex flex-col gap-3">
+        <div className="flex items-center justify-between gap-2 min-w-0">
           <button onClick={() => setExpanded(!expanded)} className="text-[11px] text-muted-foreground hover:text-foreground flex items-center gap-1 transition-colors">
             <BarChart2 size={11} /> Stats
             <ChevronRight size={10} className={`transition-transform ${expanded ? "rotate-90" : ""}`} />
@@ -92,7 +92,7 @@ export function PlayerCard({ player, index, opposition, selection, onSelect, com
           <motion.button
             onClick={onToggleCompare}
             whileTap={{ scale: 0.92 }}
-            title="Add to compare"
+            title={comparing ? "Remove from compare" : "Add to compare"}
             className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] transition-all"
             style={{
               background: comparing ? "rgba(170,255,87,0.15)" : "transparent",
@@ -100,10 +100,15 @@ export function PlayerCard({ player, index, opposition, selection, onSelect, com
               border: `1px solid ${comparing ? "rgba(170,255,87,0.4)" : "transparent"}`,
             }}
           >
-            <Scale size={10} /> {comparing ? "Comparing" : "Compare"}
+            <Scale size={10} />
           </motion.button>
         </div>
-        <SelectionControl state={selection} onChange={onSelect} />
+        {onSelect && player.status !== "RETIRED" && <div className="w-full"><SelectionControl state={selection} onChange={onSelect} /></div>}
+        {player.status === "RETIRED" && (
+          <div className="text-[11px] text-slate-400 border border-slate-500/20 rounded-lg px-2 py-1 text-center">
+            Retired - unavailable for XI selection
+          </div>
+        )}
       </div>
 
       <AnimatePresence>

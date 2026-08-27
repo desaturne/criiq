@@ -1,32 +1,14 @@
-"""Ball-by-ball T20 match engine.
+"""ball-by-ball T20 match engine.
 
-Reproduces match mechanics exactly as documented in `rulebook-cricket.md`:
-20 overs (§1), 6 legal deliveries per over with wides/no-balls replayed and
-not counted toward the over (§4.1/§4.2), a bowler capped at 4 overs and
-barred from bowling two overs consecutively (§2.1/§2.2, Law 17.6 / ICC PC
-cl. 13.9.1), a free hit after every no-ball with restricted dismissal modes
-(§4.2), byes/leg-byes counting as a legal ball but never credited to the
-striker or debited to the bowler (§4.3), correct end-of-over strike rotation
-(§1), and an innings ending on all-out, overs-complete, or (second innings)
-target chased (§7). Reduced/rain-shortened-innings bowler-overs rules (§2.3)
-and DLS (§7.2) are out of scope -- this engine only models a standard,
-uninterrupted 20-over innings.
+follows rulebook-cricket.md: 20 overs, wides/no-balls replayed and not
+counted, bowler capped at 4 overs with no consecutive overs, free hit after
+a no-ball, byes not credited to the bowler. doesn't model DLS or
+rain-shortened innings, and a wicket never coincides with a wide/no-ball
+(see outcomes.py).
 
-Known simplification (see `outcomes.py`'s docstring): the outcome model
-classifies each delivery into exactly one bucket, so a wicket never
-coincides with a wide/no-ball here -- stumped-off-a-wide and run-out-off-a-
-no-ball, both real but rare, are not modelled. Every other consequence of an
-extra (replay, penalty run, free hit, restricted scoring) is modelled.
-
-**Default bowler scheduling mirrors real captaincy, not just "fewest overs
-bowled so far".** When no explicit `rotation` is supplied, `select_bowler`
-uses each eligible bowler's real per-phase economy rank *within their own
-team* (`outcomes.BowlerProfile.phase_rank`, from data-collection's
-`player_phase.bowl_team_rank`) to prefer whoever has actually proven
-strongest in the *current over's* phase (powerplay/middle/death) -- a real
-captain's best death bowler actually bowls the death overs. Falls back to
-fewest-overs-bowled-so-far whenever no phase-rank data exists for any
-eligible bowler (e.g. a synthetic test pool, or genuinely thin real data).
+default bowler rotation picks whoever's proven best for the current phase
+(powerplay/middle/death) by real per-phase economy rank, falling back to
+fewest overs bowled so far when there's no phase data.
 """
 from __future__ import annotations
 
@@ -42,13 +24,9 @@ MAX_OVERS_PER_BOWLER = 4
 BALLS_PER_OVER = 6
 TOTAL_LEGAL_BALLS = MAX_OVERS * BALLS_PER_OVER
 
-# Super Over (rulebook-cricket.md sec 7.1, ICC PC Appendix F): one over per
-# side, innings ends early on 2 wickets (not the usual all-out), no bowler-
-# overs-per-innings cap is meaningful at 1 over. `MAX_SUPER_OVER_ROUNDS`
-# bounds the "repeat until decided" real rule (para 3/25-26) -- reaching it
-# is a documented, extremely-unlikely fallback to a Tie, not real cricket
-# (a real match plays Super Overs indefinitely; an unbounded loop here would
-# risk hanging on a pathological outcome model).
+# super over: one over per side, innings ends early on 2 wickets.
+# MAX_SUPER_OVER_ROUNDS bounds the repeat-until-decided real rule so we
+# don't risk hanging on a pathological outcome model.
 SUPER_OVER_OVERS = 1
 SUPER_OVER_MAX_WICKETS = 2
 MAX_SUPER_OVER_ROUNDS = 10
@@ -99,25 +77,12 @@ class MatchState:
 def select_bowler(bowler_pool: list, bowler_balls: dict, last_over_bowler: str | None,
                    rotation: list | None = None, over_idx: int | None = None,
                    max_overs_per_bowler: int = MAX_OVERS_PER_BOWLER,
-                   bowler_profiles: dict | None = None) -> str:
-    """Picks the next over's bowler. With an explicit `rotation` (a length-20
-    bowler_id list, e.g. from `ga_bowling.optimize_bowling_rotation`), that
-    choice is used but still validated -- an illegal rotation raises rather
-    than silently breaking the rules.
+                   bowler_profiles: dict | None = None, max_overs: int = MAX_OVERS) -> str:
+    """picks the next over's bowler. an explicit `rotation` is validated
+    (raises if illegal) rather than silently broken.
 
-    Auto-scheduling otherwise mirrors how a real captain actually sets a
-    bowling rotation, not just "whoever's bowled least": when `bowler_profiles`
-    is supplied (each with a `phase_rank` -- real per-phase economy rank
-    *within their own team*, `outcomes.BowlerProfile`), the eligible bowler
-    with the best (lowest) rank for the *current over's phase* is picked --
-    a captain's strongest death-overs bowler actually bowls the death overs,
-    not whoever happens to have bowled fewest overs so far. Ties, and any
-    eligible bowler with no phase-rank data at all (e.g. a part-timer who
-    rarely bowls that phase), fall back to fewest-overs-bowled-so-far, which
-    is also the sole rule when `bowler_profiles` is omitted entirely -- for
-    the common case of >=5 equal-capacity bowlers with no phase data, that
-    still naturally cycles through the whole pool round-robin, satisfying
-    both hard constraints simultaneously.
+    without one, prefers whoever ranks best for the current over's phase
+    via `bowler_profiles`, falling back to fewest overs bowled so far.
     """
     if rotation is not None:
         bowler = rotation[over_idx]
@@ -138,38 +103,35 @@ def select_bowler(bowler_pool: list, bowler_balls: dict, last_over_bowler: str |
             "cl. 13.9.1 (max 4 overs each); supply a larger bowling-capable pool "
             f"(need at least {-(-MAX_OVERS // max_overs_per_bowler)} bowlers).")
 
-    # Preferring a phase specialist over a merely-less-used bowler only makes
-    # sense with real squad depth: holding a death-overs bowler back from the
-    # middle overs risks the pool running out of legal options entirely (Law
-    # 17.6/cap-4) once the pool is down to the bare minimum needed to cover
-    # 20 overs at all -- with exactly that minimum, every bowler's overs are
-    # already fully committed, and a real captain has no such flexibility
-    # either. `min_required` mirrors `ga_bowling.py`'s own pool-size check.
-    min_required = -(-MAX_OVERS // max_overs_per_bowler)
-    if bowler_profiles is not None and over_idx is not None and len(bowler_pool) > min_required:
+    # only prefer a phase specialist when there's real spare capacity left,
+    # recomputed every over. a static pool-size check isn't safe since slack
+    # can be unevenly spent already or the pool can contain duplicates.
+    # A minimal legal pool (5 bowlers for 20 overs) has zero slack from over 1, so this is the common case, not an edge case.
+    overs_remaining = max_overs - over_idx if over_idx is not None else None
+    total_remaining_capacity = sum(
+        max(0, max_overs_per_bowler * BALLS_PER_OVER - bowler_balls.get(b, 0)) for b in set(bowler_pool))
+    has_slack = (overs_remaining is not None
+                 and total_remaining_capacity > overs_remaining * BALLS_PER_OVER)
+
+    def _tier(b, phase):
+        profile = bowler_profiles.get(b) if bowler_profiles else None
+        ranks = profile.phase_rank if profile is not None else None
+        rank_here = ranks.get(phase) if ranks else None
+        if ranks and rank_here is not None and rank_here == min(ranks.values()):
+            tier = 0                      # proven best for this phase, use them now
+        elif not ranks:
+            tier = 1                      # no phase signal, safe neutral filler
+        else:
+            tier = 2                      # specialist in a different phase, hold them back if possible
+        return tier, rank_here if rank_here is not None else float("inf")
+
+    if bowler_profiles is not None:
         phase = _phase(over_idx)
-
-        def _key(b):
-            profile = bowler_profiles.get(b)
-            ranks = profile.phase_rank if profile is not None else None
-            rank_here = ranks.get(phase) if ranks else None
-            if ranks and rank_here is not None and rank_here == min(ranks.values()):
-                # This is genuinely their proven-best phase -- use them now.
-                tier = 0
-            elif not ranks:
-                # No phase signal at all: a neutral option, safe to use
-                # anywhere without "spending" a specialist's overs on the
-                # wrong phase.
-                tier = 1
-            else:
-                # A specialist in some OTHER phase -- real captains hold
-                # such bowlers back rather than burning their 4-over quota
-                # outside their specialty, so a neutral bowler is tried
-                # first whenever one's available.
-                tier = 2
-            return (tier, rank_here if rank_here is not None else float("inf"), bowler_balls.get(b, 0))
-
-        eligible.sort(key=_key)
+        if has_slack:
+            eligible.sort(key=lambda b: (*_tier(b, phase), bowler_balls.get(b, 0)))
+        else:
+            # no spare capacity: overs-bowled comes first for legality, tier only breaks ties between equally-rested bowlers.
+            eligible.sort(key=lambda b: (bowler_balls.get(b, 0), *_tier(b, phase)))
         return eligible[0]
 
     eligible.sort(key=lambda b: bowler_balls.get(b, 0))
@@ -219,9 +181,8 @@ def simulate_ball(state: MatchState, bowler_id: str, outcome_model, batter_profi
     if runs_off_bat:
         state.batter_runs[striker] = state.batter_runs.get(striker, 0) + runs_off_bat
     if outcome != "bye":
-        # Byes/leg-byes are excluded from the bowler's runs conceded; the
-        # wide/no-ball penalty run and any runs off the bat are not
-        # (rulebook-cricket.md §4.3/§4.4/§6).
+        # byes/leg-byes aren't credited to the bowler, but wide/no-ball
+        # penalty runs and runs off the bat are.
         state.bowler_runs_conceded[bowler_id] = state.bowler_runs_conceded.get(bowler_id, 0) + total_runs
 
     dismissed = None
@@ -240,8 +201,7 @@ def simulate_ball(state: MatchState, bowler_id: str, outcome_model, batter_profi
         "score": state.score, "wickets": state.wickets, "balls_bowled": state.balls_bowled,
     }
 
-    # Strike rotation: an odd number of total runs off a legal, non-wicket
-    # delivery (whether off the bat or an odd bye) swaps the striker.
+    # odd runs off a legal, non-wicket delivery swaps the striker
     if applied["is_legal"] and not applied["is_wicket"] and total_runs % 2 == 1:
         state.striker_idx, state.non_striker_idx = state.non_striker_idx, state.striker_idx
 
@@ -264,8 +224,7 @@ def simulate_over(state: MatchState, bowler_id: str, outcome_model, batter_profi
         ball_log.append(simulate_ball(state, bowler_id, outcome_model, batter_profiles,
                                        bowler_profiles, rng, forced_dismissal))
     if not state.is_over():
-        # Ends change every completed over -- the non-striker faces first
-        # regardless of runs scored on the over's last ball.
+        # ends swap every completed over regardless of the last ball's runs
         state.striker_idx, state.non_striker_idx = state.non_striker_idx, state.striker_idx
     state.over += 1
     state.last_over_bowler = bowler_id
@@ -289,7 +248,8 @@ def simulate_innings(batting_order: list, bowling_pool: list, outcome_model, bat
         if state.is_over():
             break
         bowler_id = select_bowler(bowling_pool, state.bowler_balls, state.last_over_bowler,
-                                   rotation, over_idx, max_overs_per_bowler, bowler_profiles=bowler_profiles)
+                                   rotation, over_idx, max_overs_per_bowler, bowler_profiles=bowler_profiles,
+                                   max_overs=max_overs)
         simulate_over(state, bowler_id, outcome_model, batter_profiles, bowler_profiles, rng,
                       ball_log, forced_dismissal)
 
@@ -301,13 +261,11 @@ def simulate_innings(batting_order: list, bowling_pool: list, outcome_model, bat
 
 def simulate_super_over(bat_first: dict, bowl_first: dict, outcome_model, batter_profiles: dict,
                          bowler_profiles: dict, rng: np.random.Generator) -> dict:
-    """One Super Over each side (rulebook-cricket.md sec 7.1 / ICC PC Appendix
-    F): max 1 over, innings ends early on 2 wickets. Simplification,
-    documented: uses each side's full main-match XI/bowling pool rather than
-    modelling the real rule that only nominated players (excluding anyone
-    dismissed in an earlier Super Over) are eligible -- reasonable for a
-    single Super Over, understates eligibility restrictions in a repeated
-    (re-tied) one.
+    """one super over each side, max 1 over, ends early on 2 wickets.
+
+    simplification: uses each side's full XI/bowling pool instead of the
+    real nominated-players rule, so a repeated (re-tied) super over is less
+    strict than real eligibility rules.
     """
     s1, log1 = simulate_innings(bat_first["batting_order"], bowl_first["bowling_pool"], outcome_model,
                                  batter_profiles, bowler_profiles, rng=rng,
@@ -333,11 +291,8 @@ def simulate_super_over(bat_first: dict, bowl_first: dict, outcome_model, batter
 def super_over_win_probabilities(team1: dict, team2: dict, batting_first: str, outcome_model,
                                   batter_profiles: dict, bowler_profiles: dict,
                                   n_reps: int = 200, rng_seed: int | None = None) -> dict:
-    """Standalone "who's more likely to win a Super Over between these two
-    sides" estimator -- independent of whether a full match actually tied,
-    useful for answering the question directly. `batting_first` is whichever
-    side bats first in the Super Over (real rule: the team that batted
-    second in the corresponding full match, see `simulate_match`).
+    """estimates which side is more likely to win a super over between the
+    two teams, independent of whether a full match actually tied.
     """
     rng = np.random.default_rng(rng_seed)
     bat_first, bowl_first = (team1, team2) if batting_first == "team1" else (team2, team1)
@@ -368,18 +323,13 @@ def _attach_win_prob(ball_log_df: pd.DataFrame, winprob, innings: int,
 def simulate_match(team1: dict, team2: dict, batting_first: str, outcome_model, batter_profiles: dict,
                     bowler_profiles: dict, winprob, forced_dismissal: dict | None = None,
                     n_reps: int = 1, rng_seed: int | None = None) -> list:
-    """`team1`/`team2`: `{"name": str, "batting_order": [11 player_ids], "bowling_pool": [...],
-    "rotation": optional length-20 bowler_id list}`. `batting_first`: `"team1"` or `"team2"`
-    -- the toss winner's choice, resolved by the caller.
+    """`team1`/`team2`: `{"name", "batting_order", "bowling_pool", "rotation"}`.
+    `batting_first` is `"team1"` or `"team2"`, the toss winner's choice.
 
-    Returns one summary dict per Monte Carlo rep (`n_reps`): both innings'
-    ball-by-ball logs (with a `win_prob_batting` column already attached, in
-    the *batting side's* perspective for that innings), final scores, and the
-    match winner. A T20I has no draw (rulebook-cricket.md sec 7.1): a tied
-    run-chase is resolved by one or more Super Overs (`super_over_rounds`
-    records each one played) rather than reporting a bare "Tie" as the
-    match result -- "Tie" only appears as `winner` in the documented,
-    extremely-unlikely case of exhausting `MAX_SUPER_OVER_ROUNDS` attempts.
+    returns one summary dict per Monte Carlo rep, with both innings' logs,
+    final scores, and the winner. a tied chase is resolved via super overs
+    (`super_over_rounds`); "Tie" only shows up if MAX_SUPER_OVER_ROUNDS gets
+    exhausted.
     """
     rng = np.random.default_rng(rng_seed)
     bat_first, bowl_first = (team1, team2) if batting_first == "team1" else (team2, team1)
@@ -403,9 +353,8 @@ def simulate_match(team1: dict, team2: dict, batting_first: str, outcome_model, 
         if s2.score >= target:
             winner = bowl_first["name"]
         elif s2.score == target - 1:
-            # Tied run-chase -- Super Over(s). The side that batted second in
-            # the main match bats first in the first Super Over (Appendix F
-            # para 11); any repeat swaps who bats first (para 19).
+            # tied run-chase: side that batted second bats first in the
+            # super over, any repeat swaps who bats first.
             winner = "Tie"
             so_bat_first, so_bowl_first = bowl_first, bat_first
             for _ in range(MAX_SUPER_OVER_ROUNDS):

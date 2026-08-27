@@ -1,35 +1,19 @@
-"""Composite, explainable player score.
+"""composite, explainable player score.
 
-score = model_part (predicted Win-Probability-Added, role-weighted)
-      + matchup_part (aggregate dismissal-history edge + style-specific edge
-                      vs the opponent's actual pace/spin mix — see
-                      features/style_matchup.py)
-      + phase_fit_part (strength in their best phase, relative to teammates)
-      + standing_part (proven track record: importance_score, ICC rank)
-      + risk_part (eligibility/registry penalties)
-      + team_need_part (synergy bonus for being strong in this specific
-                        pool's neediest phase — only set by `score_many`,
-                        see recommend/team_need.py; a lone `score()` call has
-                        no pool to compare against, so it stays 0)
+adds up model_part (predicted WPA, role-weighted), matchup_part (dismissal
+history + style edge vs the opponent's pace/spin mix), phase_fit_part (best
+phase vs teammates), standing_part (importance score, ICC rank), risk_part
+(eligibility penalties), and team_need_part (pool synergy bonus, set only by
+score_many, see recommend/team_need.py).
 
-`model_part` is driven by predicted WPA (`criiq_data/wpa.py` — how much a
-player's batting/bowling actually swings their team's win probability), not
-contribution-share: contribution-share couldn't tell a proven match-winner
-from a fringe player with a good-looking stat line in low-stakes matches — a
-real case found this session had it ranking a part-time all-rounder above a
-long-proven opener. WPA values are naturally tiny (a genuinely elite
-match-winner might average +0.05 to +0.10 win-probability-added per match),
-so they're rescaled by `SETTINGS.wpa_scale` to land in the same points range
-the rest of the composite score uses — see that setting's docstring for how
-the constant was chosen.
+model_part comes from predicted WPA (criiq_data/wpa.py), not contribution
+share, since a contribution-share ranking once put a part-time all-rounder
+above a long-proven opener. WPA is naturally tiny, so it's rescaled by
+SETTINGS.wpa_scale to match the rest of the score's points range.
 
-Every part is additive and stored in `components` alongside a non-additive
-`inputs` sub-dict of the raw numbers behind them — mirrors the
-`importance_score`/`importance_components` pattern already used in
-`data-collection/criiq_data/impact.py`, so `/selection/explain` always has a
-concrete, honest breakdown to show (including when the model was skipped
-entirely for a low-sample player — cold start records
-`components["model_applied"] = False` rather than silently blending noise).
+each part is stored in components, alongside a non-additive inputs dict of
+the raw numbers behind them, mirroring the importance_score pattern in
+data-collection/criiq_data/impact.py.
 """
 from __future__ import annotations
 
@@ -46,8 +30,8 @@ from ..roster import player_current_teams, team_pool
 from .team_need import compute_team_need, player_team_need_bonus
 from .train import load_metadata, load_models
 
-# Fallback constants used only when the live data can't support an empirical
-# prior (e.g. an entirely empty scope) — plausible T20 defaults, not tuned.
+# fallback constants for when live data can't support an empirical prior,
+# e.g. an empty scope. plausible T20 defaults, not tuned.
 _FALLBACK_BATTING_WPA_PRIOR = 0.0
 _FALLBACK_BOWLING_WPA_PRIOR = 0.0
 _FALLBACK_DISMISSAL_RATE_PRIOR = 0.05
@@ -55,27 +39,60 @@ _FALLBACK_DISMISSAL_RATE_PRIOR = 0.05
 
 class RecommendationScorer:
     def __init__(self, conn: sqlite3.Connection, fmt: str = SETTINGS.format,
-                 gender: str = SETTINGS.gender, models: dict | None = None):
+                 gender: str = SETTINGS.gender, models: dict | None = None, team: str | None = None):
         self.conn = conn
         self.fmt = fmt
         self.gender = gender
-        # `load_models`/`load_metadata` are scoped by (fmt, gender) -- without
-        # passing these through, a scorer constructed for gender="male" would
-        # have silently loaded (and scored real male players with) whatever
-        # model happened to be trained for the default gender instead.
+        # the team being scored FOR, if known -- lets _opponent_strength_part use head-to-head, not generic strength.
+        self.team = team
+        # load_models/load_metadata are scoped by (fmt, gender), so pass these
+        # through or a scorer could silently load the wrong gender's model.
         self.models = models if models is not None else load_models(fmt, gender)
         self.metadata = load_metadata(fmt, gender)
         self._priors = self._compute_priors()
-        # keyed by opponent -- doesn't depend on the player being scored, so
-        # scoring a whole pool against the same opponent (score_many) would
-        # otherwise recompute it once per player for no reason.
+        # keyed by opponent since it doesn't depend on the player, so
+        # score_many doesn't recompute it per player.
         self._opponent_roster_cache: dict[str, list[str]] = {}
+        self._opponent_strength_cache: dict[str, float] = {}
 
     def _opponent_roster(self, opponent: str) -> list[str]:
         if opponent not in self._opponent_roster_cache:
             self._opponent_roster_cache[opponent] = team_pool(
                 self.conn, opponent, self.fmt, self.gender)
         return self._opponent_roster_cache[opponent]
+
+    def _recent_win_pct(self, team: str, opponent: str | None) -> tuple[float, int]:
+        """team's recent win rate, generally (opponent=None) or head-to-head; returns (win_pct, sample_size)."""
+        if opponent is None:
+            where, params = "(team1=? OR team2=?)", (team, team)
+        else:
+            where, params = "((team1=? AND team2=?) OR (team1=? AND team2=?))", (team, opponent, opponent, team)
+        rows = self.conn.execute(
+            f"SELECT winner FROM matches WHERE format=? AND gender=? AND team_type='international' "
+            f"AND winner IS NOT NULL AND {where} ORDER BY date DESC LIMIT ?",
+            (self.fmt, self.gender, *params, SETTINGS.opponent_form_matches)).fetchall()
+        if not rows:
+            return 0.0, 0
+        return 100.0 * sum(1 for r in rows if r["winner"] == team) / len(rows), len(rows)
+
+    def _opponent_strength_part(self, opponent: str) -> float:
+        """bonus/penalty for facing this opponent, head-to-head when self.team is known else generic strength."""
+        if opponent not in self._opponent_strength_cache:
+            opponent_win_pct_generic, _ = self._recent_win_pct(opponent, None)
+            if self.team:
+                team_win_pct_h2h, h2h_n = self._recent_win_pct(self.team, opponent)
+                opponent_win_pct_h2h = 100.0 - team_win_pct_h2h
+                opponent_win_pct = shrink(opponent_win_pct_h2h, h2h_n, opponent_win_pct_generic,
+                                           prior_strength=SETTINGS.shrinkage_prior_matches)
+            else:
+                opponent_win_pct = opponent_win_pct_generic
+            # below 50%: opponent weaker than us, steeper slope; at/above: stronger, gentler slope.
+            cap, scale = ((SETTINGS.opponent_strength_cap_weak, SETTINGS.opponent_strength_scale_weak)
+                          if opponent_win_pct < 50.0 else
+                          (SETTINGS.opponent_strength_cap_strong, SETTINGS.opponent_strength_scale_strong))
+            part = max(-cap, min(cap, (50.0 - opponent_win_pct) * scale))
+            self._opponent_strength_cache[opponent] = round(part, 1)
+        return self._opponent_strength_cache[opponent]
 
     def _compute_priors(self) -> dict:
         scope_ids = player_current_teams(self.conn, self.fmt, self.gender)["player_id"]
@@ -96,11 +113,8 @@ class RecommendationScorer:
             f"AND bat_average > 0 AND bat_strike_rate > 0",
             self.conn, params=(self.fmt, *scope_ids))
         dismissal_rates = (career["bat_strike_rate"] / (100 * career["bat_average"])) if len(career) else pd.Series(dtype=float)
-        # Gender-relative "par" strike rate for the SR soft-penalty: the median
-        # career SR among genuine batters of this scope (bat_average >= 15, so
-        # tailenders' low SRs don't drag the bar down). Gender-relative for the
-        # same reason the archetype bars are -- men's and women's T20 SR
-        # distributions differ sharply, so an absolute par would be wrong for one.
+        # gender-relative par SR for the penalty below: median career SR among
+        # real batters (bat_average >= 15) so tailenders don't drag it down.
         real_batters = career[career["bat_average"] >= 15] if len(career) else career
         sr_benchmark = float(real_batters["bat_strike_rate"].median()) if len(real_batters) else None
         return {
@@ -111,19 +125,12 @@ class RecommendationScorer:
         }
 
     def _game_awareness(self, feats: dict, ctx: "object") -> dict:
-        """A [0,1] "game awareness / experience" factor from the four signals
-        the coach chose, each normalized to [0,1], averaged over whichever are
-        available. Used only to scale DOWN the strike-rate penalty -- an
-        experienced, situationally-aware player is trusted to bat slower.
+        """[0,1] game-awareness/experience factor, averaged over whichever
+        signals are available. only used to scale down the strike-rate
+        penalty, since an experienced player is trusted to bat slower.
 
-        - experience: career matches, saturating at `experience_full_matches`.
-        - big-moment impact: `importance_score` (bundles winning contribution,
-          match-winning performances, and player-of-match -- the available
-          proxy for "shows up when it matters"; a true close-game-only WPA
-          split isn't in the pipeline, noted honestly).
-        - chasing composure: chasing strike rate relative to the gender par
-          (can they still score under run-chase pressure).
-        - consistency: `bat_consistency` (steady match-to-match, not boom-or-bust).
+        signals: career matches (experience), importance_score (big-moment
+        impact), chasing SR vs gender par (composure), bat_consistency.
         """
         signals = {}
         matches = feats.get("career_matches") or 0
@@ -139,9 +146,9 @@ class RecommendationScorer:
         return {"factor": round(factor, 3), "signals": {k: round(v, 3) for k, v in signals.items()}}
 
     def _strike_rate_penalty(self, feats: dict, ctx: "object", bucket: str) -> tuple[float, dict]:
-        """Soft penalty (<= 0) for a batting-capable player whose career strike
-        rate is below the gender par, scaled down by game awareness. Never a
-        reward, never applied to pure bowlers (not picked for their batting).
+        """soft penalty (<= 0) for a batting-capable player below the gender
+        par strike rate, scaled down by game awareness. never a reward, never
+        applied to pure bowlers.
         """
         awareness = self._game_awareness(feats, ctx)
         benchmark = self._priors.get("batter_sr_benchmark")
@@ -178,9 +185,8 @@ class RecommendationScorer:
             predicted_bowling_wpa = shrink(feats["career_bowling_wpa"], feats["career_bowling_wpa_matches"],
                                             self._priors["bowling_wpa"])
 
-        # pandas aggregates (career_*_wpa) are NaN, not None, when a player
-        # has no rows for that discipline — normalize once so every
-        # downstream check (and JSON output) sees a clean `None`.
+        # pandas aggregates are NaN, not None, when a player has no rows for
+        # that discipline, so normalize once to a clean None.
         if pd.isna(predicted_batting_wpa):
             predicted_batting_wpa = None
         if pd.isna(predicted_bowling_wpa):
@@ -188,10 +194,11 @@ class RecommendationScorer:
         has_bat_data = pd.notna(feats["career_batting_wpa"])
         has_bowl_data = pd.notna(feats["career_bowling_wpa"])
 
-        # Only credit a discipline the player's role suggests OR that they
-        # have genuine (non-fabricated) history in — a shrink() call with no
-        # observed data returns the bare prior, which must not be awarded to
-        # e.g. a specialist batter's bowling axis just because it's nonzero.
+        # only credit a discipline the player's role suggests or has real
+        # history in, since shrink() with no data just returns the bare prior.
+        # this deliberately includes "has incidental data" (a specialist
+        # batter's odd over of bowling) -- a small real signal still belongs
+        # in the score.
         active_wpa = []
         if (batting_capable(bucket) or has_bat_data) and predicted_batting_wpa is not None:
             active_wpa.append(predicted_batting_wpa)
@@ -199,23 +206,28 @@ class RecommendationScorer:
             active_wpa.append(predicted_bowling_wpa)
         active_wpa.sort(reverse=True)
 
-        # A pure specialist only ever has one active discipline to sum, so a
-        # plain sum structurally caps every specialist below any all-rounder
-        # with two merely-decent disciplines — a genuinely elite batter could
-        # never outscore a mediocre all-rounder on this alone. Instead, the
-        # *primary* (best) discipline is credited at full weight, and any
-        # secondary discipline adds a discounted bonus for genuine
-        # versatility — real, but not enough to dominate raw excellence.
+        # role_targets is a stricter, role-only gate (no "has incidental
+        # data" carve-out) for which SHAP breakdown to show -- explain.py's
+        # ShapSection, via cli.py's _shap_entry/cmd_explain. A specialist
+        # batter's odd over of bowling can still earn her a sliver of
+        # bowling_wpa in the score above, but a whole "why bowling_wpa"
+        # breakdown for that sliver is misleading UX, not useful explanation.
+        role_targets = []
+        if batting_capable(bucket) and predicted_batting_wpa is not None:
+            role_targets.append("batting_wpa")
+        if bowling_capable(bucket) and predicted_bowling_wpa is not None:
+            role_targets.append("bowling_wpa")
+
+        # a plain sum would cap every specialist below a mediocre all-rounder,
+        # so the primary (best) discipline counts full and a second
+        # discipline only adds a discounted bonus.
         primary = active_wpa[0] if active_wpa else 0.0
         secondary_bonus = sum(active_wpa[1:]) * SETTINGS.secondary_discipline_weight
         model_part = min(45.0, (primary + secondary_bonus) * SETTINGS.wpa_scale)
-        # Cold-start confidence discount: in the fallback path the "WPA" is a
-        # shrink over a handful of matches, so a 3-match player who happened to
-        # bowl well (often against weak opposition) could otherwise score a
-        # near-full model_part -- a real over-rating flagged on Aakash Chand
-        # (3 matches -> +12.5, above the 78-match RK Paudel's real +0.2). Scale
-        # the cold-start model_part by how much history actually backs it, so
-        # trust ramps linearly from ~0 up to the full model at min_matches_for_model.
+        # cold-start confidence discount: without this, a 3-match player who
+        # bowled well against weak opposition could score a near-full
+        # model_part. scale by how much history backs it, ramping to full
+        # trust at min_matches_for_model.
         if not model_applied:
             confidence = min(1.0, (feats["career_matches"] or 0) / SETTINGS.min_matches_for_model)
             model_part *= confidence
@@ -229,32 +241,29 @@ class RecommendationScorer:
         else:
             career_dismissal_rate = self._priors["dismissal_rate"]
 
+        # descriptive only, like bowl_dot_pct/bat_sixes below -- never scored,
+        # just surfaced in reasoning (recommend/explain.py) and role_highlights'
+        # "best fielder" pick (selection/optimize.py), from data-collection's
+        # player_fielding (catches/run-outs/stumpings, see criiq_data/fielding.py).
+        fielding_row = self.conn.execute(
+            "SELECT matches, catches, run_outs, stumpings, dismissals, dismissals_per_match "
+            "FROM player_fielding WHERE player_id=? AND format=?", (player_id, self.fmt)).fetchone()
+
         aggregate_matchup_part = 0.0
         if ctx.matchup_balls > 0:
             shrunk_rate = shrink(ctx.matchup_dismissal_rate, ctx.matchup_balls, career_dismissal_rate,
                                   prior_strength=SETTINGS.shrinkage_prior_matches * 6)
             aggregate_matchup_part = round(max(-8.0, min(8.0, (career_dismissal_rate - shrunk_rate) * 120)), 1)
 
-        # Secondary, backup signal: opponent's actual pace/spin mix weighted
-        # against the batter's own vs-style record (see features/style_matchup)
-        # — smaller-magnitude than the aggregate signal above, and adds
-        # nothing when either side's style data isn't known well enough.
-        # When a specific opponent XI is named, the opponent's pace/spin mix is
-        # theirs, not the whole team's -- scope the style matchup to it too.
+        # secondary signal: opponent's pace/spin mix vs the batter's vs-style
+        # record (see features/style_matchup). scoped to the named XI if given, not the whole team.
         roster_for_style = opponent_players or self._opponent_roster(opponent)
         style = style_matchup_edge(self.conn, player_id, opponent, career_dismissal_rate,
                                     self.fmt, self.gender, opponent_roster=roster_for_style)
 
-        # Symmetric bowling-side matchup: was entirely absent before -- a
-        # specialist bowler rarely faces enough balls herself to ever get a
-        # meaningful `aggregate_matchup_part` above (that's fundamentally a
-        # *batting* signal), so bowlers previously scored with matchup_part
-        # stuck near 0 regardless of how she's actually bowled against this
-        # specific opponent's specific batters. Scale (175, vs the batting
-        # side's 120) is calibrated against the real distribution of career
-        # bowling wicket-rate (std ≈0.019 vs batting dismissal-rate's
-        # std ≈0.028) so a one-std-dev edge reads as a comparably-sized bonus
-        # on both axes, not copied blindly from the batting side.
+        # symmetric bowling-side matchup, since aggregate_matchup_part above
+        # is fundamentally a batting signal and left bowlers stuck near 0.
+        # scale (175 vs batting's 120) is tuned to the real wicket-rate std dev.
         career_row = self.conn.execute(
             "SELECT wickets, balls_bowled FROM player_career WHERE player_id=? AND format=?",
             (player_id, self.fmt)).fetchone()
@@ -265,9 +274,7 @@ class RecommendationScorer:
             shrunk_wicket_rate = shrink(ctx.bowl_matchup_wicket_rate, ctx.bowl_matchup_balls,
                                          career_bowl_wicket_rate,
                                          prior_strength=SETTINGS.shrinkage_prior_matches * 6)
-            # Higher-than-career wicket rate against this specific opponent's
-            # batters is GOOD for a bowler -- opposite polarity from the
-            # batting side, where a LOWER dismissal rate is good.
+            # higher wicket rate here is good for a bowler, opposite polarity from the batting side
             bowl_matchup_part = round(max(-8.0, min(8.0,
                 (shrunk_wicket_rate - career_bowl_wicket_rate) * 175)), 1)
 
@@ -300,33 +307,37 @@ class RecommendationScorer:
         risk_part = round(risk_part, 1)
 
         strike_rate_part, awareness = self._strike_rate_penalty(feats, ctx, bucket)
+        opponent_strength_part = self._opponent_strength_part(opponent)
 
+        # not floored here: this ranks/selects players against each other, so a per-player floor would flatten a tough matchup and break selection -- any floor belongs on the squad-average, applied by the caller.
         total = round(max(0.0, min(100.0, model_part + matchup_part + phase_fit_part
-                                    + standing_part + risk_part + strike_rate_part)), 1)
+                                    + standing_part + risk_part + strike_rate_part
+                                    + opponent_strength_part)), 1)
 
         components = {
             "model_part": model_part, "matchup_part": matchup_part,
             "phase_fit_part": phase_fit_part, "standing_part": standing_part,
             "risk_part": risk_part, "strike_rate_part": strike_rate_part,
-            # Only ever set by `score_many` (a pool-wide, not per-player,
-            # computation) — a lone `score()` call has no pool to compare
-            # against, so these stay at their honest "not evaluated" default.
+            "opponent_strength_part": opponent_strength_part,
+            # only set by score_many (pool-wide, not per-player), since a
+            # lone score() call has no pool to compare against.
             "team_need_part": 0.0, "team_need_phase": None,
             "model_applied": model_applied,
             "cold_start_reason": None if model_applied else (
                 "no_trained_model_available" if not self.models else
                 f"career_matches ({feats['career_matches']}) < min_matches_for_model ({SETTINGS.min_matches_for_model})"),
+            # which target(s) -- "batting_wpa"/"bowling_wpa" -- this player's
+            # ROLE makes relevant, for gating the SHAP breakdown (see where
+            # this is built, above).
+            "role_targets": role_targets,
             "inputs": {
                 "career_matches": feats["career_matches"],
                 "predicted_batting_wpa": round(predicted_batting_wpa, 4) if predicted_batting_wpa is not None else None,
                 "predicted_bowling_wpa": round(predicted_bowling_wpa, 4) if predicted_bowling_wpa is not None else None,
                 "vs_opponent_matches": feats["vs_opp_matches"],
                 "venue_matches": feats["venue_matches"],
-                # shrink()/shrink_series() can return pandas NaN (not None)
-                # when both the raw observation and the prior it'd fall back
-                # to are missing (a pure batter's bowling side, career-wide) —
-                # normalize the same way bowl_dot_pct/bowl_boundary_pct below
-                # already do, so explain.py never has to render a literal "nan%".
+                # shrink() can return NaN, not None, when both the observation
+                # and the prior are missing, so normalize like bowl_dot_pct below.
                 "venue_bat_contribution_pct": None if pd.isna(feats["venue_bat_contribution_pct"]) else feats["venue_bat_contribution_pct"],
                 "venue_bowl_contribution_pct": None if pd.isna(feats["venue_bowl_contribution_pct"]) else feats["venue_bowl_contribution_pct"],
                 "venue_name": ctx.venue_name,
@@ -354,12 +365,8 @@ class RecommendationScorer:
                 "recent_domestic_activity": ctx.recent_domestic_activity,
                 "age_advisory": ctx.age_advisory,
                 "is_keeper": ctx.is_keeper,
-                # Descriptive only, not model inputs -- see features/current.py's
-                # docstring on why these were tried as trained-model features
-                # and dropped after checking against the real backtest. Pure
-                # batters get pandas NaN (mean of an all-missing column), not
-                # None, from build_model_features -- normalize the same way
-                # predicted_batting_wpa/predicted_bowling_wpa already are above.
+                # descriptive only, not model inputs, see features/current.py.
+                # pure batters get NaN here, not None, so normalize like the wpa fields above.
                 "bowl_dot_pct": None if pd.isna(feats.get("career_bowl_dot_pct")) else feats["career_bowl_dot_pct"],
                 "bowl_boundary_pct": None if pd.isna(feats.get("career_bowl_boundary_pct")) else feats["career_bowl_boundary_pct"],
                 "age_years": feats.get("age_years"),
@@ -382,6 +389,12 @@ class RecommendationScorer:
                 "bat_consistency": ctx.bat_consistency,
                 "game_awareness_factor": awareness["factor"],
                 "game_awareness_signals": awareness["signals"],
+                "fielding_matches": fielding_row["matches"] if fielding_row else 0,
+                "fielding_catches": fielding_row["catches"] if fielding_row else 0,
+                "fielding_run_outs": fielding_row["run_outs"] if fielding_row else 0,
+                "fielding_stumpings": fielding_row["stumpings"] if fielding_row else 0,
+                "fielding_dismissals": fielding_row["dismissals"] if fielding_row else 0,
+                "fielding_dismissals_per_match": fielding_row["dismissals_per_match"] if fielding_row else None,
             },
         }
 
@@ -395,13 +408,12 @@ class RecommendationScorer:
     def score_many(self, player_ids: list[str], opponent: str,
                     venue_id: str | None = None,
                     opponent_players: list[str] | None = None) -> list[dict]:
-        """Scores every player, then applies a synergy-aware team-need bonus
-        (see `recommend/team_need.py`) computed once across this whole pool —
-        a player scored alone has no way to know "this team is thin on death
-        bowling", only the pool as a whole does.
+        """scores every player, then applies a synergy-aware team-need bonus
+        computed once across the pool, since a lone player has no way to know
+        the team is thin on death bowling.
 
-        `opponent_players`: the opponent's specific XI, if named -- threaded to
-        each `score` so matchups counter-optimize against exactly those players.
+        opponent_players: the opponent's named XI, if any, threaded to each
+        score() call so matchups target exactly those players.
         """
         scored = [self.score(pid, opponent, venue_id, opponent_players=opponent_players)
                   for pid in player_ids]

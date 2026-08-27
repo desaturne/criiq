@@ -1,9 +1,8 @@
-"""Charts + artifact persistence for simulated matches.
+"""charts + artifact persistence for simulated matches.
 
-Mirrors the `data/features/*.parquet` + `*_meta.json` persistence pattern
-`data-collection/criiq_data/winprob.py` already uses, under this package's
-own `artifacts/simulation/` directory (sibling to the existing
-`artifacts/{match_result,player_recommendation,win_prob}` dirs).
+mirrors the `data/features/*.parquet` + `*_meta.json` pattern
+data-collection's winprob.py already uses, under this package's own
+`artifacts/simulation/` directory.
 """
 from __future__ import annotations
 
@@ -12,16 +11,9 @@ import sys
 from pathlib import Path
 
 import matplotlib
-# Force a headless-safe backend for the CLI (no display server to assume),
-# but never override a Jupyter kernel's own backend (`%matplotlib inline` or
-# the auto-configured inline backend) -- unconditionally calling `use("Agg")`
-# here previously clobbered that whenever this module was imported inside a
-# notebook cell, silently breaking `plt.show()` (a real bug found live: charts
-# stopped rendering in `simulation_demo.ipynb` with a "FigureCanvasAgg is
-# non-interactive" warning, even after adding the `%matplotlib inline` magic,
-# because this import ran afterward in the same cell and switched the backend
-# back). `ipykernel` is only ever imported when running inside a Jupyter
-# kernel, never a plain CLI invocation, so it's a reliable signal here.
+# use a headless backend for the CLI, but don't override a Jupyter kernel's
+# own backend (this broke plt.show() in simulation_demo.ipynb before).
+# ipykernel is only imported when running inside a notebook.
 if "ipykernel" not in sys.modules:
     matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -42,11 +34,9 @@ _MOMENT_MARKERS = {
 
 
 def _concat_match_log(rep: dict) -> pd.DataFrame:
-    """Both innings' ball logs, concatenated with a continuous x-axis
-    (`match_ball_index`) and the win probability re-expressed as the
-    `batting_first_team`'s win probability throughout, so the chart reads as
-    one continuous story rather than flipping perspective at the innings
-    break.
+    """concatenates both innings' ball logs onto one continuous x-axis,
+    re-expressing win probability as `batting_first_team`'s throughout so
+    the chart doesn't flip perspective at the innings break.
     """
     log1 = rep["first_innings_log"].copy()
     log2 = rep["second_innings_log"].copy()
@@ -59,11 +49,9 @@ def _concat_match_log(rep: dict) -> pd.DataFrame:
 
 def plot_win_probability(rep: dict, out_path: str | Path, scenario_rep: dict | None = None,
                           key_moments: list | None = None) -> Path:
-    """Ball-by-ball win-probability line chart for `batting_first_team`.
-    `scenario_rep` (e.g. a forced-dismissal run from `engine.simulate_match`)
-    overlays a second trace for direct comparison. `key_moments` (from
-    `keymoments.detect_key_moments`) annotates fifties/centuries/wickets/
-    hat-tricks/boundaries and the biggest win-probability swings.
+    """ball-by-ball win-probability line chart for `batting_first_team`.
+    `scenario_rep` overlays a second trace for comparison. `key_moments`
+    annotates milestones, hat-tricks, boundaries and the biggest swings.
     """
     combined = _concat_match_log(rep)
     fig, ax = plt.subplots(figsize=(12, 6))
@@ -135,11 +123,9 @@ def save_simulation_artifacts(rep: dict, out_dir: str | Path, key_moments: list 
 
 
 def aggregate_win_probability(reps: list) -> pd.DataFrame:
-    """Mean + 10th/90th percentile win-probability band across Monte Carlo
-    `reps` (from `engine.simulate_match(..., n_reps=N)`), aligned by ball
-    index within each innings. Reps that end early (all-out or chase won
-    before ball 120) hold their final win probability flat for the remaining
-    balls -- the outcome is already effectively decided by that point.
+    """mean + 10th/90th percentile win-probability band across Monte Carlo
+    reps, aligned by ball index. reps that end early hold their final win
+    probability flat for the remaining balls.
     """
     frames = []
     for rep in reps:

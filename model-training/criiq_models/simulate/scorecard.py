@@ -1,7 +1,6 @@
-"""Post-match scorecards (batting + bowling) and a coach's-eye narrative,
-derived purely from a simulated ball log + a name lookup -- no team-specific
-logic anywhere, so this works identically for any two sides/genders/formats
-the engine can simulate.
+"""post-match scorecards (batting + bowling) and a coach's-eye narrative,
+derived from a simulated ball log and a name lookup. no team-specific
+logic, so this works for any two sides/genders/formats.
 """
 from __future__ import annotations
 
@@ -9,11 +8,9 @@ import pandas as pd
 
 
 def batting_scorecard(ball_log_df: pd.DataFrame, name_map: dict | None = None) -> list:
-    """One row per batter who came to the crease, in batting order, with
-    real strike-rate math (`runs / balls_faced * 100` -- balls faced
-    excludes wides, per rulebook-cricket.md sec 6). `highlight`, when
-    present, is a short standout-performance comment (century/fifty, top
-    scorer, fastest innings).
+    """one row per batter who came to the crease, in batting order.
+    strike rate is `runs / balls_faced * 100`, balls faced excludes wides.
+    `highlight`, when present, flags a standout performance.
     """
     name_map = name_map or {}
     order: list = []
@@ -59,11 +56,9 @@ def batting_scorecard(ball_log_df: pd.DataFrame, name_map: dict | None = None) -
 
 
 def bowling_scorecard(ball_log_df: pd.DataFrame, name_map: dict | None = None) -> list:
-    """One row per bowler used, in order of first over bowled, with real
-    overs-bowled notation (`b//6.b%6`, ball-in-over notation per rulebook-
-    cricket.md sec 6) and economy (`6 x runs_conceded / legal_balls`).
-    Byes/leg-byes are excluded from runs conceded, matching the bowler's
-    real figures (rulebook-cricket.md sec 4.3/6).
+    """one row per bowler used, in order of first over bowled. overs are
+    `b//6.b%6` notation, economy is `6 * runs_conceded / legal_balls`.
+    byes/leg-byes are excluded from runs conceded.
     """
     name_map = name_map or {}
     order: list = []
@@ -120,10 +115,69 @@ def render_scorecard_text(team_name: str, batting_rows: list, bowling_rows: list
     return "\n".join(lines)
 
 
+def bowling_rotation(ball_log_df: pd.DataFrame, name_map: dict | None = None) -> list:
+    """over-by-over breakdown: which bowler bowled each over, its phase,
+    and that over's runs conceded/wickets. one row per over.
+    """
+    name_map = name_map or {}
+    rows = []
+    for over, g in ball_log_df.sort_values(["over", "ball_in_over"]).groupby("over", sort=True):
+        bowler = g["bowler"].iloc[0]
+        rows.append({
+            "over": int(over) + 1, "phase": g["phase"].iloc[0] if "phase" in g.columns else None,
+            "bowler_id": bowler, "bowler": name_map.get(bowler, bowler),
+            "balls": int(g["is_legal"].sum()),
+            "runs_conceded": int(g.loc[g["outcome"] != "bye", "runs_total"].sum()),
+            "wickets": int(g["is_wicket"].sum()),
+        })
+    return rows
+
+
+_PHASE_ORDER = ("powerplay", "middle", "death")
+
+
+def bowling_phase_summary(rotation_rows: list) -> dict:
+    """`{phase: {bowler_name: {"balls","runs","wickets","overs","economy"}}}`,
+    aggregating `bowling_rotation`'s per-over rows by bowler and phase.
+    """
+    summary: dict = {}
+    for row in rotation_rows:
+        phase = row["phase"] or "unknown"
+        entry = summary.setdefault(phase, {}).setdefault(
+            row["bowler"], {"balls": 0, "runs": 0, "wickets": 0})
+        entry["balls"] += row["balls"]
+        entry["runs"] += row["runs_conceded"]
+        entry["wickets"] += row["wickets"]
+    for bowlers in summary.values():
+        for e in bowlers.values():
+            e["overs"] = f"{e['balls'] // 6}.{e['balls'] % 6}"
+            e["economy"] = round(6 * e["runs"] / e["balls"], 2) if e["balls"] else None
+    return summary
+
+
+def render_bowling_rotation_text(team_name: str, rotation_rows: list, phase_summary: dict) -> str:
+    lines = [f"{team_name} bowling rotation (over by over):"]
+    for row in rotation_rows:
+        phase = row["phase"] or "?"
+        lines.append(f"  over {row['over']:2d} ({phase:9s}): {row['bowler']:<22s}"
+                      f"{row['balls']}b  {row['runs_conceded']}r  {row['wickets']}w")
+
+    lines.append(f"\n{team_name} bowling by phase:")
+    for phase in _PHASE_ORDER:
+        bowlers = phase_summary.get(phase)
+        if not bowlers:
+            continue
+        lines.append(f"  {phase}:")
+        for name, e in sorted(bowlers.items(), key=lambda kv: -kv[1]["balls"]):
+            econ = f"{e['economy']:.2f}" if e["economy"] is not None else "-"
+            lines.append(f"    {name:<22s}{e['overs']:>6} overs  {e['runs']:>3d} runs  "
+                          f"{e['wickets']} wkts  econ {econ}")
+    return "\n".join(lines)
+
+
 def coach_perspective(rep: dict, key_moments: list, coach_team: str, name_map: dict | None = None) -> str:
-    """A short, coach's-eye read of one simulated rep from `coach_team`'s
-    side -- generalizes to any team named in `rep` (no hardcoded team
-    names), for either side of the match.
+    """a short, coach's-eye read of one simulated rep from `coach_team`'s
+    side. works for either side, no hardcoded team names.
     """
     lines = []
     coach_bats_first = rep["batting_first_team"] == coach_team

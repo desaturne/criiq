@@ -46,7 +46,7 @@ criiq/
 │   ├── data/                 # criiq.db, raw ZIPs, Parquet features (gitignored)
 │   ├── tests/                # ~45 offline unit tests
 │   ├── criiq_overview.ipynb  # source-by-source data tour (50 cells)
-│   ├── eda_heatmaps.ipynb    # statistical EDA companion (20 cells)
+│   ├── dataset_analysis.ipynb # statistical EDA companion
 │   ├── run.py                # CLI entry shim
 │   └── README.md             # 430-line design document
 ├── model-training/           # AI / recommendation half
@@ -55,9 +55,18 @@ criiq/
 │   ├── tests/                # 10-file pytest suite on an in-memory DB
 │   ├── model_comparison.ipynb        # original single-split comparison
 │   ├── model_comparison_robust.ipynb # 3-fractions x 5-seeds comparison
+│   ├── feature_analysis.ipynb        # per-feature signal / importance study
+│   ├── simulation_demo.ipynb         # ball-by-ball simulator + GA walkthrough
 │   └── README.md             # engineering log with all decisions
-└── webapp/                   # (out of scope here)
+├── backend/                  # FastAPI service (out of scope here — see backend/README.md)
+├── frontend/                 # React + Vite SPA (out of scope here — see frontend/README.md)
+└── docs/                     # this document, DOCKER-HANDOVER.md, cli-reference.md
 ```
+
+This document covers the two data/ML modules only. The web application that
+serves them — the FastAPI backend and the React frontend, including how the
+backend shells out to `criiq_models` — is documented in `backend/README.md`
+and `frontend/README.md`, not here.
 
 \newpage
 

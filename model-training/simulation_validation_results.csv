@@ -1,0 +1,24 @@
+match_id,gender,date,team1,team2,winner,sim_team1_winpct,sim_team2_winpct,favored,called_correctly,actual_first_innings,sim_mean_first_innings,actual_second_innings,sim_mean_second_innings
+1490683,female,2026-06-16,New Zealand,Sri Lanka,Sri Lanka,30.0,70.0,Sri Lanka,True,150,114.1,153.0,111.5
+1490684,female,2026-06-16,Ireland,England,England,32.5,67.5,England,True,118,121.3,119.0,105.1
+1490685,female,2026-06-17,Bangladesh,Australia,Australia,42.5,57.5,Australia,True,77,119.6,78.0,109.9
+1490686,female,2026-06-17,India,Netherlands,India,57.5,42.5,India,True,209,116.2,114.0,111.2
+1490687,female,2026-06-17,Pakistan,South Africa,South Africa,47.5,52.5,South Africa,True,126,122.1,127.0,113.9
+1539506,female,2026-06-17,Brazil,Malawi,Brazil,62.5,37.5,Brazil,True,87,104.7,76.0,101.6
+1490688,female,2026-06-18,West Indies,Scotland,West Indies,57.5,42.5,West Indies,True,153,112.4,146.0,107.1
+1539507,female,2026-06-18,Rwanda,Brazil,,50.0,50.0,Brazil,,128,124.8,128.0,116.5
+1490689,female,2026-06-19,New Zealand,Ireland,New Zealand,52.5,47.5,New Zealand,True,140,113.9,136.0,107.5
+1539740,male,2026-06-19,Hong Kong,Namibia,Namibia,45.0,55.0,Namibia,True,126,132.5,127.0,119.9
+1540308,male,2026-06-19,Belgium,Romania,Belgium,47.5,52.5,Romania,False,180,125.2,160.0,115.9
+1490690,female,2026-06-20,Australia,Netherlands,Australia,47.5,52.5,Netherlands,False,219,117.3,121.0,109.5
+1490691,female,2026-06-20,Bangladesh,Pakistan,Bangladesh,45.0,55.0,Pakistan,False,123,117.5,100.0,108.8
+1490692,female,2026-06-20,England,Scotland,England,42.5,57.5,Scotland,False,200,113.0,162.0,107.5
+1539510,female,2026-06-20,Brazil,Nigeria,Nigeria,30.0,70.0,Nigeria,True,85,123.3,86.0,109.3
+1490693,female,2026-06-21,Sri Lanka,West Indies,West Indies,47.5,52.5,West Indies,True,98,117.4,99.0,108.3
+1490694,female,2026-06-21,India,South Africa,South Africa,52.5,47.5,India,False,158,121.5,161.0,111.2
+1539742,male,2026-06-21,Nigeria,Hong Kong,Hong Kong,62.5,37.5,Nigeria,False,76,125.2,77.0,120.5
+1490695,female,2026-06-23,Scotland,New Zealand,New Zealand,52.5,47.5,Scotland,False,131,114.4,132.0,109.3
+1490696,female,2026-06-23,Ireland,Sri Lanka,Sri Lanka,50.0,50.0,Sri Lanka,True,130,112.3,134.0,102.8
+1490697,female,2026-06-23,Australia,Pakistan,Australia,60.0,40.0,Australia,True,199,121.7,86.0,108.7
+1496574,male,2026-07-01,India,England,,50.0,50.0,England,,189,120.2,,
+1543372,male,2026-07-12,Belgium,Romania,Romania,47.5,52.5,Romania,True,107,130.2,108.0,120.3

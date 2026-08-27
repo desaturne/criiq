@@ -1,8 +1,7 @@
 import { useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { Outlet, useNavigate, useLocation } from "react-router";
-import { LayoutDashboard, Calendar, MessageSquare, Activity } from "lucide-react";
-import { LiveTicker } from "../common/LiveTicker";
+import { LayoutDashboard, Calendar, Star, Activity } from "lucide-react";
 import { Navbar } from "./Navbar";
 import { Sidebar } from "./Sidebar";
 import { useApp } from "../../context/AppContext";
@@ -18,7 +17,7 @@ export function Root() {
     { path: "dashboard",       label: "Home",    icon: LayoutDashboard },
     { path: "players",         label: "Players", icon: Activity },
     { path: "matches",         label: "Matches", icon: Calendar },
-    { path: "assistant",       label: "AI",      icon: MessageSquare },
+    { path: "recommendations", label: "Picks",   icon: Star },
   ];
 
   return (
@@ -28,7 +27,6 @@ export function Root() {
         <div className="flex flex-1 overflow-hidden">
           <Sidebar open={sidebarOpen} />
           <div className="flex flex-col flex-1 overflow-hidden">
-            <LiveTicker />
             <main className="flex-1 overflow-auto pb-16 sm:pb-0" style={{ scrollbarWidth: "thin", scrollbarColor: "var(--border) transparent" }}>
               <AnimatePresence mode="wait">
                 <motion.div key={location.pathname} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={{ duration: 0.18 }} className="h-full">

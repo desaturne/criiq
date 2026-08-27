@@ -1,9 +1,7 @@
-"""Legality + basic-convergence checks for the two GA optimizers
-(`simulate/ga_bowling.py`, `simulate/ga_batting.py`) -- every individual must
-always be a rules-legal rotation/order after repair, fitness should not get
-worse from the first generation to the last on a fixed seed, and the
-role-structure preferences (locked batting bands, primary-bowler quota bias)
-must actually hold.
+"""legality and basic convergence checks for the two GA optimizers
+(ga_bowling.py, ga_batting.py). every individual must be a legal rotation
+after repair, fitness must not regress across generations, and role
+preferences (batting bands, primary-bowler quota) must hold.
 """
 from __future__ import annotations
 
@@ -13,7 +11,7 @@ import numpy as np
 
 from criiq_models.simulate.engine import MAX_OVERS, MAX_OVERS_PER_BOWLER
 from criiq_models.simulate.ga_batting import optimize_batting_order
-from criiq_models.simulate.ga_bowling import _quotas, optimize_bowling_rotation
+from criiq_models.simulate.ga_bowling import _quotas, _repair, optimize_bowling_rotation
 from criiq_models.simulate.outcomes import BatterProfile, BowlerProfile, PHASES, PlayerAdjustedOutcomeModel
 
 BATTERS = [f"b{i}" for i in range(11)]
@@ -53,9 +51,9 @@ def test_bowling_rotation_ga_always_returns_a_legal_rotation():
 
 
 def test_bowling_rotation_ga_fitness_history_never_regresses():
-    """`fitness_history` logs the running best-known fitness (elitism +
-    verify-before-accept guard it against Monte Carlo noise) -- it must be
-    monotonically non-decreasing by construction, not just "usually" improve.
+    """fitness_history tracks the running best fitness (elitism plus a
+    verify-before-accept guard against Monte Carlo noise), so it must be
+    monotonically non-decreasing by construction.
     """
     batter_profiles, bowler_profiles = _profiles(BATTERS + BOWLERS5)
     result = optimize_bowling_rotation(BOWLERS5, BATTERS, _model(), batter_profiles, bowler_profiles,
@@ -71,11 +69,32 @@ def test_bowling_rotation_ga_raises_for_too_small_a_pool():
                                    pop_size=4, generations=2, n_reps=1, rng_seed=42)
 
 
+def test_repair_fixes_a_badly_skewed_post_crossover_rotation_in_a_razor_tight_pool():
+    """real bug: with exactly 5 bowlers (zero slack, 5x4=20), a crossover
+    child can badly skew per-bowler over-counts before repair runs. `_repair`
+    must still succeed here, not raise.
+    """
+    skewed = ["w0"] * 10 + ["w1"] * 10
+    rng = np.random.default_rng(3)
+    fixed = _repair(skewed, BOWLERS5, rng)
+    _assert_legal_rotation(fixed)
+
+
+def test_repair_prefers_primary_bowlers_when_reassigning_a_shortfall():
+    skewed = ["w0"] * 10 + ["w1"] * 10
+    rng = np.random.default_rng(3)
+    fixed = _repair(skewed, BOWLERS5, rng, primary_bowlers=["w2", "w3", "w4"])
+    _assert_legal_rotation(fixed)
+    counts = {b: fixed.count(b) for b in set(fixed)}
+    # w0/w1 already hit their capped 4 each, so the remaining shortfall must
+    # go to the primary bowlers.
+    assert sum(counts.get(b, 0) for b in ("w2", "w3", "w4")) == MAX_OVERS - 2 * MAX_OVERS_PER_BOWLER
+
+
 def test_bowling_rotation_ga_gives_primary_bowlers_the_full_quota_by_default():
-    """With exactly 5 recognized specialists in a 5-bowler pool, the default
-    (`primary_bowlers` given) rotation should still be legal, and -- since
-    there's no slack pool member to dilute the quota with -- every over goes
-    to one of the 5 primaries, each getting exactly 4.
+    """with exactly 5 recognized specialists in a 5-bowler pool, there's no
+    slack member to dilute the quota, so every over goes to one of the 5
+    primaries, each getting exactly 4.
     """
     batter_profiles, bowler_profiles = _profiles(BATTERS + BOWLERS5)
     result = optimize_bowling_rotation(BOWLERS5, BATTERS, _model(), batter_profiles, bowler_profiles,
@@ -86,15 +105,10 @@ def test_bowling_rotation_ga_gives_primary_bowlers_the_full_quota_by_default():
 
 
 def test_bowling_rotation_ga_lets_primary_bowlers_absorb_a_shortfall():
-    """Only 4 recognized specialists (16 overs of capacity) in a 6-bowler
-    pool -- the *default* (pre-evolution) quota construction gives the
-    primaries their full quota and puts only the shortfall (the remaining 4
-    overs) on the other 2 pool members, matching a real captain's forced
-    situation. Checked directly against `_quotas` (the initial-population/
-    repair-fallback building block) -- not the fully-evolved GA result,
-    since ordinary mutation is deliberately free to drift away from this
-    default over generations if the fitness landscape rewards it (see
-    "sometimes others can be introduced" in this module's docstring).
+    """only 4 recognized specialists (16 overs of capacity) in a 6-bowler
+    pool, so the default quota gives primaries their full share and puts the
+    remaining 4 overs on the other 2. checked against `_quotas` directly,
+    not the evolved GA result, since mutation can drift from this default.
     """
     pool = BOWLERS5 + ["w5"]
     primary = BOWLERS5[:4]
@@ -107,10 +121,9 @@ def test_bowling_rotation_ga_lets_primary_bowlers_absorb_a_shortfall():
 
 
 def test_bowling_rotation_ga_with_shortfall_still_produces_a_legal_rotation():
-    """The full evolved GA run over a primary-shortfall pool must still
-    always produce a legal rotation (the actual, unconditional guarantee),
-    even though the exact quota split may drift from the default via
-    mutation.
+    """the full evolved GA run over a primary-shortfall pool must still
+    always produce a legal rotation, even if the quota split drifts from
+    the default via mutation.
     """
     pool = BOWLERS5 + ["w5"]
     primary = BOWLERS5[:4]
@@ -147,9 +160,8 @@ def test_batting_order_ga_fitness_history_never_regresses():
 
 
 def test_batting_order_ga_respects_group_bands_but_permutes_within_them():
-    """The two openers can interchange (1 vs 2), the top/middle band can
-    reorder among itself, and the tail can reorder among itself -- but no
-    player ever crosses a band boundary.
+    """openers, top/middle, and tail can each reorder within their own band,
+    but no player ever crosses a band boundary.
     """
     openers = [BATTERS[0], BATTERS[1]]
     top_middle = BATTERS[2:7]

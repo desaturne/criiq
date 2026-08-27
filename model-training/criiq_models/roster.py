@@ -1,11 +1,9 @@
-"""Team-roster derivation.
+"""team-roster derivation.
 
-`player_registry.nationality` is entirely NULL for T20 in the live DB, and
-`players.nationality` (Wikidata-sourced) is only ~28% populated — neither is a
-reliable way to know "which team does this player represent". The actual
-match appearances (`match_players.team`, one row per player per match) are
-complete and authoritative, so a player's current team is derived as the team
-of their most recent appearance.
+player_registry.nationality is NULL for T20 in the live DB and
+players.nationality is only ~28% populated, so neither reliably says which
+team a player represents. match_players.team is complete and authoritative,
+so a player's current team is derived from their most recent appearance.
 """
 from __future__ import annotations
 
@@ -19,18 +17,11 @@ from .config import SETTINGS
 def _player_id_map(conn: sqlite3.Connection) -> tuple[dict[str, str], dict[tuple[str, str], str]]:
     """(unambiguous identifier->player_id, split (identifier, gender)->player_id).
 
-    A handful of Cricsheet's own registry identifiers are confirmed reused
-    across two genuinely different real people of different genders (found
-    in the wild: "A Sharma" = a female India player 2009-2012 *and* a male
-    UAE player 2023-2026) -- a quirk in their upstream data, not a bug in
-    this codebase's matching. data-collection's `identity.resolve_players`
-    already splits these into two distinct, stable player_ids (one per
-    gender, `players.gender` set) rather than leaving them blended; the
-    overwhelming majority of identifiers are untouched (`gender` stays NULL,
-    exactly the id they've always had). Mirrors
-    data-collection's `identity.player_id_map` -- kept local rather than
-    imported, since this package deliberately never imports data-collection's
-    own code (see features/historical.py's docstring), only reads its DB.
+    a handful of Cricsheet identifiers are reused across two different real
+    people of different genders (a quirk in their upstream data). data-
+    collection's identity.resolve_players already splits these into distinct
+    player_ids. mirrors identity.player_id_map, kept local since this
+    package never imports data-collection's own code, only reads its DB.
     """
     unambiguous: dict[str, str] = {}
     split: dict[tuple[str, str], str] = {}
@@ -44,18 +35,15 @@ def _player_id_map(conn: sqlite3.Connection) -> tuple[dict[str, str], dict[tuple
 
 def player_current_teams(conn: sqlite3.Connection, fmt: str = SETTINGS.format,
                           gender: str = SETTINGS.gender) -> pd.DataFrame:
-    """One row per player_id: their current *national* team + date of their
+    """one row per player_id: their current national team + date of their
     most recent international appearance.
 
-    Deliberately `team_type='international'`-only: `matches`/`match_players`
-    now also carry domestic league fixtures (WBBL, WPL, ...), whose `team1`/
-    `team2` are franchise names, not countries. Without this filter, a
-    player's recent-form-heavy domestic schedule could resolve her "current
-    team" to a franchise, silently dropping her out of her actual country's
-    candidate pool in `team_pool()` below. Recency for *eligibility*
-    (ACTIVE/INACTIVE) is intentionally broader than this -- see
-    `data-collection/criiq_data/registry.py`'s union of international and
-    domestic appearance dates -- this function only answers "which country".
+    team_type='international' only, since matches/match_players also carry
+    domestic league fixtures (WBBL, WPL, ...) whose team1/team2 are
+    franchise names, not countries. without this filter a domestic-heavy
+    schedule could resolve "current team" to a franchise instead of her
+    actual country. this function only answers "which country", not
+    eligibility (see registry.py for that).
     """
     appearances = pd.read_sql_query(
         "SELECT mp.player_name, mp.team, m.date "
@@ -86,18 +74,16 @@ def player_current_teams(conn: sqlite3.Connection, fmt: str = SETTINGS.format,
 
 def team_pool(conn: sqlite3.Connection, team: str, fmt: str = SETTINGS.format,
               gender: str = SETTINGS.gender, include_inactive: bool = False) -> list[str]:
-    """player_ids who currently represent `team`, eligibility-filtered.
+    """player_ids who currently represent team, eligibility-filtered.
 
-    Hard-excludes RETIRED_* always; excludes INACTIVE unless `include_inactive`
-    (e.g. an explicit recall scenario), the registry's own recall_flag is set,
-    or she has `recent_domestic_activity` (see data-collection's registry.py)
-    -- genuinely INACTIVE internationally, but not dropped from selection
-    just because of it. This is a distinct eligibility carve-out, not a
-    correction to `retirement_status` itself: that label stays an honest,
-    international-only fact (a real bug this session caught: an
-    INCONSISTENT/INACTIVE-internationally player was showing as "ACTIVE"
-    because her domestic recency had been folded into the classification
-    directly -- fixed at the source in registry.py, not patched here).
+    hard-excludes RETIRED_* always. excludes INACTIVE unless
+    include_inactive, recall_flag is set, or recent_domestic_activity is
+    true, so a genuinely-inactive-internationally player isn't dropped just
+    for that. also excludes UNKNOWN (the 540-1095-day no-international-
+    appearance band that recently-retired players fall into) unless
+    include_inactive or recent_domestic_activity. these are eligibility
+    carve-outs, not corrections to retirement_status itself, which stays an
+    honest international-only fact.
     """
     teams = player_current_teams(conn, fmt, gender)
     teams = teams[teams["team"] == team]
@@ -114,8 +100,32 @@ def team_pool(conn: sqlite3.Connection, team: str, fmt: str = SETTINGS.format,
     inactive = ((merged["retirement_status"] == SETTINGS.inactive_status)
                 & (merged["recall_flag"].fillna(0) == 0)
                 & (merged["recent_domestic_activity"].fillna(0) == 0))
-    keep = ~excluded & (include_inactive | ~inactive)
-    return merged.loc[keep, "player_id"].tolist()
+    # UNKNOWN is "no international appearance for 540-1095 days". A player who
+    # retires from a format sits here for ~3 years before ageing into
+    # INACTIVE, and RETIRED_* only exists if the manual override CSV was
+    # filled in, so without this UNKNOWN players who have plainly stopped
+    # playing internationally stay selectable (V Kohli and RG Sharma, both
+    # retired from T20Is in June 2024, were being offered for India's XI).
+    # recall_flag is deliberately NOT a carve-out here the way it is for
+    # INACTIVE: every UNKNOWN row has recall_flag=1 by construction (the flag
+    # marks exactly this staleness band), so honouring it would cancel the
+    # exclusion outright. Recent domestic cricket still earns a way back in.
+    unknown = ((merged["retirement_status"] == SETTINGS.unknown_status)
+               & (merged["recent_domestic_activity"].fillna(0) == 0))
+    keep = ~excluded & (include_inactive | ~(inactive | unknown))
+    pool = merged.loc[keep, "player_id"].tolist()
+
+    # dormant associate sides (Maldives, Mongolia, Greece, ...) play so
+    # rarely that their whole squad is UNKNOWN, which would leave them with
+    # no XI to field at all. drop back to the pre-UNKNOWN rule for those
+    # teams only -- their last known squad is more useful than an empty
+    # pool, and a side with any active core never reaches this branch (India
+    # men keep 22 of 42 even with a whole generation newly retired).
+    if not include_inactive and len(pool) < SETTINGS.xi_size:
+        fallback = merged.loc[~excluded & ~inactive, "player_id"].tolist()
+        if len(fallback) > len(pool):
+            return fallback
+    return pool
 
 
 def known_teams(conn: sqlite3.Connection, fmt: str = SETTINGS.format,

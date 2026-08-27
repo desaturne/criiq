@@ -37,10 +37,8 @@ def build_vs_opponent_for_format(conn, fmt: str) -> int:
 
     unambiguous, split = player_id_map(conn)
 
-    # gender kept in every group key: the handful of Cricsheet registry
-    # identifiers reused across two genuinely different people of different
-    # genders (see identity.py) would otherwise have their vs-opponent
-    # records blended into one meaningless combined total.
+    # gender stays in the group key: a few Cricsheet identifiers are shared
+    # by two different people of different genders (see identity.py), so without it their totals would blend.
     keys = ["identifier", "gender", "opponent"]
     results = inn.groupby(keys).agg(
         matches=("match_id", "nunique"), won=("won", "sum"),

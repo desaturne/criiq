@@ -46,11 +46,8 @@ def build_for_format(conn, fmt: str) -> int:
     n2i = {r["player_name"]: r["identifier"]
            for r in conn.execute("SELECT player_name, identifier FROM identifier_map")}
     unambiguous, split = player_id_map(conn)
-    # (identifier, gender) -> team, not just identifier: the handful of
-    # Cricsheet registry identifiers reused across two genuinely different
-    # people of different genders (see identity.py) would otherwise get
-    # whichever one gender's team happens to win the mode() vote, silently
-    # ranking the OTHER person against the wrong team's peer group.
+    # keyed by (identifier, gender), not just identifier: a few Cricsheet ids
+    # are shared by two different people (see identity.py), so without gender we'd rank the wrong person's peer group.
     teams = _team_map(conn, fmt)
 
     d["phase"] = d["over"].map(phase_of)

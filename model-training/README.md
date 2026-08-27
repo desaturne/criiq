@@ -28,8 +28,8 @@ python -m criiq_models.cli train                     # fit + persist the two WPA
 python -m criiq_models.cli backtest                  # temporal holdout calibration report
 python -m criiq_models.cli rank-backtest             # learning-to-rank vs regression comparison
 python -m criiq_models.cli teams                     # list known team names
-python -m criiq_models.cli recommend --team India --opponent Australia [--venue "Lord's"] [--explain] [--pretty]
-python -m criiq_models.cli explain --name "H Kaur" --opponent Australia
+python -m criiq_models.cli recommend --team India --opponent Australia [--venue "Lord's"] [--explain] [--pretty] [--shap]
+python -m criiq_models.cli explain --name "H Kaur" --opponent Australia [--shap] [--pretty]
 python -m criiq_models.cli analyze-xi --team India --opponent Australia --players "S Mandhana,H Kaur,..." [--pretty]
 
 # every command above takes --gender male|female (default female) and --format T20
@@ -127,6 +127,23 @@ matters for a ranking task like XI selection). Re-run after any feature
 change, same as the notebook above; confirmed after adding the domestic-form
 feature that the model choice per target is unchanged.
 
+`training_and_selection_walkthrough.ipynb` is the visual, single-notebook answer to "how do the
+models actually train and how does the MILP actually choose" — learning curves (does more data
+help?), permutation importance, actual-vs-predicted on the temporal holdout, a live reproduction
+of the bowling model's depth-limit -> winsorize -> ensemble tuning progression, **a live
+hyperparameter search that changed the shipped models this session** (every candidate logged, the
+winners re-verified across 3 holdout fractions x 3 seeds with a paired significance test, checked
+on *both* gender scopes separately before either was adopted — see `recommend/train.py`'s
+`_make_model` and the "Per-target model selection" section above for what shipped), a real case
+where naive top-11-by-score violates the keeper/opener constraints that `select_xi`'s MILP enforces
+(with an LP-relaxation comparison), and the two GAs' fitness converging generation-over-generation
+on the XIs that MILP selected. Deliberately doesn't repeat the two notebooks above,
+`feature_analysis.ipynb`, or `simulation_demo.ipynb` — it links to each at the point where they go
+deeper. Re-run the same way
+(`jupyter nbconvert --to notebook --execute --inplace training_and_selection_walkthrough.ipynb`);
+takes roughly 15-20 minutes, dominated by building the training table for both gender scopes and
+the hyperparameter-search section's 72 model fits.
+
 ## Match simulation, genetic-algorithm optimizers, win-probability graphs
 
 `criiq_models.simulate` (new package) adds a ball-by-ball T20 Monte Carlo
@@ -142,10 +159,10 @@ python -m criiq_models.cli simulate --team1 India --team2 Australia \
     --force-dismissal "S Mandhana:0:1"   # optional: "what if this player goes out here"
 
 python -m criiq_models.cli optimize-bowling --bowling-team Australia --batting-team India \
-    --bowling-players "..." --batting-players "..."
+    --bowling-players "..." --batting-players "..." [--explain]
 
 python -m criiq_models.cli optimize-batting --batting-team India --bowling-team Australia \
-    --batting-players "..." --bowling-players "..." [--target 162]
+    --batting-players "..." --bowling-players "..." [--target 162] [--explain]
 ```
 
 **Rules compliance** (`simulate/engine.py`), checked directly against
@@ -219,6 +236,19 @@ optionally overlaying a forced-dismissal scenario against the baseline for
 direct comparison, plus a Monte-Carlo mean/10th-90th-percentile band
 (`aggregate_win_probability`) across `--n-simulations` reps.
 
+**Bowling rotation analysis** (`simulate/scorecard.py`'s `bowling_rotation`/
+`bowling_phase_summary`): distinct from the scorecard's per-bowler *match*
+totals, this is the actual over-by-over sequence -- which bowler bowled each
+specific over, its phase, and that over's own runs/wickets -- plus a
+per-phase (powerplay/middle/death) aggregation of each bowler's figures.
+This is the concrete basis for judging whether a simulated rotation actually
+matched real captaincy (specialists bowling their own phase) rather than an
+arbitrary spread, and is what surfaced the phase-aware scheduling working
+correctly in practice: a real run showed Australia's two new-ball bowlers
+alternating the powerplay, two different bowlers sharing almost the whole
+middle phase, and two more closing out the death overs -- not an even spread
+across everyone bowling-capable.
+
 **Two genetic algorithms**, hand-rolled with numpy (no new dependency --
 `scipy`/`numpy` already cover it, consistent with keeping every optimizer in
 this repo self-contained): the exact-MILP squad selector
@@ -270,6 +300,56 @@ in the notebook: the original version plotted each generation's *raw* top
 score, which visibly bounced up and down from Monte Carlo noise alone and
 looked like the GA wasn't converging, even though the actual best-tracked
 result never regressed.
+
+### Explaining a lineup, not just scoring one -- `optimize-batting`/`optimize-bowling --explain`
+
+The GA optimizers above return a winning order/rotation with no account of
+*why* it beats the alternatives, or how the specific arrangement of players
+matters relative to each other -- exactly the gap `--explain`
+(`simulate/lineup_explain.py`) closes, re-using the same `outcome_model`/
+player profiles the GA itself searched with, so the explanation is measured
+against the identical simulation, never a separate approximation.
+
+**Neither optimizer's underlying model has an explicit "these two players
+combine well" term** -- `PlayerAdjustedOutcomeModel` adjusts every ball only
+by the specific batter's own strike rate and the specific bowler's own
+economy/wicket-rate/head-to-head history (`simulate/outcomes.py`); nothing
+about batting-hand pairs, partnership chemistry, or similar folklore is
+modelled. Rather than assert an effect the simulation doesn't actually
+contain, `--explain` measures the real thing the simulation *does* capture:
+how much the specific sequence/order itself is worth.
+
+- **A grounded baseline, not a bare number.** Both explanations re-simulate a
+  deliberately naive alternative with the same profiles and outcome model --
+  batting: each band sorted by strike rate alone; bowling: an even split of
+  overs across the pool, ignoring phase fit -- and report the real expected-
+  score/win-probability/runs-conceded delta the optimizer's answer is worth
+  over that naive approach, not just its own raw fitness in isolation.
+- **Order-sensitivity, the honest version of "how they enhance each other".**
+  For batting, every adjacent same-band swap is itself re-simulated (never
+  crossing a band boundary), and the single swap that would hurt the chosen
+  order's metric the most is surfaced -- a real, re-simulated counterfactual
+  showing exactly which two positions the current order is most specifically
+  tuned around, not a general claim about pairing dynamics the model can't see.
+- **Per-slot/per-bowler grounding.** Batting slots report the strike rate
+  actually driving that position (venue/innings-conditioned chasing or
+  setting strike rate where available, falling back to the plain career
+  rate). Bowlers report which phase(s) their overs actually fell in and
+  their real `player_phase.bowl_team_rank` there -- **explicitly labelled
+  career-wide, among everyone who has ever played for their real-world team,
+  not scoped to the specific opposing XI in this one match** (a genuine bug
+  caught while writing this: an early version of the rendered text implied
+  "rank 3 among the team's bowlers" meant "3rd-best of the ~9 in this
+  lineup", when the real number is that player's phase rank across their
+  entire international career pool for that team -- fixed by rendering
+  "rank 3 of 56" instead of a bare, misleadingly-scoped "3").
+
+```bash
+python -m criiq_models.cli optimize-batting --batting-team India --bowling-team Australia \
+    --batting-players "..." --bowling-players "..." --explain
+python -m criiq_models.cli optimize-bowling --bowling-team Australia --batting-team India \
+    --bowling-players "..." --batting-players "..." --explain
+```
 
 **No draws in T20I.** A tied run-chase doesn't stop at "Tie" -- the engine
 plays one or more Super Overs (`engine.simulate_super_over`, rulebook-
@@ -516,6 +596,24 @@ backtest.py` imports the same `_make_model()` factory `train.py` uses, so the
 reported holdout numbers are always for the model actually shipped, not a
 stand-in.
 
+**`batting_wpa`'s `max_features="sqrt"` is gender-conditional, not a global
+default** — a later addition, and the one hyperparameter in this codebase
+that a live check found does NOT generalize across the two gender scopes.
+`RandomForestRegressor` (unlike its classifier sibling) uses *all* features
+at every split by default, so its trees barely decorrelate from each other;
+explicitly subsampling features per split (`max_features="sqrt"`) is the
+textbook Random Forest regularization for that. Checked with a live
+3-fraction (0.15/0.2/0.25) x 3-seed paired comparison against the
+unconstrained default, on **both** gender scopes separately before shipping
+anything (see `training_and_selection_walkthrough.ipynb`'s hyperparameter-
+search section for the full logged run): female mean holdout correlation
+**0.1208 -> 0.1260** (paired diff +0.0052, p=0.0024, won all 9/9 fraction/
+seed comparisons — a real effect), male **0.0859 -> 0.0850** (paired diff
+-0.0009, p=0.4871, won only 3/9 — statistically indistinguishable from doing
+nothing). `_make_model(target, gender)` now only applies it where the
+evidence supports it, rather than assuming a female-validated change
+transfers to male for free.
+
 ### Bowling model tuning — depth-limited + ensembled + target winsorized
 
 Bowling-WPA is the weaker of the two targets (see Known Limitations), so its
@@ -546,12 +644,85 @@ make a change look better or worse than it really is:
    "ensembling reduces variance" effect, and a clean drop-in since
    `VotingRegressor` behaves like any other single estimator everywhere else
    in the codebase (score.py, backtest.py never had to change).
+4. **Reweighting the ensemble + a milder clip.** A later live search
+   (`training_and_selection_walkthrough.ipynb`) found the equal-weight
+   `VotingRegressor` and the (0.10, 0.90) clip from step 2 were both leaving
+   correlation on the table: giving the depth-limited HistGB more say than
+   the Random Forest (`weights=[0.7, 0.3]`, not an even split) plus widening
+   the clip to (0.02, 0.98) — checked the same live way (3 fractions x 3
+   seeds, paired t-test), and this time on **both** gender scopes before
+   shipping either: female paired diff +0.0028 (p=0.0033, won 8/9), male
+   +0.0064 (p=0.0000, won 9/9 — the cleanest result in the whole search).
+   Generalized cleanly across genders, so applied unconditionally to both.
 
 Net effect on the real temporal holdout (`criiq_models.cli backtest`,
-default 0.2 split): bowling-WPA correlation **0.103 -> 0.11**, batting-WPA
-**0.134 -> 0.136**. Real, checked, but still modest in absolute terms — see
-Known Limitations for why a much larger jump isn't realistic given how noisy
-per-match WPA inherently is.
+default 0.2 split, current DB snapshot): bowling-WPA correlation **female
+0.075 -> 0.076, male 0.068 -> 0.073**; batting-WPA (from the
+`max_features="sqrt"` change above, female-only) **female 0.111 -> 0.122**,
+male architecturally unchanged. Real, checked, but still modest in absolute
+terms for bowling — see Known Limitations for why a much larger jump isn't
+realistic given how noisy per-match WPA inherently is.
+
+### SHAP explainer — per-feature attribution, not just the composite score
+
+`recommend/explain.py`'s narrative describes the *composite score's*
+components (`model_part`, `matchup_part`, ...); it never explains what the
+trained regressor itself weighted to produce `model_part`'s predicted WPA in
+the first place. `recommend/shap_explain.py` closes that gap: `--shap`
+returns, per target (`batting_wpa`/`bowling_wpa`), a `base_value`,
+the reconstructed `predicted_value`, and a `contributions` map over every one
+of `MODEL_FEATURES` — additive, so `base_value + sum(contributions) ==
+predicted_value` to float precision, and verified to match `score.py`'s own
+`predicted_batting_wpa`/`predicted_bowling_wpa` exactly.
+
+`--shap` is available on both `explain` (one player: JSON includes the full
+per-feature breakdown; `--pretty` renders a compact human-readable summary —
+top contributions plus one combined "rest" line) and `recommend` (every
+XI/pool player: `--pretty` prints a compact one-line top-driver summary per
+player instead, since the full breakdown for 20+ players would swamp a team
+sheet — the full numbers
+are always in the plain-JSON `"shap"` key on each player regardless). On
+`recommend`, passing `--shap` alone implies `--explain` the same way
+`--pretty` already does.
+
+The two targets need different SHAP strategies because they're different
+model shapes (see "Per-target model selection" above):
+
+- **`batting_wpa`** (`Pipeline([ColumnTransformer, RandomForestRegressor])`)
+  uses exact `shap.TreeExplainer` (`feature_perturbation="tree_path_dependent"`)
+  directly on the fitted forest, on the `ColumnTransformer`-transformed
+  matrix. The one-hot-expanded `role_bucket_*` columns are summed back into a
+  single `role_bucket` contribution, so the reported feature set matches
+  `MODEL_FEATURES` exactly, not the expanded post-encoding one.
+- **`bowling_wpa`** (`VotingRegressor([hgb, rf], weights=[0.7, 0.3])`) is
+  explained by explaining each sub-estimator separately and combining with the
+  ensemble's own normalized weights — valid because Shapley values are linear
+  under a weighted average of models, the same way `VotingRegressor.predict`
+  itself just averages sub-predictions. The `rf` sub-estimator reuses the
+  `TreeExplainer` path above. The `hgb`
+  (`HistGradientBoostingRegressor(categorical_features="from_dtype")`)
+  sub-estimator can't: `shap.TreeExplainer` needs the model's *internal*
+  post-binning representation for a raw HistGB model, which is only
+  reachable through private sklearn internals — too fragile to depend on.
+  Instead it's explained with a model-agnostic `shap.explainers.Permutation`
+  wrapping the model's own public `.predict()`, through a small numeric
+  encode/decode adapter for `role_bucket` (categories sourced from the
+  ensemble's own `rf` sub-estimator's fitted `OneHotEncoder.categories_`, so
+  there's no second, possibly-inconsistent vocabulary to maintain).
+
+A representative **background sample** (`SETTINGS.shap_background_size` rows
+of `MODEL_FEATURES`, sampled once from the training table) is persisted
+alongside each scope's models (`shap_background.joblib`) and reloaded via
+`train.load_background(fmt, gender)` — the `hgb` permutation explainer needs
+one, `batting_wpa`'s tree-path-dependent explainer doesn't. Models trained
+before this feature existed have no background file yet; `explain --shap`
+degrades gracefully in that case, reporting `batting_wpa`'s attribution as
+normal and a clear per-target `"error"` for `bowling_wpa` instead of failing
+the whole request, until the scope is retrained.
+
+`shap` (and its `numba`/`llvmlite` dependencies for the permutation path)
+required pinning `numpy` down to `2.4.6` from `2.5.1` — confirmed against the
+full existing test suite first, no observed behavior change elsewhere.
 
 ### Bowling-specific features — wicket-taking rate
 
@@ -787,14 +958,18 @@ exclusion logic was always correct, it was just being fed a broken input.
 ## Known limitations (honestly reported)
 
 - **Bowling-WPA prediction is weak, batting-WPA only slightly less so.**
-  Temporal-holdout backtest: batting WPA barely beats a mean-predictor
-  baseline (MAE 0.082 vs 0.081, corr ≈ 0.136, top-quartile hit-rate ≈ 32% vs a
-  ~25% random baseline); bowling WPA is similarly marginal (MAE 0.069 vs
-  0.068, corr ≈ 0.11, hit-rate ≈ 36%) even after wicket-taking-rate features,
-  a better-suited batting model, and a dedicated round of bowling-model
-  tuning (depth-limited + ensembled + target-winsorized — see above) — all
-  real, checked improvements (bowling correlation moved ≈0.09 -> 0.103 -> 0.11
-  across this session), none individually dramatic. Per-match WPA is
+  Temporal-holdout backtest (`criiq_models.cli backtest`, current DB
+  snapshot): batting WPA barely beats a mean-predictor baseline (female MAE
+  0.095 vs baseline 0.096, corr **0.122**, hit-rate **35.1%**; male MAE 0.089
+  vs baseline 0.090, corr 0.093, hit-rate 31.1% — both against a ~25% random
+  baseline); bowling WPA is similarly marginal (female MAE 0.077 vs baseline
+  0.078, corr **0.076**, hit-rate **26.9%**; male MAE 0.070 vs baseline
+  0.071, corr **0.073**, hit-rate 25.2%) even after wicket-taking-rate
+  features, a better-suited batting model, and two rounds of bowling-model
+  tuning (depth-limited + ensembled + target-winsorized, then reweighted +
+  re-clipped — see above) — all real, checked improvements (bowling
+  correlation moved ≈0.09 -> 0.103 -> 0.11 -> female 0.076/male 0.073 across
+  these sessions), none individually dramatic. Per-match WPA is
   inherently high-variance (one dropped catch, one hat-trick, swings it
   hugely) — the engine leans on career-to-date/form aggregation (which
   averages out that noise) rather than per-match precision to still produce

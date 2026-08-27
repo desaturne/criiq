@@ -14,9 +14,8 @@ log = get_logger("venue")
 
 
 def _situational_by_venue(conn, fmt: str) -> pd.DataFrame:
-    """Batting-first (innings 1) vs chasing (innings 2) splits, per (player,
-    venue) -- same computation `impact.py`'s `_sit` helper does at career
-    level, with `venue_id` added to the group key.
+    """batting-first (innings 1) vs chasing (innings 2) splits, per (player, venue).
+    same computation as impact.py's _sit helper, with venue_id added to the group key.
     """
     deliv = pd.read_sql_query(
         "SELECT d.striker, d.runs_off_bat, d.wides, d.innings, d.player_dismissed, "

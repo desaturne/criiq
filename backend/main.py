@@ -22,6 +22,7 @@ import auth
 import matches
 import players
 import selection
+import simulation
 from database import criiq_db
 
 app = FastAPI(title="CRIIQ API", version="0.1.0")
@@ -63,4 +64,6 @@ def health():
 app.include_router(auth.router)        # /auth/register, /auth/login, /auth/me, /auth/logout
 app.include_router(players.router)     # /players...
 app.include_router(matches.router)     # /matches..., /dashboard..., /ticker
+app.include_router(matches.public_router)  # /teams — needed by the sign-up form, before any login
 app.include_router(selection.router)   # /selection..., /recommendations, /winprob
+app.include_router(simulation.router)  # /simulate, /optimize-bowling, /optimize-batting, /analyze-xi

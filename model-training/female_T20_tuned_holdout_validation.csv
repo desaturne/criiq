@@ -1,0 +1,5 @@
+target,model,n_rows,n_matches,mae,baseline_mae,corr,sign_agreement_nonzero,n_zero_actual,top_quartile_hit_rate
+batting_wpa,shipped (female_T20),1047,51,0.1075,0.1086,0.1179,0.5266,276,0.356
+batting_wpa,tuned (female_T20_tuned),1047,51,0.1072,0.1086,0.1099,0.5149,276,0.355
+bowling_wpa,shipped (female_T20),1047,51,0.0868,0.0883,0.1056,0.5429,430,0.216
+bowling_wpa,tuned (female_T20_tuned),1047,51,0.0866,0.0883,0.1204,0.5462,430,0.26

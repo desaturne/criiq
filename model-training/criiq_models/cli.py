@@ -7,14 +7,10 @@ from pathlib import Path
 
 import pandas as pd
 
-# Windows consoles often default to a legacy codepage (cp1252 etc.), not
-# UTF-8 -- without this, the em dashes explain.py's narrative sentences use
-# print as "�" (confirmed in both a plain terminal and PowerShell), which
-# would look broken in a live demo. Reconfiguring stdout/stderr here makes
-# `--pretty`'s output render correctly regardless of the console's default
-# codepage. `reconfigure` is Python 3.7+; guarded since some embedding
-# contexts (e.g. certain IDE test runners) wrap stdout in a stream that
-# doesn't support it.
+# Windows consoles often default to a legacy codepage, not UTF-8, so
+# explain.py's narrative text can print as garbled characters. reconfigure
+# fixes that; guarded since some embedding contexts wrap stdout in a stream
+# that doesn't support it.
 for _stream in (sys.stdout, sys.stderr):
     try:
         _stream.reconfigure(encoding="utf-8")
@@ -28,22 +24,26 @@ from .evaluate.rank_backtest import rank_backtest
 from .features.historical import build_training_table
 from .recommend.explain import explain
 from .recommend.matchup_matrix import head_to_head_matrix
-from .recommend.render import render_team_sheet, render_xi_analysis
+from .recommend.render import render_player_explanation, render_team_sheet, render_xi_analysis
 from .recommend.score import RecommendationScorer
+from .recommend.shap_explain import explain_prediction
 from .recommend.strength import strength_context
-from .recommend.train import load_metadata, train
+from .recommend.train import load_background, load_metadata, rebuild_background, train
 from .roster import known_teams, team_pool
 from .venues import resolve_venue
-from .selection.optimize import analyze_xi, role_highlights, role_pools, select_xi, slot_category
+from .selection.optimize import analyze_xi, best_fielder, role_highlights, role_pools, select_xi, slot_category
 from .features.common import bowling_capable
-from .features.current import resolve_role
+from .features.current import build_model_features, resolve_role
 from .simulate.engine import simulate_match
 from .simulate.ga_batting import optimize_batting_order
 from .simulate.ga_bowling import optimize_bowling_rotation
 from .simulate.keymoments import detect_key_moments
+from .simulate.lineup_explain import explain_batting_order, explain_bowling_rotation
 from .simulate.outcomes import build_outcome_model, build_player_profiles
-from .simulate.report import SIMULATION_ARTIFACTS_DIR, aggregate_win_probability, plot_win_probability, save_simulation_artifacts
-from .simulate.scorecard import batting_scorecard, bowling_scorecard, coach_perspective, render_scorecard_text
+from .simulate.report import (SIMULATION_ARTIFACTS_DIR, aggregate_win_probability, plot_win_probability,
+                               save_simulation_artifacts)
+from .simulate.scorecard import (batting_scorecard, bowling_phase_summary, bowling_rotation, bowling_scorecard,
+                                  coach_perspective, render_bowling_rotation_text, render_scorecard_text)
 from .simulate.winprob_reader import WinProbLookup
 
 
@@ -60,11 +60,9 @@ def _find_player(conn, name: str):
 
 
 def _resolve_venue_arg(conn, venue_arg: str | None) -> tuple[str | None, bool]:
-    """`--venue` takes a ground *name* now, not the raw `venue_id` slug --
-    resolves it here so every caller (recommend/explain) gets the same
-    ambiguity handling. Returns `(venue_id, ok)`; `ok=False` means an
-    ambiguous name was already reported and the caller should abort rather
-    than silently score with no venue at all.
+    """--venue takes a ground name, not the raw venue_id slug. resolves it
+    here so every caller gets the same ambiguity handling. returns
+    (venue_id, ok); ok=False means an ambiguous name was already reported.
     """
     if not venue_arg:
         return None, True
@@ -78,11 +76,10 @@ def _resolve_venue_arg(conn, venue_arg: str | None) -> tuple[str | None, bool]:
 
 
 def _resolve_player_name(conn, name: str) -> tuple[str | None, bool]:
-    """Fuzzy name -> player_id, with the same "did you mean" ambiguity
-    handling `_resolve_venue_arg` uses -- a name matching several real
-    players (a genuine, previously-found issue: several distinct real
-    players can share one short name) must not silently take the first
-    match. Returns `(player_id, ok)`; `ok=False` means already reported.
+    """fuzzy name -> player_id, with the same "did you mean" ambiguity
+    handling _resolve_venue_arg uses, since several real players can share
+    one short name. returns (player_id, ok); ok=False means already
+    reported.
     """
     matches = _find_player(conn, name)
     if not matches:
@@ -97,10 +94,10 @@ def _resolve_player_name(conn, name: str) -> tuple[str | None, bool]:
 
 
 def _resolve_player_list(conn, players: str | None, player_ids: str | None) -> tuple[list[str] | None, bool]:
-    """Resolve a comma-separated --players (fuzzy names, with the same "did
-    you mean" disambiguation) or --player-ids (raw ids) argument to a list of
-    player_ids. Returns `(ids, ok)`; `ok=False` means an unresolved/ambiguous
-    name was already reported. `(None, True)` when neither was given.
+    """resolves a comma-separated --players (fuzzy names) or --player-ids
+    (raw ids) argument to a list of player_ids. returns (ids, ok); ok=False
+    means an unresolved/ambiguous name was already reported. (None, True)
+    when neither was given.
     """
     if players:
         out = []
@@ -125,8 +122,10 @@ def cmd_features(args):
 
 def cmd_train(args):
     conn = connect()
-    metadata = train(conn, args.format, args.gender)
-    _pp(metadata)
+    if args.background_only:
+        _pp(rebuild_background(conn, args.format, args.gender))
+    else:
+        _pp(train(conn, args.format, args.gender))
     conn.close()
 
 
@@ -148,6 +147,32 @@ def cmd_teams(args):
     conn.close()
 
 
+def cmd_winprob(args):
+    """win probability for a single game state, from the same persisted
+    empirical grids simulate uses per-ball, exposed standalone so a caller
+    can get one number without running a full simulation.
+    """
+    try:
+        lookup = WinProbLookup.load(args.format, args.gender)
+    except FileNotFoundError as exc:
+        print(str(exc))
+        return
+    balls_bowled = (120 - args.balls_remaining) if args.balls_remaining is not None else None
+    wp = lookup.predict_one(innings=args.innings, wickets=args.wickets,
+                             balls_remaining=args.balls_remaining, runs_required=args.runs_required,
+                             balls_bowled=balls_bowled, score=args.score)
+    balls_into_innings = 120 - args.balls_remaining if args.innings == 2 and args.balls_remaining is not None \
+        else (balls_bowled or 0)
+    over = balls_into_innings // 6
+    phase = "powerplay" if over < 6 else ("middle" if over < 16 else "death")
+    _pp({
+        "win_probability_batting": wp,
+        "win_probability_bowling": round(1 - wp, 4),
+        "phase": phase,
+        "model": f"criiq_models/winprob_{args.format}_{args.gender}",
+    })
+
+
 def cmd_recommend(args):
     conn = connect()
     venue_id, ok = _resolve_venue_arg(conn, args.venue)
@@ -160,25 +185,39 @@ def cmd_recommend(args):
               f"(format={args.format}, gender={args.gender})")
         conn.close()
         return
-    # Optional: the opponent's specific XI, to counter-optimize against (matchups
-    # scope to exactly those players) and to build the head-to-head matrix.
+    # optional: the opponent's specific XI, to counter-optimize against and
+    # build the head-to-head matrix.
     opponent_players, ok = _resolve_player_list(conn, args.opponent_players, args.opponent_player_ids)
     if not ok:
         conn.close()
         return
-    scorer = RecommendationScorer(conn, args.format, args.gender)
+    scorer = RecommendationScorer(conn, args.format, args.gender, team=args.team)
     scored = scorer.score_many(pool_ids, args.opponent, venue_id, opponent_players=opponent_players)
     result = select_xi(scored)
+
+    background = load_background(args.format, args.gender) if args.shap else None
+
+    def _shap_entry(p):
+        if not args.shap:
+            return {}
+        if not p["components"]["model_applied"]:
+            return {"shap": {"error": f"model not applied: {p['components']['cold_start_reason']}"}}
+        feats = build_model_features(conn, p["player_id"], args.opponent, venue_id, args.format)
+        # only the discipline(s) this player's role makes relevant (see
+        # score.py's role_targets) -- a specialist batter's incidental
+        # bowling_wpa can still earn a sliver of score, but a full "why
+        # bowling_wpa" breakdown for that sliver isn't useful explanation.
+        active_models = {t: scorer.models[t] for t in p["components"]["role_targets"] if t in scorer.models}
+        return {"shap": explain_prediction(active_models, feats, background)}
 
     def _brief(p):
         return {"player_id": p["player_id"], "name": p["name"], "role_bucket": p["role_bucket"],
                 "is_keeper": p["is_keeper"], "batting_position_median": p["batting_position_median"],
                 "score": p["score"]}
 
-    # Best available player of each specialist batting role (finisher / power
-    # hitter / anchor) across the WHOLE scored pool -- surfaces e.g. the side's
-    # strongest finisher even when the win-probability rating leaves them
-    # outside the headline shortlist (see selection/optimize.role_highlights).
+    # best available player of each specialist batting role across the whole
+    # scored pool, even if their win-probability rating leaves them outside
+    # the headline shortlist (see selection/optimize.role_highlights).
     def _role_option(arch, p):
         inp = p["components"]["inputs"]
         detail = None
@@ -190,17 +229,30 @@ def cmd_recommend(args):
 
     role_options = [_role_option(arch, p) for arch, p in role_highlights(scored).items()]
 
-    # Head-to-head matrix: how the recommended XI matches up against the named
-    # opposition, player by player (only when an opponent XI was supplied).
+    # best fielding record across the whole scored pool (catches + run-outs +
+    # stumpings) -- surfaced both as its own specialist role option and as a
+    # "sharpest fielder here" callout in each player's own reasoning below.
+    best_fielding_player = best_fielder(scored)
+    if best_fielding_player is not None:
+        finp = best_fielding_player["components"]["inputs"]
+        role_options.append({
+            "archetype": "fielder", "player_id": best_fielding_player["player_id"],
+            "name": best_fielding_player["name"], "score": best_fielding_player["score"],
+            "role_bucket": best_fielding_player["role_bucket"],
+            "is_keeper": best_fielding_player["is_keeper"],
+            "detail": (f"{finp['fielding_catches']} catches, {finp['fielding_run_outs']} run-outs, "
+                       f"{finp['fielding_stumpings']} stumpings in {finp['fielding_matches']} matches"),
+        })
+
+    # how the recommended XI matches up against the named opposition, player
+    # by player (only when an opponent XI was supplied).
     h2h = None
     if opponent_players:
         xi_ids_for_h2h = [p["player_id"] for p in result["xi"]]
         h2h = head_to_head_matrix(conn, xi_ids_for_h2h, opponent_players, args.format)
 
-    # Lopsided matchup: if this side is much stronger (many more ICC-ranked
-    # players), flag it and offer a rotation XI that rests the top performers,
-    # so the coach can see a viable bench side rather than fielding stars in a
-    # mismatch. Only when *we* are the stronger side.
+    # if this side is much stronger, offer a rotation XI that rests the top
+    # performers, only when we're the stronger side.
     sctx = strength_context(conn, args.team, args.opponent, args.format, args.gender)
     rotation_xi = None
     if sctx["lopsided"] and sctx["stronger_side"] == args.team:
@@ -214,7 +266,7 @@ def cmd_recommend(args):
             "constraints": rot.get("constraints"),
         }
 
-    if args.explain or args.pretty:
+    if args.explain or args.pretty or args.shap:
         xi_ids = {p["player_id"] for p in result["xi"]}
         not_selected = [p for p in scored if p["player_id"] not in xi_ids]
 
@@ -223,19 +275,30 @@ def cmd_recommend(args):
                          if slot_category(p, SETTINGS.opener_position_threshold) == category]
             return max(same_slot, key=lambda p: p["score"]) if same_slot else None
 
+        best_fielder_id = best_fielding_player["player_id"] if best_fielding_player is not None else None
+
         xi_out = []
         for p in result["xi"]:
             category = slot_category(p, SETTINGS.opener_position_threshold)
             alt = _best_alternative(category)
-            xi_out.append({**_brief(p), "reasoning": explain(p, alternative=alt, slot=category)["summary"]})
+            h2h_bat = (h2h or {}).get("batting", {}).get(p["name"])
+            h2h_bowl = (h2h or {}).get("bowling", {}).get(p["name"])
+            xi_out.append({**_brief(p), "reasoning": explain(
+                p, alternative=alt, slot=category, h2h_batting=h2h_bat, h2h_bowling=h2h_bowl,
+                is_best_fielder=(p["player_id"] == best_fielder_id))["summary"],
+                            **_shap_entry(p)})
 
-        # Top-`pool_size` recommended players, ranked by raw score -- this is
-        # a *shortlist* view (no slot/alternative framing, since "picked
-        # ahead of" only makes sense once the XI-constrained selection has
-        # actually happened), independent of who made the final constrained
-        # XI: a top-ranked keeper-less specialist can rank highly here and
-        # still not make the XI if the MILP needed her slot for a keeper.
-        pool_out = [{**_brief(p), "reasoning": explain(p)["summary"]} for p in result["pool"]]
+        # shortlist view of top-ranked players, independent of who made the
+        # final constrained XI (a top-ranked keeper-less specialist can rank
+        # highly here but still miss the XI if the MILP needed a keeper).
+        pool_out = []
+        for p in result["pool"]:
+            h2h_bat = (h2h or {}).get("batting", {}).get(p["name"])
+            h2h_bowl = (h2h or {}).get("bowling", {}).get(p["name"])
+            pool_out.append({**_brief(p), "reasoning": explain(
+                p, h2h_batting=h2h_bat, h2h_bowling=h2h_bowl,
+                is_best_fielder=(p["player_id"] == best_fielder_id))["summary"],
+                              **_shap_entry(p)})
     else:
         xi_out = [_brief(p) for p in result["xi"]]
         pool_out = [_brief(p) for p in result["pool"]]
@@ -248,10 +311,8 @@ def cmd_recommend(args):
         conn.close()
         return
 
-    # Same players as `pool`, grouped into the three views a coach actually
-    # picks from (batting/all-rounder/bowling options) instead of one flat
-    # list -- a real frontend's "pick your XI" screen reads from this
-    # directly rather than re-deriving the grouping from role_bucket itself.
+    # same players as pool, grouped into the three views a coach actually
+    # picks from (batting/all-rounder/bowling) instead of one flat list.
     pools_out = {k: [p for p in v] for k, v in role_pools(pool_out).items()}
 
     _pp({
@@ -287,18 +348,34 @@ def cmd_explain(args):
         player_id = args.player_id
     scorer = RecommendationScorer(conn, args.format, args.gender)
     scored = scorer.score(player_id, args.opponent, venue_id)
-    _pp(explain(scored))
+    result = explain(scored)
+
+    shap_result = None
+    if args.shap:
+        if not scored["components"]["model_applied"]:
+            shap_result = {"error": f"model not applied: {scored['components']['cold_start_reason']}"}
+        else:
+            feats = build_model_features(conn, player_id, args.opponent, venue_id, args.format)
+            background = load_background(args.format, args.gender)
+            active_models = {t: scorer.models[t] for t in scored["components"]["role_targets"] if t in scorer.models}
+            shap_result = explain_prediction(active_models, feats, background)
+        result["shap"] = shap_result
+
+    if args.pretty:
+        print(render_player_explanation(scored.get("name") or player_id, args.opponent, venue_id,
+                                         scored["score"], result["summary"], shap_result=shap_result))
+        conn.close()
+        return
+
+    _pp(result)
     conn.close()
 
 
 def cmd_analyze_xi(args):
-    """Scores and checks a COACH'S OWN hand-picked XI -- distinct from
-    `recommend`, which finds the algorithm's best one. Every real selector
-    sometimes overrides the model (form momentum, a tactical call, team
-    chemistry); this is the honest scorecard for that specific choice:
-    her own score/reasoning for each of the 11, whether the pick satisfies
-    the same batting/bowling/keeper/opener constraints `recommend`'s XI is
-    held to, and exactly how it compares to the provably-optimal one.
+    """scores and checks a coach's own hand-picked XI, distinct from
+    recommend which finds the algorithm's best one. reports each player's
+    score/reasoning, whether the pick satisfies the same constraints
+    recommend's XI is held to, and how it compares to the optimal one.
     """
     conn = connect()
     venue_id, ok = _resolve_venue_arg(conn, args.venue)
@@ -323,15 +400,12 @@ def cmd_analyze_xi(args):
     else:
         player_ids = [x.strip() for x in args.player_ids.split(",")]
 
-    scorer = RecommendationScorer(conn, args.format, args.gender)
+    scorer = RecommendationScorer(conn, args.format, args.gender, team=args.team)
     scored = scorer.score_many(pool_ids, args.opponent, venue_id)
     analysis = analyze_xi(scored, player_ids)
 
-    # A bare player_id in this warning is nearly useless for catching a real
-    # mistake (e.g. a name that fuzzy-matched to the wrong real person, or a
-    # correctly-resolved player who just isn't in *this* team's pool) --
-    # resolve to a name here (analyze_xi has no DB access, so it can't) so
-    # the warning is actually actionable.
+    # resolve to a name here since a bare player_id isn't actionable, and
+    # analyze_xi has no DB access to do this itself.
     if analysis["missing_player_ids"]:
         named = []
         for pid in analysis["missing_player_ids"]:
@@ -367,9 +441,9 @@ def cmd_analyze_xi(args):
 
 
 def _resolve_xi(conn, players_arg: str | None, player_ids_arg: str | None, label: str):
-    """Resolves a literal, user-supplied 11-player XI (names or ids, in
-    batting order) -- distinct from `_resolve_player_list`'s optional list,
-    this requires exactly 11 and reports a specific error otherwise.
+    """resolves a literal, user-supplied 11-player XI (names or ids, in
+    batting order). unlike _resolve_player_list, this requires exactly 11
+    and reports a specific error otherwise.
     """
     ids, ok = _resolve_player_list(conn, players_arg, player_ids_arg)
     if not ok:
@@ -384,16 +458,12 @@ def _resolve_xi(conn, players_arg: str | None, player_ids_arg: str | None, label
 
 
 def _batting_groups(conn, player_ids: list, fmt: str) -> list:
-    """Splits `player_ids` into role-based bands for `ga_batting.
-    optimize_batting_order`'s grouped search (see that module's docstring):
-    the two lowest recorded `batting_position_median` as the openers band
-    (the GA can still interchange which of the two goes in first), the rest
-    of the batting-relevant players (specialist batters, all-rounders, the
-    keeper) as the top/middle band, and specialist bowlers (`role_bucket ==
-    "bowler"`) as the tail band -- mirrors `selection/optimize.py`'s own
-    `_team_sheet_order` categorization. A player with no recorded batting
-    position sorts last for the opener cut, so the openers band still
-    always gets exactly 2 players even with sparse position data.
+    """splits player_ids into role-based bands for ga_batting.
+    optimize_batting_order's grouped search: two lowest batting_position_median
+    as openers, remaining batting-relevant players as top/middle, specialist
+    bowlers as tail. mirrors selection/optimize.py's _team_sheet_order.
+    players with no recorded position sort last so openers still always
+    gets exactly 2.
     """
     rows = [(pid, *resolve_role(conn, pid, fmt)) for pid in player_ids]
     rows.sort(key=lambda r: r[3] if r[3] is not None else float("inf"))
@@ -405,14 +475,10 @@ def _batting_groups(conn, player_ids: list, fmt: str) -> list:
 
 
 def _primary_bowlers(conn, bowler_pool: list, fmt: str) -> list:
-    """The up to 5 recognized specialist bowlers in `bowler_pool`
-    (`role_bucket == "bowler"`) -- `ga_bowling.optimize_bowling_rotation`'s
-    default assumption that these bowlers take the full quota between them.
-    If fewer than 5 true specialists exist, tops up with the next-best
-    bowling options (all-rounders) ranked by real bowling workload (matches
-    with `balls_bowled > 0`, the same signal `career_bowl_matches` uses
-    elsewhere in this repo), mirroring a real captain's forced situation
-    when the side is short of frontline bowling options.
+    """the up to 5 specialist bowlers in bowler_pool, which
+    ga_bowling.optimize_bowling_rotation assumes take the full quota
+    between them. tops up with the next-best all-rounders by bowling
+    workload if fewer than 5 specialists exist.
     """
     specialists, others = [], []
     for pid in bowler_pool:
@@ -449,9 +515,9 @@ def _name_map(conn, player_ids: list) -> dict:
 
 
 def _parse_force_dismissal(conn, spec: str) -> dict:
-    """`"NAME_OR_ID:OVER:BALL"` -- the batter, and the (0-indexed over,
-    1-indexed ball-in-over) at which they're forced out, for the "what
-    happens when this player goes out here" scenario.
+    """"NAME_OR_ID:OVER:BALL": the batter and the (0-indexed over, 1-indexed
+    ball) at which they're forced out, for the "what happens if this player
+    goes out here" scenario.
     """
     who, over_s, ball_s = spec.rsplit(":", 2)
     matches = _find_player(conn, who)
@@ -512,6 +578,67 @@ def cmd_simulate(args):
                               ignore_index=True)
     key_moments = detect_key_moments(combined_log, name_map=names)
 
+    if args.json:
+        first_bat = batting_scorecard(representative["first_innings_log"], names)
+        first_bowl = bowling_scorecard(representative["first_innings_log"], names)
+        second_bat = batting_scorecard(representative["second_innings_log"], names)
+        second_bowl = bowling_scorecard(representative["second_innings_log"], names)
+        first_rotation = bowling_rotation(representative["first_innings_log"], names)
+        second_rotation = bowling_rotation(representative["second_innings_log"], names)
+
+        scenario_out = None
+        if forced:
+            try:
+                scenario_reps = simulate_match(team1, team2, batting_first, outcome_model, batter_profiles,
+                                                bowler_profiles, winprob, forced_dismissal=forced,
+                                                n_reps=args.n_simulations, rng_seed=args.seed)
+                scenario_rep = scenario_reps[0]
+                scenario_out = {
+                    "forced_dismissal": forced,
+                    "first_innings_score": scenario_rep["first_innings_score"],
+                    "first_innings_wickets": scenario_rep["first_innings_wickets"],
+                    "second_innings_score": scenario_rep["second_innings_score"],
+                    "second_innings_wickets": scenario_rep["second_innings_wickets"],
+                    "winner": scenario_rep["winner"],
+                }
+            except ValueError as exc:
+                scenario_out = {"error": str(exc)}
+
+        win_probability_pct = None
+        win_prob_timeline = None
+        if len(reps) > 1:
+            win_counts = pd.Series([r["winner"] for r in reps]).value_counts(normalize=True) * 100
+            win_probability_pct = {k: round(v, 1) for k, v in win_counts.items()}
+            win_prob_timeline = aggregate_win_probability(reps).to_dict(orient="records")
+
+        _pp({
+            "team1": team1["name"], "team2": team2["name"],
+            "batting_first_team": representative["batting_first_team"],
+            "bowling_first_team": representative["bowling_first_team"],
+            "first_innings": {"team": representative["batting_first_team"],
+                               "score": representative["first_innings_score"],
+                               "wickets": representative["first_innings_wickets"]},
+            "second_innings": {"team": representative["bowling_first_team"],
+                                "score": representative["second_innings_score"],
+                                "wickets": representative["second_innings_wickets"],
+                                "target": representative["target"]},
+            "winner": representative["winner"],
+            "super_over_rounds": representative.get("super_over_rounds"),
+            "n_simulations": args.n_simulations,
+            "win_probability_pct": win_probability_pct,
+            "win_prob_timeline": win_prob_timeline,
+            "key_moments": key_moments,
+            "first_innings_scorecard": {"batting": first_bat, "bowling": first_bowl},
+            "second_innings_scorecard": {"batting": second_bat, "bowling": second_bowl},
+            "first_innings_bowling_rotation": {"overs": first_rotation,
+                                                "phase_summary": bowling_phase_summary(first_rotation)},
+            "second_innings_bowling_rotation": {"overs": second_rotation,
+                                                 "phase_summary": bowling_phase_summary(second_rotation)},
+            "scenario": scenario_out,
+        })
+        conn.close()
+        return
+
     print(f"{team1['name']} vs {team2['name']} -- {args.n_simulations} simulation(s)")
     print(f"  {representative['batting_first_team']}: {representative['first_innings_score']}/"
           f"{representative['first_innings_wickets']}")
@@ -547,6 +674,15 @@ def cmd_simulate(args):
     second_bowl = bowling_scorecard(representative["second_innings_log"], names)
     print(render_scorecard_text(representative["bowling_first_team"], second_bat, second_bowl,
                                  representative["batting_first_team"]))
+
+    print(f"\n{'=' * 60}\nBOWLING ROTATION -- who bowled each over, and each phase\n{'=' * 60}\n")
+    first_rotation = bowling_rotation(representative["first_innings_log"], names)
+    print(render_bowling_rotation_text(representative["bowling_first_team"], first_rotation,
+                                        bowling_phase_summary(first_rotation)))
+    print()
+    second_rotation = bowling_rotation(representative["second_innings_log"], names)
+    print(render_bowling_rotation_text(representative["batting_first_team"], second_rotation,
+                                        bowling_phase_summary(second_rotation)))
 
     scenario_rep = None
     if forced:
@@ -616,6 +752,28 @@ def cmd_optimize_bowling(args):
         return
 
     names = _name_map(conn, bowling_ids + batting_ids)
+
+    explanation = None
+    if args.explain:
+        explanation = explain_bowling_rotation(result["rotation"], batting_ids, outcome_model, batter_profiles,
+                                                bowler_profiles, result["overs_per_bowler"],
+                                                result["expected_runs_conceded"], rng_seed=args.seed)
+
+    if args.json:
+        _pp({
+            "bowling_team": args.bowling_team, "batting_team": args.batting_team,
+            "rotation": [{"over": i + 1, "player_id": b, "name": names.get(b, b)}
+                         for i, b in enumerate(result["rotation"])],
+            "overs_per_bowler": [{"player_id": b, "name": names.get(b, b), "overs": n}
+                                  for b, n in result["overs_per_bowler"].items()],
+            "expected_runs_conceded": result["expected_runs_conceded"],
+            "primary_bowlers": [{"player_id": b, "name": names.get(b, b)} for b in (primary_bowlers or [])],
+            "fitness_history": result.get("fitness_history"),
+            "explanation": explanation,
+        })
+        conn.close()
+        return
+
     if primary_bowlers:
         print(f"recognized bowlers (default full quota): {[names.get(b, b) for b in primary_bowlers]}")
     print(f"best bowling rotation vs {args.batting_team} "
@@ -623,6 +781,20 @@ def cmd_optimize_bowling(args):
     for i, bowler in enumerate(result["rotation"]):
         print(f"  over {i + 1:2d}: {names.get(bowler, bowler)}")
     print("overs per bowler:", {names.get(b, b): n for b, n in result["overs_per_bowler"].items()})
+
+    if explanation:
+        print()
+        print(f"vs a naive even split across the pool (ignoring phase fit): expected "
+              f"{explanation['baseline_runs_conceded']} runs conceded "
+              f"({explanation['improvement_over_baseline']:+.2f} runs saved by this rotation)")
+        for b in explanation["bowlers"]:
+            name = names.get(b["player_id"], b["player_id"])
+            phase_desc = ", ".join(f"{n} {phase}" for phase, n in b["phase_overs"].items())
+            rank_bits = [f"{phase} economy rank {info['rank']}" + (f" of {info['size']}" if info.get("size") else "")
+                         for phase, info in b["phase_rank"].items()]
+            rank_desc = (f" (career-wide, among everyone who's played for this real-world team: "
+                         f"{'; '.join(rank_bits)})") if rank_bits else ""
+            print(f"  {name}: {b['overs']} over(s) -- {phase_desc}{rank_desc}")
 
     out_path = Path(args.out_dir) / "bowling_rotation.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -669,6 +841,30 @@ def cmd_optimize_batting(args):
 
     names = _name_map(conn, batting_ids + bowling_ids)
     metric_name = "win_probability" if args.target else "expected_score"
+
+    explanation = None
+    if args.explain:
+        explanation = explain_batting_order(result["batting_order"], result["batting_groups"], bowler_pool,
+                                             outcome_model, batter_profiles, bowler_profiles, args.target,
+                                             result[metric_name], metric_name, rng_seed=args.seed)
+
+    if args.json:
+        _pp({
+            "batting_team": args.batting_team, "bowling_team": args.bowling_team,
+            "batting_order": [{"position": i + 1, "player_id": pid, "name": names.get(pid, pid)}
+                               for i, pid in enumerate(result["batting_order"])],
+            "metric_name": metric_name, "metric_value": result[metric_name],
+            "target": args.target,
+            "batting_groups": None if args.no_role_bands else [
+                {"label": label, "player_ids": [{"player_id": p, "name": names.get(p, p)} for p in group]}
+                for label, group in zip(["openers", "top/middle order", "tail"], batting_groups)
+            ],
+            "fitness_history": result.get("fitness_history"),
+            "explanation": explanation,
+        })
+        conn.close()
+        return
+
     if not args.no_role_bands:
         band_names = ["openers", "top/middle order", "tail"]
         for label, group in zip(band_names, batting_groups):
@@ -676,6 +872,18 @@ def cmd_optimize_batting(args):
     print(f"best batting order vs {args.bowling_team} ({metric_name}: {result[metric_name]}):")
     for i, pid in enumerate(result["batting_order"]):
         print(f"  {i + 1:2d}. {names.get(pid, pid)}")
+
+    if explanation:
+        print()
+        print(f"vs a naive strike-rate-sorted order: baseline {metric_name} "
+              f"{explanation['baseline_metric']} ({explanation['improvement_over_baseline']:+.4f} "
+              f"{metric_name} gained by this order)")
+        swap = explanation["most_costly_adjacent_swap"]
+        if swap:
+            p1, p2 = swap["player_ids"]
+            print(f"most order-sensitive pair: swapping positions {swap['positions'][0]} and "
+                  f"{swap['positions'][1]} ({names.get(p1, p1)} / {names.get(p2, p2)}) would change "
+                  f"{metric_name} by {swap['delta']:+.4f}")
 
     out_path = Path(args.out_dir) / "batting_order.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -696,6 +904,9 @@ def build_parser() -> argparse.ArgumentParser:
     t = sub.add_parser("train", help="fit + persist the contribution regressors")
     t.add_argument("--format", default=SETTINGS.format)
     t.add_argument("--gender", default=SETTINGS.gender)
+    t.add_argument("--background-only", action="store_true",
+                   help="only (re)write shap_background.joblib for an already-trained scope, "
+                        "without refitting the models")
     t.set_defaults(func=cmd_train)
 
     b = sub.add_parser("backtest", help="temporal holdout calibration report")
@@ -728,6 +939,9 @@ def build_parser() -> argparse.ArgumentParser:
                          "against and build a head-to-head matrix for, e.g. \"V Kohli,RG Sharma,...\"")
     r.add_argument("--opponent-player-ids", dest="opponent_player_ids",
                     help="opponent XI as comma-separated player_ids (alternative to --opponent-players)")
+    r.add_argument("--shap", action="store_true",
+                    help="include a per-feature SHAP contribution breakdown for each XI/pool player's "
+                         "model_part prediction (implies --explain)")
     r.set_defaults(func=cmd_recommend)
 
     e = sub.add_parser("explain", help="component breakdown for one player")
@@ -737,6 +951,10 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument("--venue", default=None)
     e.add_argument("--format", default=SETTINGS.format)
     e.add_argument("--gender", default=SETTINGS.gender)
+    e.add_argument("--shap", action="store_true",
+                    help="include a per-feature SHAP contribution breakdown for the model_part prediction")
+    e.add_argument("--pretty", action="store_true",
+                    help="render human-readable text instead of JSON")
     e.set_defaults(func=cmd_explain)
 
     a = sub.add_parser("analyze-xi", help="score + check a coach's own hand-picked XI against the same "
@@ -785,6 +1003,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="which side to narrate the match from (must equal --team1 or --team2); "
                          "defaults to --team1")
     s.add_argument("--out-dir", dest="out_dir", default=str(SIMULATION_ARTIFACTS_DIR / "latest"))
+    s.add_argument("--json", action="store_true",
+                    help="print one structured JSON result (scores, scorecards, bowling rotation, key "
+                         "moments, win-probability timeline) instead of the human-readable report; skips "
+                         "the chart/artifact files since a caller consuming JSON reads the timeline directly")
     s.set_defaults(func=cmd_simulate)
 
     ob = sub.add_parser("optimize-bowling", help="genetic-algorithm search over legal bowler-to-over "
@@ -810,6 +1032,13 @@ def build_parser() -> argparse.ArgumentParser:
                      help="RNG seed -- omit for a genuinely different GA search every run (the default); "
                           "pass a fixed integer to reproduce the exact same run again")
     ob.add_argument("--out-dir", dest="out_dir", default=str(SIMULATION_ARTIFACTS_DIR / "latest"))
+    ob.add_argument("--json", action="store_true",
+                     help="print the rotation result as structured JSON instead of the human-readable "
+                          "report; skips writing bowling_rotation.json to --out-dir")
+    ob.add_argument("--explain", action="store_true",
+                     help="explain the rotation: expected runs saved vs a naive even split, and each "
+                          "bowler's phase allocation with their career-wide economy rank in that phase "
+                          "among everyone who's played for their real-world team")
     ob.set_defaults(func=cmd_optimize_bowling)
 
     obat = sub.add_parser("optimize-batting", help="genetic-algorithm search over the batting order to "
@@ -838,7 +1067,28 @@ def build_parser() -> argparse.ArgumentParser:
                        help="RNG seed -- omit for a genuinely different GA search every run (the default); "
                             "pass a fixed integer to reproduce the exact same run again")
     obat.add_argument("--out-dir", dest="out_dir", default=str(SIMULATION_ARTIFACTS_DIR / "latest"))
+    obat.add_argument("--json", action="store_true",
+                       help="print the batting order result as structured JSON instead of the "
+                            "human-readable report; skips writing batting_order.json to --out-dir")
+    obat.add_argument("--explain", action="store_true",
+                       help="explain the order: expected gain vs a naive strike-rate-sorted order, and "
+                            "the single adjacent swap that would hurt this order's metric the most")
     obat.set_defaults(func=cmd_optimize_batting)
+
+    wp = sub.add_parser("winprob", help="win probability for a single game state, from the persisted "
+                                         "empirical grids (fast -- no match simulation)")
+    wp.add_argument("--innings", type=int, required=True, choices=[1, 2])
+    wp.add_argument("--wickets", type=int, default=0)
+    wp.add_argument("--balls-remaining", dest="balls_remaining", type=int, default=None,
+                     help="balls left in the innings (second innings: balls left to chase in; "
+                          "first innings: used to derive balls bowled so far)")
+    wp.add_argument("--runs-required", dest="runs_required", type=int, default=None,
+                     help="second innings only -- runs still needed to win")
+    wp.add_argument("--score", type=int, default=None,
+                     help="first innings only -- current score, for a more precise lookup")
+    wp.add_argument("--format", default=SETTINGS.format)
+    wp.add_argument("--gender", default=SETTINGS.gender)
+    wp.set_defaults(func=cmd_winprob)
 
     return p
 

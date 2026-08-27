@@ -9,11 +9,20 @@ import json
 
 from fastapi import APIRouter, Depends, HTTPException
 
-import ai_stub
+import ai_stub  # calls the real model via model_bridge, falls back to stub data
 from auth import require_user
 from database import app_db, criiq_db
 
 router = APIRouter(tags=["matches"], dependencies=[Depends(require_user)])
+
+# /teams is the one route here that has to answer before anyone is logged in:
+# the sign-up form needs the real country list to let a coach register for the
+# side they actually coach. It returns nothing but public international team
+# names, so it lives on its own un-authenticated router rather than forcing the
+# UI to ship a hardcoded, drifting copy of the list.
+public_router = APIRouter(tags=["matches"])
+
+BOWLER_WICKETS = {"bowled", "caught", "lbw", "stumped", "caught and bowled", "hit wicket"}
 
 
 def team_last5(team: str, gender: str) -> str:
@@ -41,19 +50,55 @@ def fixture_to_json(f) -> dict:
 
 # --------------------------------------------------------------------------
 # 10. GET /matches — upcoming fixtures + recent completed matches
+#
+# Filters (all optional, all combinable):
+#   gender          -- 'male' | 'female'
+#   country         -- only matches this team played in, either side
+#   team1 + team2   -- head-to-head history between exactly these two teams
+#                      (order doesn't matter -- A-vs-B and B-vs-A both match)
+# `country` and `team1`/`team2` are deliberately separate params rather than
+# overloading one -- a "past matches for my country" filter and a "team A vs
+# team B" selector are two different real questions a coach asks, and mixing
+# them into one param would make one of the two impossible to express.
 # --------------------------------------------------------------------------
 @router.get("/matches")
-def list_matches(completed_limit: int = 10):
-    upcoming = [fixture_to_json(f) for f in app_db.execute(
-        "SELECT * FROM fixtures ORDER BY date"
-    ).fetchall()]
+def list_matches(
+    completed_limit: int = 10,
+    gender: str | None = None,
+    country: str | None = None,
+    team1: str | None = None,
+    team2: str | None = None,
+):
+    # Filter the raw fixture rows (which carry gender) before mapping to
+    # JSON -- fixture_to_json's output has no gender field of its own.
+    fixture_rows = app_db.execute("SELECT * FROM fixtures ORDER BY date").fetchall()
+    if gender:
+        fixture_rows = [f for f in fixture_rows if f["gender"] == gender]
+    if country:
+        fixture_rows = [f for f in fixture_rows if country in (f["team1"], f["team2"])]
+    if team1 and team2:
+        fixture_rows = [f for f in fixture_rows if {f["team1"], f["team2"]} == {team1, team2}]
+    upcoming = [fixture_to_json(f) for f in fixture_rows]
+
+    where = ["1=1"]
+    params: list = []
+    if gender:
+        where.append("gender = ?")
+        params.append(gender)
+    if team1 and team2:
+        where.append("((team1 = ? AND team2 = ?) OR (team1 = ? AND team2 = ?))")
+        params.extend([team1, team2, team2, team1])
+    elif country:
+        where.append("(team1 = ? OR team2 = ?)")
+        params.extend([country, country])
 
     completed = []
     for m in criiq_db.execute(
-        """SELECT match_id, date, team1, team2, venue_raw, city, winner,
-                  win_margin, format, gender, player_of_match
-           FROM matches ORDER BY date DESC LIMIT ?""",
-        (min(completed_limit, 50),),
+        f"""SELECT match_id, date, team1, team2, venue_raw, city, winner,
+                   win_margin, format, gender, player_of_match
+            FROM matches WHERE {' AND '.join(where)}
+            ORDER BY date DESC LIMIT ?""",
+        (*params, min(completed_limit, 50)),
     ).fetchall():
         completed.append({
             "id": m["match_id"], "status": "completed",
@@ -68,6 +113,85 @@ def list_matches(completed_limit: int = 10):
         })
 
     return {"data": {"upcoming": upcoming, "completed": completed}, "error": None}
+
+
+# --------------------------------------------------------------------------
+# 10b. GET /teams — real international team names, for filter/selector
+# dropdowns. # `against`, if given, ranks the result by real head-to-head frequency with
+# that team first (most-played opponent first), so a UI can group "likely
+# matchups" ahead of everything else -- each entry's `matches_played` is 0
+# for a team with no recorded history against `against`.
+# --------------------------------------------------------------------------
+@public_router.get("/teams")
+def list_teams(gender: str | None = None, against: str | None = None):
+    where = ["team_type = 'international'"]
+    params: list = []
+    if gender:
+        where.append("gender = ?")
+        params.append(gender)
+    where_sql = " AND ".join(where)
+    rows = criiq_db.execute(
+        f"""SELECT DISTINCT team FROM (
+                SELECT team1 AS team, gender, team_type FROM matches
+                UNION ALL
+                SELECT team2 AS team, gender, team_type FROM matches
+            ) WHERE {where_sql}""",
+        params,
+    ).fetchall()
+    teams = {r["team"] for r in rows}
+    teams.discard(against)  # a team can't be its own opponent
+
+    counts = {t: 0 for t in teams}
+    if against:
+        freq_where = ["team_type = 'international'", "(team1 = ? OR team2 = ?)"]
+        freq_params = [against, against, against]
+        if gender:
+            freq_where.append("gender = ?")
+            freq_params.append(gender)
+        freq_rows = criiq_db.execute(
+            f"""SELECT CASE WHEN team1 = ? THEN team2 ELSE team1 END AS opponent, COUNT(*) AS n
+                FROM matches WHERE {' AND '.join(freq_where)}
+                GROUP BY opponent""",
+            freq_params,
+        ).fetchall()
+        for r in freq_rows:
+            if r["opponent"] in counts:
+                counts[r["opponent"]] = r["n"]
+
+    ordered = sorted(teams, key=lambda t: (-counts[t], t))
+    return {"data": [{"team": t, "matches_played": counts[t]} for t in ordered], "error": None}
+
+
+# --------------------------------------------------------------------------
+# 10c. GET /venues — real grounds, for venue selector dropdowns.
+#
+# `team1`/`team2`, if given, rank grounds by how often either named team has
+# actually played there (most first) -- a UI can group "likely grounds"
+# (this matchup's real home/frequent venues) ahead of the full list.
+# --------------------------------------------------------------------------
+@router.get("/venues")
+def list_venues(team1: str | None = None, team2: str | None = None):
+    rows = criiq_db.execute(
+        "SELECT DISTINCT venue_id, canonical_name FROM venues WHERE venue_id IS NOT NULL "
+        "ORDER BY canonical_name"
+    ).fetchall()
+    venues = [{"venue_id": r["venue_id"], "name": r["canonical_name"], "matches_here": 0} for r in rows]
+
+    if team1 or team2:
+        conds, params = [], []
+        for t in (team1, team2):
+            if t:
+                conds.append("(team1 = ? OR team2 = ?)")
+                params.extend([t, t])
+        counts = {r["venue_id"]: r["n"] for r in criiq_db.execute(
+            f"SELECT venue_id, COUNT(*) AS n FROM matches WHERE {' OR '.join(conds)} GROUP BY venue_id",
+            params,
+        ).fetchall()}
+        for v in venues:
+            v["matches_here"] = counts.get(v["venue_id"], 0)
+
+    venues.sort(key=lambda v: (-v["matches_here"], v["name"]))
+    return {"data": venues, "error": None}
 
 
 # --------------------------------------------------------------------------
@@ -100,7 +224,177 @@ def match_detail(match_id: str):
         (match_id,),
     ).fetchall()]
 
-    return {"data": {**dict(m), "innings": innings}, "error": None}
+    # Same status/result synthesis as list_matches -- the `matches` table has
+    # no `status`/`result` columns of its own, and without these the frontend
+    # (mapApiMatch) falls back to classifying every completed match as
+    # "Upcoming", hiding the scorecard/win-prob it's otherwise entitled to.
+    return {"data": {
+        **dict(m), "status": "completed",
+        "result": (f"{m['winner']} won by {m['win_margin']}" if m["winner"] else "No result"),
+        "innings": innings,
+    }, "error": None}
+
+
+# --------------------------------------------------------------------------
+# 11b. GET /matches/{id}/scorecard — real per-player batting/bowling figures,
+# built ball-by-ball from `deliveries` (a fixture "f<n>" has none yet).
+#
+# Mirrors the same shape the simulator's Scorecard/BattingTable/BowlingTable
+# components already render for a SIMULATED match's `first_innings_scorecard`/
+# `second_innings_scorecard` (see model-training/criiq_models/simulate/
+# scorecard.py), so the frontend can reuse one component for both real and
+# simulated results. Strike-rate/economy math and the run-out-excluded-from-
+# bowling-figures convention mirror data-collection's criiq_data/stats.py
+# exactly, so these numbers agree with the analytics DB's own player stats.
+# --------------------------------------------------------------------------
+# wicket types with no fielder credit -- either the bowler alone (bowled,
+# lbw, hit wicket) or no one at all (the retired/obstructing variants).
+_NO_FIELDER_WICKETS = {"bowled", "lbw", "hit wicket", "retired hurt",
+                        "retired not out", "retired out",
+                        "obstructing the field", "hit the ball twice"}
+
+
+def _dismissal_text(wicket_type: str | None, bowler: str, f1: str | None,
+                     f2: str | None, f3: str | None) -> str:
+    """Standard scorecard notation: 'c Fielder b Bowler', 'run out (Fielder)',
+    etc. -- same shape ESPNcricinfo uses, built from wicket_type + the
+    fielder_1/2/3 credit cricsheet records for the dismissal (see
+    data-collection's ingest.py/fielding.py, which use the same columns)."""
+    if not wicket_type:
+        return "not out"
+    if wicket_type == "caught and bowled":
+        return f"c & b {bowler}"
+    if wicket_type == "caught":
+        return f"c {f1} b {bowler}" if f1 else f"c b {bowler}"
+    if wicket_type == "stumped":
+        return f"st {f1} b {bowler}" if f1 else f"st b {bowler}"
+    if wicket_type == "run out":
+        fielders = ", ".join(f for f in (f1, f2, f3) if f)
+        return f"run out ({fielders})" if fielders else "run out"
+    if wicket_type == "bowled":
+        return f"b {bowler}"
+    if wicket_type == "lbw":
+        return f"lbw b {bowler}"
+    if wicket_type == "hit wicket":
+        return f"hit wicket b {bowler}"
+    return wicket_type  # retired hurt / retired out / obstructing the field / hit the ball twice
+
+
+def _innings_scorecard(rows: list) -> dict:
+    bat_order: list[str] = []
+    bat_runs: dict[str, int] = {}
+    bat_balls: dict[str, int] = {}
+    bat_dismissal: dict[str, str] = {}
+
+    bowl_order: list[str] = []
+    bowl_legal_balls: dict[str, int] = {}
+    bowl_conceded: dict[str, int] = {}
+    bowl_wkts: dict[str, int] = {}
+
+    for r in rows:
+        striker, bowler = r["striker"], r["bowler"]
+        if striker not in bat_runs:
+            bat_runs[striker], bat_balls[striker] = 0, 0
+            bat_order.append(striker)
+        bat_runs[striker] += int(r["runs_off_bat"] or 0)
+        is_wide = bool(r["wides"])
+        is_noball = bool(r["noballs"])
+        if not is_wide:
+            bat_balls[striker] += 1
+        if r["player_dismissed"] == striker:
+            bat_dismissal[striker] = _dismissal_text(
+                r["wicket_type"], bowler, r["fielder_1"], r["fielder_2"], r["fielder_3"])
+
+        if bowler not in bowl_conceded:
+            bowl_legal_balls[bowler], bowl_conceded[bowler], bowl_wkts[bowler] = 0, 0, 0
+            bowl_order.append(bowler)
+        if not is_wide and not is_noball:
+            bowl_legal_balls[bowler] += 1
+        # runs conceded excludes byes/leg-byes (they're `extras` but not
+        # `wides`/`noballs`) -- same as data-collection's stats.py.
+        bowl_conceded[bowler] += int(r["runs_off_bat"] or 0) + int(r["wides"] or 0) + int(r["noballs"] or 0)
+        if r["player_dismissed"] is not None and r["wicket_type"] in BOWLER_WICKETS:
+            bowl_wkts[bowler] += 1
+
+    batting = []
+    for name in bat_order:
+        b, runs = bat_balls[name], bat_runs[name]
+        batting.append({
+            "player_id": name, "name": name, "runs": runs, "balls": b,
+            "strike_rate": round(100 * runs / b, 1) if b else None,
+            "status": bat_dismissal.get(name, "not out"), "highlight": None,
+        })
+    if batting:
+        for row in batting:
+            if row["runs"] >= 100:
+                row["highlight"] = f"Century! ({row['runs']} off {row['balls']})"
+            elif row["runs"] >= 50:
+                row["highlight"] = f"Half-century ({row['runs']} off {row['balls']})"
+        top = max(batting, key=lambda r: r["runs"])
+        if top["highlight"] is None and top["runs"] > 0:
+            top["highlight"] = f"Top scorer ({top['runs']} off {top['balls']})"
+
+    bowling = []
+    for name in bowl_order:
+        legal = bowl_legal_balls[name]
+        bowling.append({
+            "player_id": name, "name": name,
+            "overs": f"{legal // 6}.{legal % 6}",
+            "runs_conceded": bowl_conceded[name], "wickets": bowl_wkts[name],
+            "economy": round(6 * bowl_conceded[name] / legal, 2) if legal else None,
+            "highlight": None,
+        })
+    if bowling:
+        best = max(bowling, key=lambda r: (r["wickets"], -(r["economy"] if r["economy"] is not None else 999)))
+        if best["wickets"] > 0:
+            best["highlight"] = f"Pick of the bowlers ({best['wickets']}-for-{best['runs_conceded']})"
+        qualified = [r for r in bowling if int(r["overs"].split(".")[0]) >= 2]
+        if qualified:
+            tightest = min(qualified, key=lambda r: r["economy"] if r["economy"] is not None else 999)
+            if tightest["highlight"] is None:
+                tightest["highlight"] = f"Most economical (ER {tightest['economy']})"
+
+    return {"batting": batting, "bowling": bowling}
+
+
+@router.get("/matches/{match_id}/scorecard")
+def match_scorecard(match_id: str):
+    if match_id.startswith("f") and match_id[1:].isdigit():
+        raise HTTPException(400, "No scorecard yet -- this fixture hasn't been played")
+
+    m = criiq_db.execute(
+        "SELECT team1, team2 FROM matches WHERE match_id = ?", (match_id,)
+    ).fetchone()
+    if not m:
+        raise HTTPException(404, "Unknown match id")
+
+    deliveries = criiq_db.execute(
+        """SELECT innings, batting_team, bowling_team, striker, bowler,
+                  runs_off_bat, wides, noballs, wicket_type, player_dismissed,
+                  fielder_1, fielder_2, fielder_3
+           FROM deliveries WHERE match_id = ? ORDER BY innings, over, ball_in_over, id""",
+        (match_id,),
+    ).fetchall()
+    if not deliveries:
+        raise HTTPException(404, "No ball-by-ball data on file for this match")
+
+    by_innings: dict[int, list] = {}
+    for r in deliveries:
+        by_innings.setdefault(r["innings"], []).append(r)
+
+    innings_cards = []
+    for innings_no in sorted(by_innings):
+        rows = by_innings[innings_no]
+        card = _innings_scorecard(rows)
+        innings_cards.append({
+            "innings": innings_no,
+            "batting_team": rows[0]["batting_team"],
+            "bowling_team": rows[0]["bowling_team"],
+            **card,
+        })
+
+    return {"data": {"match_id": match_id, "team1": m["team1"], "team2": m["team2"],
+                      "innings": innings_cards}, "error": None}
 
 
 # --------------------------------------------------------------------------
